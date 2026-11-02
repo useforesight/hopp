@@ -2,15 +2,19 @@ import "@/services/sentry";
 import "../../App.css";
 import React, { useState } from "react";
 import ReactDOM from "react-dom/client";
-import { useDisableNativeContextMenu, useSystemTheme } from "@/lib/hooks";
+import { useDisableNativeContextMenu } from "@/lib/hooks";
+import { initTheme } from "@/lib/theme";
 import { tauriUtils } from "../window-utils";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { Constants } from "@/constants";
 import clsx from "clsx";
 import createFetchClient from "openapi-fetch";
 import type { paths } from "@/openapi";
+
+initTheme();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
@@ -28,7 +32,6 @@ const EMOJI_RATINGS = [
 
 function FeedbackWindow() {
   useDisableNativeContextMenu();
-  useSystemTheme();
 
   const [selectedScore, setSelectedScore] = useState<number | null>(null);
   const [feedbackText, setFeedbackText] = useState("");
@@ -87,33 +90,33 @@ function FeedbackWindow() {
   };
 
   return (
-    <div className="h-full min-h-full window-bg text-black dark:text-white flex flex-col">
-      <div
-        data-tauri-drag-region
-        className="h-[32px] min-w-full w-full bg-transparent flex items-center justify-center"
-      />
+    <div className="flex h-screen flex-col overflow-hidden window-bg aurora text-foreground">
+      <div data-tauri-drag-region className="h-[32px] w-full shrink-0" />
 
-      {/* Content */}
-      <div className="flex-1 flex flex-col px-8 pb-6 pt-2">
-        {/* Title */}
-        <h1 className="text-2xl font-semibold text-center mb-6 text-gray-900 dark:text-white">How was your call?</h1>
+      <div className="flex min-h-0 flex-1 flex-col px-7 pb-5">
+        <h1 className="mb-4 text-center text-[22px] leading-7 font-semibold tracking-[-0.02em] text-foreground">
+          How was your call?
+        </h1>
 
-        {/* Emoji Rating */}
-        <div className="flex justify-center gap-6 mb-8">
+        <div className="mb-4 grid grid-cols-5 gap-2" role="radiogroup" aria-label="Rating">
           {EMOJI_RATINGS.map(({ emoji, label, score }) => (
             <button
               key={score}
+              role="radio"
+              aria-checked={selectedScore === score}
               onClick={() => setSelectedScore(score)}
               className={clsx(
-                "flex flex-col items-center gap-1 transition-transform duration-150",
-                selectedScore === score ? "scale-120" : "hover:scale-110",
+                "group flex flex-col items-center gap-1 rounded-xl py-2.5 ring-1 ring-inset transition-[background-color,box-shadow,transform] duration-150 outline-none focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.97]",
+                selectedScore === score ? "bg-accent-soft ring-accent" : (
+                  "bg-surface ring-border hover:ring-border-strong"
+                ),
               )}
             >
               <span
                 className={clsx(
-                  "text-4xl transition-all duration-150 select-none",
-                  selectedScore === score ? "drop-shadow-lg" : (
-                    "grayscale-30 opacity-80 hover:grayscale-0 hover:opacity-100"
+                  "text-[28px] leading-9 transition-[filter,opacity,transform] duration-150 select-none",
+                  selectedScore === score ? "scale-110" : (
+                    "opacity-80 grayscale-30 group-hover:scale-110 group-hover:opacity-100 group-hover:grayscale-0"
                   ),
                 )}
               >
@@ -121,8 +124,8 @@ function FeedbackWindow() {
               </span>
               <span
                 className={clsx(
-                  "text-xs font-medium transition-colors",
-                  selectedScore === score ? "text-gray-900 dark:text-white" : "text-gray-500 dark:text-gray-400",
+                  "text-[11px] leading-4 font-medium transition-colors",
+                  selectedScore === score ? "text-foreground" : "text-muted-foreground",
                 )}
               >
                 {label}
@@ -131,38 +134,25 @@ function FeedbackWindow() {
           ))}
         </div>
 
-        {/* Feedback Text Area */}
-        <div className="mb-6">
-          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Did you face any issue?
-          </label>
-          <Textarea
-            value={feedbackText}
-            onChange={(e) => setFeedbackText(e.target.value)}
-            placeholder="To err is human, to report bugs is divine"
-            className="w-full min-h-[120px] resize-none bg-white dark:bg-[#2a2a2a] border border-gray-200 dark:border-gray-700 rounded-lg p-3 text-sm text-gray-900 dark:text-white placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-          />
-        </div>
+        <label htmlFor="feedback-text" className="mb-1.5 block text-[13px] leading-[18px] font-medium text-foreground">
+          Did you face any issue?
+        </label>
+        <Textarea
+          id="feedback-text"
+          value={feedbackText}
+          onChange={(e) => setFeedbackText(e.target.value)}
+          placeholder="To err is human, to report bugs is divine"
+          className="min-h-0 w-full flex-1 resize-none"
+        />
 
-        <div className="flex flex-row items-center justify-between w-full">
-          {/* Never Show Again Checkbox */}
-          <label className="flex items-center gap-2 cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={neverShowAgain}
-              onChange={(e) => setNeverShowAgain(e.target.checked)}
-              className="w-4 h-4 rounded border-gray-300 dark:border-gray-600 text-blue-600 focus:ring-blue-500 focus:ring-2 cursor-pointer"
-            />
-            <span className="text-sm text-gray-600 dark:text-gray-400">Never show again</span>
+        <div className="mt-4 flex w-full flex-row items-center justify-between">
+          <label className="flex items-center gap-2 select-none">
+            <Checkbox checked={neverShowAgain} onCheckedChange={(checked) => setNeverShowAgain(checked === true)} />
+            <span className="text-xs text-muted-foreground">Never show again</span>
           </label>
 
-          {/* Action Buttons */}
-          <div className="flex justify-end gap-3 mt-auto">
-            <Button
-              variant="ghost"
-              onClick={handleClose}
-              className="px-6 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
-            >
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={handleClose}>
               Close
             </Button>
             <Button
@@ -170,9 +160,8 @@ function FeedbackWindow() {
               onClick={handleSubmit}
               disabled={selectedScore === null || isSubmitting}
               isLoading={isSubmitting}
-              className="px-6"
             >
-              Submit
+              Send
             </Button>
           </div>
         </div>

@@ -28,6 +28,8 @@ import { tauriUtils } from "@/windows/window-utils";
 import { useCallback, useEffect, useRef } from "react";
 import toast from "react-hot-toast";
 import { Button } from "@/components/ui/button";
+import { avatarGradient } from "@/components/ui/hopp-avatar";
+import { EmptyState, PageHeader } from "@/components/ui/page-header";
 import { HiMiniUser } from "react-icons/hi2";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { HiMagnifyingGlass, HiOutlinePencil, HiOutlineTrash } from "react-icons/hi2";
@@ -46,10 +48,13 @@ const fuseSearch = (rooms: Room[], searchQuery: string) => {
   return fuse.search(searchQuery).map((result) => result.item);
 };
 
-// Maximum number of avatars to display before showing +N overflow
-const MAX_VISIBLE_AVATARS = 5;
+// Maximum number of avatars to display before showing +N overflow. More won't fit beside the Live label.
+const MAX_VISIBLE_AVATARS = 3;
 
 const CONNECTING_TOAST_ID = "connecting-to-room";
+
+const presenceTileClass =
+  "flex size-5 shrink-0 items-center justify-center overflow-hidden rounded-[6px] ring-1 ring-inset ring-white/15";
 
 type BaseUser = components["schemas"]["BaseUser"];
 
@@ -69,21 +74,24 @@ const RoomPresenceAvatars = ({
 
   return (
     <TooltipProvider delayDuration={100} skipDelayDuration={50}>
-      <div className="flex flex-row -space-x-0.5 items-center">
+      <div className="flex min-w-0 flex-row items-center gap-0.5">
         {visibleParticipants.map((participantId) => {
           const info = getParticipantInfo(participantId);
           if (info) {
             return (
               <Tooltip key={participantId}>
                 <TooltipTrigger asChild>
-                  <div className="size-5 rounded-md overflow-hidden ring-1 ring-white bg-emerald-200 flex items-center justify-center shrink-0">
+                  <div
+                    className={presenceTileClass}
+                    style={{ background: avatarGradient(info.first_name + info.last_name) }}
+                  >
                     {info.avatar_url ?
                       <img
                         src={info.avatar_url}
                         alt={`${info.first_name} ${info.last_name}`}
                         className="size-full object-cover"
                       />
-                    : <span className="text-[8px] font-medium text-emerald-700">
+                    : <span className="text-[8px] font-semibold text-white">
                         {info.first_name[0]}
                         {info.last_name[0]}
                       </span>
@@ -100,8 +108,8 @@ const RoomPresenceAvatars = ({
           return (
             <Tooltip key={participantId}>
               <TooltipTrigger asChild>
-                <div className="size-5 rounded-md overflow-hidden ring-1 ring-white bg-slate-200 flex items-center justify-center shrink-0">
-                  <HiMiniUser className="size-3 text-slate-500" />
+                <div className={`${presenceTileClass} bg-subtle-strong`}>
+                  <HiMiniUser className="size-3 text-muted-foreground" />
                 </div>
               </TooltipTrigger>
               <TooltipContent side="bottom" className="text-xs">
@@ -113,8 +121,8 @@ const RoomPresenceAvatars = ({
         {overflowCount > 0 && (
           <Tooltip>
             <TooltipTrigger asChild>
-              <div className="size-5 rounded-md overflow-hidden ring-1 ring-white bg-slate-300 flex items-center justify-center shrink-0">
-                <span className="text-[8px] font-medium text-slate-600">+{overflowCount}</span>
+              <div className={`${presenceTileClass} bg-subtle-strong`}>
+                <span className="text-[8px] font-medium text-muted-foreground">+{overflowCount}</span>
               </div>
             </TooltipTrigger>
             <TooltipContent side="bottom" className="text-xs">
@@ -347,63 +355,89 @@ export const Rooms = () => {
   }, [rooms, searchQuery]);
 
   return (
-    <div className="flex flex-col items-start gap-1.5 p-2">
-      <div className="flex flex-col gap-2 w-full">
-        <div className="flex items-center gap-2 w-full">
-          <div className="relative flex-1">
-            <HiMagnifyingGlass className="absolute left-2 top-1/2 transform -translate-y-1/2 text-gray-500 size-4" />
-            <Input
-              type="text"
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search rooms"
-              className="pl-8 w-full focus-visible:ring-opacity-20 focus-visible:ring-2 focus-visible:ring-blue-300"
-            />
-          </div>
+    <div className="flex w-full flex-col">
+      <PageHeader
+        title="Rooms"
+        aside={
           <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
             <DialogTrigger asChild>
-              <Button variant="outline" size="icon">
-                <Plus className="size-4 text-slate-500" />
+              <Button variant="outline" size="sm" className="-my-1 h-7 gap-1 pl-2 pr-2.5">
+                <Plus className="size-3.5" />
+                New
               </Button>
             </DialogTrigger>
-            <DialogContent className="max-w-[80%]" container={document.getElementById("app-body")}>
-              <DialogHeader>
-                <DialogTitle>Create new room</DialogTitle>
-                <DialogDescription>Create a new room for your team to collaborate on.</DialogDescription>
-              </DialogHeader>
-              <div className="grid gap-3">
-                <Label htmlFor="room-name">Room name</Label>
-                <Input id="room-name" name="roomName" placeholder="Watercooler" />
-              </div>
-              <DialogDescription>Anyone in your team can modify or remove this room.</DialogDescription>
-              <DialogFooter>
-                <DialogClose asChild>
-                  <Button
-                    onClick={() => {
-                      const input = document.getElementById("room-name") as HTMLInputElement;
-                      handleCreateRoom(input?.value || "");
-                      setIsCreateDialogOpen(false);
-                    }}
-                    className="text-xs"
-                  >
-                    Create room
-                  </Button>
-                </DialogClose>
-              </DialogFooter>
+            <DialogContent container={document.getElementById("app-body")}>
+              <form
+                className="grid gap-4"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const roomName = new FormData(e.currentTarget).get("roomName") as string;
+                  if (!roomName.trim()) {
+                    toast.error("Provide room name");
+                    return;
+                  }
+                  handleCreateRoom(roomName);
+                  setIsCreateDialogOpen(false);
+                }}
+              >
+                <DialogHeader>
+                  <DialogTitle>New room</DialogTitle>
+                  <DialogDescription>A permanent place for your team to meet.</DialogDescription>
+                </DialogHeader>
+                <div className="grid gap-2">
+                  <Label htmlFor="room-name">Name</Label>
+                  <Input id="room-name" name="roomName" placeholder="Watercooler" />
+                </div>
+                <DialogDescription>Anyone in your team can modify or remove this room.</DialogDescription>
+                <DialogFooter>
+                  <Button type="submit">Create room</Button>
+                </DialogFooter>
+              </form>
             </DialogContent>
           </Dialog>
-        </div>
-        {filteredRooms && filteredRooms.length > 0 ?
-          <div className="grid grid-cols-2 gap-2 w-full">
-            {filteredRooms?.map((room) => {
+        }
+      >
+        {(rooms?.length ?? 0) > 0 && (
+          <div className="relative">
+            <HiMagnifyingGlass className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-faint-foreground" />
+            <Input
+              type="text"
+              aria-label="Search rooms"
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search rooms…"
+              className="pl-8"
+            />
+          </div>
+        )}
+      </PageHeader>
+
+      <div className="px-3.5 pb-3.5 pt-1">
+        {isLoadingRooms ?
+          <div className="grid grid-cols-2 gap-2">
+            {[0, 1, 2, 3].map((placeholder) => (
+              <div key={placeholder} className="h-[78px] animate-pulse rounded-xl bg-subtle" />
+            ))}
+          </div>
+        : !rooms?.length ?
+          <EmptyRoomsState onCreateRoomClick={() => setIsCreateDialogOpen(true)} />
+        : filteredRooms.length === 0 ?
+          <EmptyState
+            icon={<HiMagnifyingGlass className="size-5" />}
+            title="No room by that name"
+            description="Check the spelling, or create a new one."
+          />
+        : <div className="grid grid-cols-2 gap-2">
+            {filteredRooms.map((room, index) => {
               const presenceIds = roomsPresence?.[room.id] ?? [];
               return (
                 <RoomButton
                   key={room.id}
                   onClick={() => handleJoinRoom(room)}
                   disabled={!!callTokens?.isInitialisingCall || isJoiningRoom}
-                  size="unsized"
                   title={room.name}
-                  className="flex-1 min-w-0 text-slate-600"
+                  isCurrentRoom={callTokens?.room?.id === room.id}
+                  className="animate-in fade-in-0 slide-in-from-bottom-1 fill-mode-both duration-300"
+                  style={{ animationDelay: `${Math.min(index, 10) * 22}ms` }}
                   presenceAvatars={
                     presenceIds.length > 0 ?
                       <RoomPresenceAvatars participantIds={presenceIds} getParticipantInfo={getParticipantInfo} />
@@ -411,12 +445,15 @@ export const Rooms = () => {
                   }
                   cornerIcon={
                     <DropdownMenu>
-                      <DropdownMenuTrigger className="hover:outline-solid hover:outline-1 hover:outline-slate-300 focus:ring-0 focus-visible:ring-0 hover:bg-slate-200 size-4 rounded-xs p-0 border-0 shadow-none hover:shadow-xs m-0 flex flex-row justify-center items-center">
-                        <MoreHorizontal className="size-3 m-0" />
+                      <DropdownMenuTrigger
+                        aria-label={`More options for ${room.name}`}
+                        className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors outline-none hover:bg-subtle-strong hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:bg-subtle-strong data-[state=open]:text-foreground"
+                      >
+                        <MoreHorizontal className="size-3.5" />
                       </DropdownMenuTrigger>
-                      <DropdownMenuContent className="muted" align="end">
+                      <DropdownMenuContent align="end">
                         <DropdownMenuItem
-                          className="text-xs [&>svg]:size-3.5"
+                          className="[&>svg]:size-3.5"
                           onClick={() => {
                             setSelectedRoom(room);
                             setIsUpdateDialogOpen(true);
@@ -426,7 +463,7 @@ export const Rooms = () => {
                           Rename room
                         </DropdownMenuItem>
                         <DropdownMenuItem
-                          className="text-xs [&>svg]:size-3.5 text-red-600"
+                          className="text-destructive focus:bg-destructive-soft focus:text-destructive [&>svg]:size-3.5"
                           onClick={() => {
                             setSelectedRoom(room);
                             setIsDeleteDialogOpen(true);
@@ -442,86 +479,77 @@ export const Rooms = () => {
               );
             })}
           </div>
-        : <EmptyRoomsState onCreateRoomClick={() => setIsCreateDialogOpen(true)} isLoadingRooms={isLoadingRooms} />}
-        <Dialog open={isDeleteDialogOpen} onOpenChange={setIsDeleteDialogOpen}>
-          <DialogContent container={document.getElementById("app-body")}>
-            <DialogHeader>
-              <DialogTitle>Delete Room</DialogTitle>
-              <DialogDescription>
-                Are you sure you want to delete this room? This action cannot be undone.
-              </DialogDescription>
-            </DialogHeader>
-            <DialogFooter>
-              <Button
-                variant="destructive"
-                onClick={() => {
-                  // Handle delete logic here
-                  if (selectedRoom) {
-                    handleDeleteRoom(selectedRoom);
-                    setIsDeleteDialogOpen(false);
-                    setSelectedRoom(null);
-                  }
-                }}
-              >
-                Delete
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-        <Dialog open={isUpdateDialogOpen} onOpenChange={setIsUpdateDialogOpen}>
-          <DialogContent container={document.getElementById("app-body")}>
-            <form onSubmit={(e) => selectedRoom && handleUpdateRoom(selectedRoom, e)}>
-              <DialogHeader>
-                <DialogTitle>Rename room</DialogTitle>
-              </DialogHeader>
-              <div className="grid gap-2">
-                <Input
-                  id="room-name"
-                  name="name"
-                  className="text-xs text-slate-500"
-                  defaultValue={selectedRoom?.name}
-                />
-              </div>
-              <DialogDescription className="mt-4 mb-2">
-                Anyone in your team can modify or remove this room.
-              </DialogDescription>
-              <DialogFooter>
-                <DialogClose asChild>
-                  <Button type="submit" className="text-xs">
-                    Update room
-                  </Button>
-                </DialogClose>
-              </DialogFooter>
-            </form>
-          </DialogContent>
-        </Dialog>
+        }
       </div>
+
+      <Dialog open={isDeleteDialogOpen} onOpenChange={setIsDeleteDialogOpen}>
+        <DialogContent container={document.getElementById("app-body")}>
+          <DialogHeader>
+            <DialogTitle>Delete {selectedRoom?.name ?? "room"}?</DialogTitle>
+            <DialogDescription>It's gone for your whole team, and this can't be undone.</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button variant="ghost">Cancel</Button>
+            </DialogClose>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                // Handle delete logic here
+                if (selectedRoom) {
+                  handleDeleteRoom(selectedRoom);
+                  setIsDeleteDialogOpen(false);
+                }
+              }}
+            >
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={isUpdateDialogOpen} onOpenChange={setIsUpdateDialogOpen}>
+        <DialogContent container={document.getElementById("app-body")}>
+          <form className="grid gap-4" onSubmit={(e) => selectedRoom && handleUpdateRoom(selectedRoom, e)}>
+            <DialogHeader>
+              <DialogTitle>Rename room</DialogTitle>
+              <DialogDescription>Anyone in your team can modify or remove this room.</DialogDescription>
+            </DialogHeader>
+            <Input id="room-name" name="name" aria-label="Room name" defaultValue={selectedRoom?.name} />
+            <DialogFooter>
+              <Button type="submit">Save</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
 
-const EmptyRoomsState = ({
-  onCreateRoomClick,
-  isLoadingRooms,
-}: {
-  onCreateRoomClick: () => void;
-  isLoadingRooms: boolean;
-}) => {
+const EmptyRoomsState = ({ onCreateRoomClick }: { onCreateRoomClick: () => void }) => {
   return (
-    <div className="flex flex-col items-center justify-center py-12 px-4 text-center">
-      <img src={doorImage} alt="No rooms" className="size-38 mb-6" />
-      <p className="text-xs text-slate-600 mb-6 max-w-sm leading-relaxed">
-        Think of Rooms as permanent, named meeting spots. They're great for your team's regular get-togethers like daily
-        stand-ups or mob programming sessions.
+    <div className="flex flex-col items-center px-3 pb-6 text-center animate-in fade-in-0 duration-300">
+      <img
+        src={doorImage}
+        alt=""
+        className="mb-3 size-32 drop-shadow-[0_12px_24px_rgb(0_0_0/0.25)]"
+        draggable="false"
+      />
+      <p className="text-[15px] leading-5 font-semibold tracking-[-0.01em] text-foreground">
+        A door that's always open
       </p>
-      <div className="flex flex-col gap-2 items-center">
-        <Button onClick={onCreateRoomClick} className="text-sm" isLoading={isLoadingRooms} disabled={isLoadingRooms}>
-          {isLoadingRooms ? "Loading rooms" : "Create room"}
-        </Button>
-        <a href="https://docs.hopp.so/rooms" target="_blank" className="text-xs text-slate-600">
-          Read docs
-        </a>
-      </div>
+      <p className="mt-1.5 text-xs leading-[18px] text-muted-foreground">
+        Rooms are permanent, named meeting spots for your team's regulars, like daily stand-ups or mob programming.
+      </p>
+      <Button onClick={onCreateRoomClick} size="sm" className="mt-4">
+        Create a room
+      </Button>
+      <a
+        href="https://docs.hopp.so/rooms"
+        target="_blank"
+        className="mt-2.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+      >
+        Read the docs
+      </a>
     </div>
   );
 };

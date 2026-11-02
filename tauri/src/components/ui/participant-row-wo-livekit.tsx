@@ -57,6 +57,7 @@ const TruncatedName = ({ text, className }: { text: string; className?: string }
 export const ParticipantRow = (props: {
   user: components["schemas"]["BaseUser"];
   rooms: components["schemas"]["Room"][];
+  highlighted?: boolean;
 }) => {
   const posthog = usePostHog();
   const inviting = useStore((state) => state.inviting);
@@ -426,8 +427,36 @@ export const ParticipantRow = (props: {
     };
   }, [isInviting, cancelInvite, props.user.first_name, props.user.id, setInviting]);
 
+  const isOnline = props.user.is_active;
+  const actionClass = "h-7 gap-1 rounded-lg px-2.5 text-xs font-semibold transition-all duration-150";
+  // Stays quiet until its row is pointed at, then lights up as the thing that will happen
+  const callActionClass = clsx(
+    actionClass,
+    "bg-subtle text-muted-foreground hover:bg-success hover:text-success-foreground group-hover:enabled:bg-success group-hover:enabled:text-success-foreground",
+    props.highlighted && "enabled:bg-success enabled:text-success-foreground",
+    !isOnline && !props.highlighted && "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
+  );
+  const joinActionClass = clsx(actionClass, "bg-accent-soft text-accent hover:bg-accent hover:text-accent-foreground");
+  const stopActionClass = clsx(
+    actionClass,
+    "bg-destructive-soft text-destructive hover:bg-destructive hover:text-destructive-foreground",
+  );
+
+  // Shows what return in the search box will do
+  const returnKeyHint = props.highlighted && (
+    <span aria-hidden className="text-[10px] font-normal opacity-70 in-disabled:hidden">
+      ↵
+    </span>
+  );
+
   return (
-    <div className="grid grid-cols-[max-content_minmax(0,1fr)_max-content] gap-2 w-full items-center">
+    <div
+      data-row-id={props.user.id}
+      className={clsx(
+        "group grid w-full scroll-mt-[108px] scroll-mb-2 grid-cols-[max-content_minmax(0,1fr)_max-content] items-center gap-2.5 rounded-xl px-2 py-[7px] transition-colors duration-150",
+        props.highlighted ? "bg-subtle-strong" : "hover:bg-subtle",
+      )}
+    >
       <HoppAvatar
         src={props.user.avatar_url || undefined}
         firstName={props.user.first_name}
@@ -440,10 +469,23 @@ export const ParticipantRow = (props: {
         }))}
       />
 
-      <div className="flex flex-col justify-center h-10 overflow-hidden">
-        <TruncatedName text={`${props.user.first_name} ${props.user.last_name}`} className="medium" />
+      <div className="flex flex-col justify-center overflow-hidden">
+        <TruncatedName
+          text={`${props.user.first_name} ${props.user.last_name}`}
+          className={clsx(
+            "text-[13px] leading-[18px] font-medium",
+            isOnline ? "text-foreground" : "text-muted-foreground",
+          )}
+        />
 
-        <div className="muted truncate text-xs text-slate-500">
+        <div
+          className={clsx(
+            "truncate text-xs leading-4",
+            userPresence ? "text-success"
+            : isOnline ? "text-muted-foreground"
+            : "text-faint-foreground",
+          )}
+        >
           {userPresence ?
             userPresence.roomName ?
               `In ${userPresence.roomName}`
@@ -454,30 +496,35 @@ export const ParticipantRow = (props: {
         </div>
       </div>
 
-      <div className="mr-4">
+      <div>
         {userPresence?.roomName && !inACall ?
           <Button
-            variant="gradient-white"
+            variant="ghost"
+            data-row-action
             onClick={joinRoom}
             disabled={!targetRoom || isJoiningRoom.current}
-            className="px-2 w-auto h-7 flex flex-row items-center gap-1 text-slate-600"
+            className={joinActionClass}
           >
             <HiPhoneArrowDownLeft className="size-3" />
             Join
+            {returnKeyHint}
           </Button>
         : userPresence && !userPresence.roomName && !inACall ?
           <Button
-            variant="gradient-white"
+            variant="ghost"
+            data-row-action
             onClick={joinCall}
             disabled={hasIncomingCall}
-            className="px-2 w-auto h-7 flex flex-row items-center gap-1 text-slate-600"
+            className={joinActionClass}
           >
             <HiPhoneArrowDownLeft className="size-3" />
             Join
+            {returnKeyHint}
           </Button>
         : inACall && !userPresence ?
           <Button
-            variant="gradient-white"
+            variant="ghost"
+            data-row-action
             onClick={() => {
               if (isInviting) {
                 cancelInvite();
@@ -486,11 +533,7 @@ export const ParticipantRow = (props: {
               }
             }}
             disabled={hasIncomingCall || !props.user.is_active || (inviting !== null && !isInviting)}
-            className={clsx(
-              "px-2 w-auto h-7 flex flex-row items-center gap-1",
-              !isInviting && "text-slate-600",
-              isInviting && "text-red-500",
-            )}
+            className={isInviting ? stopActionClass : callActionClass}
           >
             {isInviting ?
               <>
@@ -500,11 +543,13 @@ export const ParticipantRow = (props: {
             : <>
                 <HiPhone className="size-3" />
                 Invite
+                {returnKeyHint}
               </>
             }
           </Button>
         : <Button
-            variant="gradient-white"
+            variant="ghost"
+            data-row-action
             onClick={() => {
               if (isCalling) {
                 callResolvedRef.current = true;
@@ -519,11 +564,7 @@ export const ParticipantRow = (props: {
               }
             }}
             disabled={inACall || hasIncomingCall}
-            className={clsx(
-              "px-2 w-auto h-7 flex flex-row items-center gap-1",
-              !isCalling && "text-slate-600",
-              isCalling && "text-red-500",
-            )}
+            className={isCalling ? stopActionClass : callActionClass}
           >
             {isCalling ?
               <>
@@ -533,6 +574,7 @@ export const ParticipantRow = (props: {
             : <>
                 <HiPhone className="size-3" />
                 Call
+                {returnKeyHint}
               </>
             }
           </Button>

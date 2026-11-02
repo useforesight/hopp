@@ -6,31 +6,27 @@ import { CgSpinner } from "react-icons/cg";
 import { cn } from "@/lib/utils";
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-slate-950 disabled:pointer-events-none disabled:opacity-50 dark:focus-visible:ring-slate-300",
+  "inline-flex items-center justify-center whitespace-nowrap rounded-lg text-sm font-medium transition-[background-color,color,border-color,box-shadow,transform,opacity] duration-150 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50",
   {
     variants: {
       variant: {
-        default:
-          "bg-slate-900 text-slate-50 shadow hover:bg-slate-900/90 dark:bg-slate-50 dark:text-slate-900 dark:hover:bg-slate-50/90",
-        destructive:
-          "bg-red-500 text-slate-50 shadow-xs hover:bg-red-500/90 dark:bg-red-900 dark:text-slate-50 dark:hover:bg-red-900/90",
+        default: "bg-primary text-primary-foreground shadow-card hover:bg-primary/90",
+        destructive: "bg-destructive text-destructive-foreground shadow-card hover:bg-destructive/90",
         "destructive-transparent":
-          "bg-red-500 bg-opacity-10 text-red-500 shadow-xs hover:bg-red-500/90 dark:bg-red-900 dark:text-slate-50 dark:hover:bg-red-900/90",
-        outline:
-          "border border-slate-200 bg-white shadow-xs hover:bg-slate-100 hover:text-slate-900 dark:border-slate-800 dark:bg-slate-950 dark:hover:bg-slate-800 dark:hover:text-slate-50",
-        secondary:
-          "bg-slate-100 text-slate-900 shadow-xs hover:bg-slate-100/80 dark:bg-slate-800 dark:text-slate-50 dark:hover:bg-slate-800/80",
-        ghost: "hover:bg-slate-100 hover:text-slate-900 dark:hover:bg-slate-800 dark:hover:text-slate-50",
-        link: "text-slate-900 underline-offset-4 hover:underline dark:text-slate-50",
+          "bg-destructive-soft text-destructive hover:bg-destructive hover:text-destructive-foreground",
+        outline: "border border-border-strong bg-subtle text-foreground hover:bg-subtle-strong",
+        secondary: "bg-subtle-strong text-foreground hover:bg-subtle",
+        ghost: "text-muted-foreground hover:bg-subtle hover:text-foreground",
+        link: "text-foreground underline-offset-4 hover:underline",
         hidden: "hidden",
-        loading: "bg-slate-900 text-slate-50 shadow dark:bg-slate-50 dark:text-slate-900",
+        loading: "bg-primary text-primary-foreground shadow-card",
         "gradient-white":
-          "btn-gradient-white text-black font-semibold text-xs shadow-[0px_2px_10px_rgba(0,0,0,0.07)] rounded-lg px-6 py-1.5 h-[29px] w-[75px] flex items-center justify-center border border-slate-300 border-opacity-50 hover:scale-[1.025] transition-all duration-300",
+          "btn-gradient-white text-foreground font-semibold text-xs rounded-lg px-6 py-1.5 h-[29px] w-[75px] flex items-center justify-center border border-border-strong hover:scale-[1.025] transition-all duration-300",
       },
       size: {
         default: "h-9 px-4 py-2",
-        sm: "h-8 rounded-md px-3 text-xs",
-        lg: "h-10 rounded-md px-8",
+        sm: "h-8 rounded-lg px-3 text-xs",
+        lg: "h-10 rounded-lg px-8",
         icon: "h-9 w-9",
         "icon-sm": "h-7 w-7",
       },
@@ -43,8 +39,7 @@ const buttonVariants = cva(
 );
 
 export interface ButtonProps
-  extends React.ButtonHTMLAttributes<HTMLButtonElement>,
-    VariantProps<typeof buttonVariants> {
+  extends React.ButtonHTMLAttributes<HTMLButtonElement>, VariantProps<typeof buttonVariants> {
   asChild?: boolean;
   isLoading?: boolean;
 }
@@ -54,7 +49,7 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
     const Comp = asChild ? Slot : "button";
     return (
       <Comp className={cn(buttonVariants({ variant, size, className }))} ref={ref} {...props}>
-        {isLoading && <CgSpinner className="animate-spin mr-2 size-3 text-white" />}
+        {isLoading && <CgSpinner className="animate-spin mr-2 size-3 text-current" />}
         {props.children}
       </Comp>
     );

@@ -5,8 +5,11 @@ import ReactDOM from "react-dom/client";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { toast, Toaster } from "react-hot-toast";
 import { Button } from "@/components/ui/button";
-import { useDisableNativeContextMenu, useSystemTheme } from "@/lib/hooks";
+import { useDisableNativeContextMenu } from "@/lib/hooks";
+import { initTheme, toastStyle } from "@/lib/theme";
 import { tauriUtils } from "../window-utils";
+import logo from "@/assets/Hopp.png";
+import clsx from "clsx";
 import {
   PiMicrophoneDuotone,
   PiMouseDuotone,
@@ -14,6 +17,8 @@ import {
   PiCheckCircleDuotone,
   PiCameraDuotone,
 } from "react-icons/pi";
+
+initTheme();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
@@ -30,7 +35,6 @@ interface PermissionStatus {
 
 function Window() {
   useDisableNativeContextMenu();
-  useSystemTheme();
   const [permissions, setPermissions] = useState<PermissionStatus>({
     mic: false,
     screenShare: false,
@@ -168,28 +172,30 @@ function Window() {
 
   const getPermissionTitle = (permission: keyof PermissionStatus) => {
     const titles = {
-      mic: "Microphone Access",
-      camera: "Camera Access",
-      screenShare: "Screen Sharing Access",
-      accessibility: "Remote Control Access",
+      mic: "Microphone access",
+      camera: "Camera access",
+      screenShare: "Screen sharing access",
+      accessibility: "Remote control access",
     };
     return titles[permission];
   };
 
   const getPermissionDescription = (permission: keyof PermissionStatus) => {
     const descriptions = {
-      mic: "Allow access to your microphone for your teammates to hear you. If for any reason the system settings open automatically, please go to Privacy & Security, Microphone and allow Hopp to access your microphone.",
+      mic: "So your teammates can hear you. If System Settings opens, go to Privacy & Security, Microphone and allow Hopp.",
       camera:
-        "Allow access to your camera for your teammates to see you. If for any reason the system settings open automatically, please go to Privacy & Security, Camera and allow Hopp to access your camera. If you don't have a camera, you can ignore this permission.",
+        "So your teammates can see you. If System Settings opens, go to Privacy & Security, Camera and allow Hopp. No camera? You can ignore this one.",
       screenShare:
-        "Allow screen sharing. If for any reason the system settings open automatically, please go to Privacy & Security, Screen & System Audio Recording and allow Hopp to share your screen.",
+        "So you can share your screen. If System Settings opens, go to Privacy & Security, Screen & System Audio Recording and allow Hopp.",
       accessibility:
-        "Allow remote control for a seamless remote pair programming experience. If for any reason the system settings open automatically, please go to Privacy & Security, Accessibility and allow Hopp to control your computer.",
+        "For seamless remote pairing. If System Settings opens, go to Privacy & Security, Accessibility and allow Hopp to control your computer.",
     };
     return descriptions[permission];
   };
 
   const allPermissionsGranted = Object.values(permissions).every(Boolean);
+  const grantedCount = Object.values(permissions).filter(Boolean).length;
+  const permissionCount = Object.values(permissions).length;
 
   // Close window when all permissions are granted (with delay)
   useEffect(() => {
@@ -208,71 +214,92 @@ function Window() {
   }, [allPermissionsGranted]);
 
   return (
-    <div className="h-full overflow-hidden text-black dark:text-white rounded-[12px] flex flex-col" tabIndex={0}>
-      <Toaster position="top-center" />
-      <div
-        data-tauri-drag-region
-        className="title-panel h-[28px] top-0 left-0 titlebar w-full bg-black/5 dark:bg-white/5 flex flex-row justify-end pr-4 shrink-0"
-      ></div>
+    <div
+      className="aurora flex h-full flex-col overflow-hidden rounded-[12px] text-foreground outline-none"
+      tabIndex={0}
+    >
+      <Toaster position="top-center" toastOptions={{ style: toastStyle }} />
+      <div data-tauri-drag-region className="title-panel titlebar h-[28px] w-full shrink-0" />
 
-      <div className="flex flex-col items-start gap-4 px-4 py-6 mt-2 shrink-0">
-        <div className="w-full">
-          <h1 className="h3 text-slate-900 dark:text-slate-100">Grant permissions</h1>
-          <p className="text-slate-600 dark:text-slate-400 text-sm leading-relaxed">
-            We need the following permissions to have been granted for Hopp to work properly. You can change these
-            settings later in your system preferences.
-          </p>
+      <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-8 pb-8 pt-4">
+        <div className="flex items-center gap-4">
+          <img
+            src={logo}
+            alt=""
+            draggable="false"
+            className="size-14 shrink-0 drop-shadow-[0_8px_16px_rgb(0_0_0/0.3)]"
+          />
+          <div className="min-w-0 flex-1">
+            <h1 className="text-[26px] leading-8 font-semibold tracking-[-0.025em] text-foreground">
+              Grant permissions
+            </h1>
+            <p className="mt-0.5 text-[13px] leading-5 text-muted-foreground">
+              Hopp needs these to work properly. You can change them later in System Settings.
+            </p>
+          </div>
         </div>
 
-        {allPermissionsGranted && (
-          <div className="w-full p-3 bg-green-100 dark:bg-green-900/30 border border-green-300 dark:border-green-700 rounded-md">
-            <div className="flex items-center gap-2 text-green-700 dark:text-green-400 text-sm font-medium">
-              <PiCheckCircleDuotone className="size-4" />
-              All permissions granted! You can now use all features of Hopp.
-            </div>
+        <div className="flex items-center gap-3">
+          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-subtle-strong">
+            <div
+              className="h-full rounded-full bg-success transition-[width] duration-500 ease-out"
+              style={{ width: `${(grantedCount / permissionCount) * 100}%` }}
+            />
           </div>
-        )}
-      </div>
+          <span className="text-xs text-muted-foreground tabular-nums">
+            {allPermissionsGranted ? "All set" : `${grantedCount} of ${permissionCount}`}
+          </span>
+        </div>
 
-      <div className="content px-4 pb-4 overflow-y-auto overflow-x-clip flex-1 min-h-0 flex flex-col gap-4">
-        {(["mic", "camera", "accessibility", "screenShare"] as Array<keyof PermissionStatus>).map((permission) => (
-          <div
-            key={permission}
-            className="flex items-center justify-between group p-4 rounded-md transition-all duration-300 hover:bg-slate-200 dark:hover:bg-slate-800 border border-slate-300 dark:border-slate-700"
-          >
-            <div className="flex items-center gap-4 flex-1">
-              <div className="w-12 h-12 rounded-full bg-slate-200 dark:bg-slate-700 flex items-center justify-center text-2xl">
-                {getPermissionIcon(permission)}
+        <div className="grid flex-1 grid-cols-2 gap-3">
+          {(["mic", "camera", "accessibility", "screenShare"] as Array<keyof PermissionStatus>).map((permission) => (
+            <div
+              key={permission}
+              className={clsx(
+                "flex flex-col gap-3 rounded-2xl p-5 shadow-card ring-1 ring-inset transition-[background-color,box-shadow] duration-300",
+                permissions[permission] ? "bg-success-soft ring-success/25" : "bg-surface ring-border",
+              )}
+            >
+              <div className="flex items-center justify-between">
+                <div
+                  className={clsx(
+                    "flex size-11 items-center justify-center rounded-[13px] transition-colors duration-300",
+                    permissions[permission] ? "bg-success-soft text-success" : "bg-accent-soft text-accent",
+                  )}
+                >
+                  {getPermissionIcon(permission)}
+                </div>
+                {permissions[permission] && (
+                  <div className="flex flex-row items-center gap-1 text-[13px] font-medium text-success animate-in fade-in-0 zoom-in-95 duration-300">
+                    <PiCheckCircleDuotone className="size-4" />
+                    <span>Granted</span>
+                  </div>
+                )}
               </div>
 
               <div className="flex-1">
-                <h4 className="h4 font-semibold text-slate-900 dark:text-slate-100 mb-1">
+                <h2 className="border-none pb-0 text-[15px] leading-5 font-semibold tracking-[-0.01em] text-foreground">
                   {getPermissionTitle(permission)}
-                </h4>
-                <p className="text-sm mt-0 text-slate-600 dark:text-slate-400 leading-relaxed">
+                </h2>
+                <p className="mt-1 text-[13px] leading-[19px] text-muted-foreground">
                   {getPermissionDescription(permission)}
                 </p>
               </div>
-            </div>
-            <div className="ml-4">
-              {permissions[permission] ?
-                <div className="flex flex-row items-center gap-1 text-green-600 dark:text-green-400 font-medium text-md">
-                  <PiCheckCircleDuotone className="size-4" />
-                  <span>Granted</span>
-                </div>
-              : <Button
+
+              {!permissions[permission] && (
+                <Button
                   onClick={() => handlePermissionRequest(permission)}
                   disabled={loading === permission}
+                  isLoading={loading === permission}
                   variant="default"
-                  size="sm"
-                  className="transition-all duration-300"
+                  className="w-full"
                 >
-                  {loading === permission ? "Waiting for permission..." : "Request Permission"}
+                  {loading === permission ? "Waiting for permission…" : "Grant access"}
                 </Button>
-              }
+              )}
             </div>
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
     </div>
   );

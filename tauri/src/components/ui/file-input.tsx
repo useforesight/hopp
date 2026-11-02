@@ -82,8 +82,8 @@ const FileInput = React.forwardRef<HTMLInputElement, FileInputProps>(
     return (
       <div
         className={cn(
-          "w-full py-4 bg-slate-50 rounded-xl border-2 border-dashed border-slate-200 transition-colors duration-200",
-          dragActive && "border-slate-400 bg-slate-100",
+          "w-full py-4 bg-subtle rounded-xl border-2 border-dashed border-border transition-colors duration-200",
+          dragActive && "border-border-strong bg-subtle",
           className,
         )}
         onDragEnter={handleDrag}
@@ -92,13 +92,13 @@ const FileInput = React.forwardRef<HTMLInputElement, FileInputProps>(
         onDrop={handleDrop}
       >
         <div className="grid gap-1">
-          <FcAddImage className="mx-auto text-3xl text-slate-500" />
-          <h3 className="text-center text-slate-500 text-xs">
+          <FcAddImage className="mx-auto text-3xl text-muted-foreground" />
+          <h3 className="text-center text-muted-foreground text-xs">
             {acceptedFileTypes || "PNG, JPG or PDF"}, smaller than {maxSize}MB
           </h3>
         </div>
         <div className="grid gap-2 mt-2">
-          <h4 className="text-center text-slate-900 text-sm font-medium">
+          <h4 className="text-center text-foreground text-sm font-medium">
             {selectedFile ? selectedFile.name : "Drag and Drop your file here or"}
           </h4>
           <div className="flex items-center justify-center">

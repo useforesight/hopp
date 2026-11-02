@@ -489,7 +489,7 @@ export const LiveWaveform = ({
       {...props}
     >
       {!active && !processing && (
-        <div className="border-slate-500/20 absolute top-1/2 right-0 left-0 -translate-y-1/2 border-t-2 border-dotted dark:border-slate-400/20" />
+        <div className="border-border-strong/20 absolute top-1/2 right-0 left-0 -translate-y-1/2 border-t-2 border-dotted" />
       )}
       <canvas className="block h-full w-full" ref={canvasRef} aria-hidden="true" />
     </div>

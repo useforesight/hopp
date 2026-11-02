@@ -6,10 +6,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Hopp - Remote pairing app</title>
     <script>
-      // Initialize theme before page renders to prevent flash
+      // Apply the saved theme before the first paint so the window doesn't flash
       (function () {
+        const saved = localStorage.getItem("hopp-theme");
         const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-        document.documentElement.classList.toggle("dark", prefersDark);
+        document.documentElement.classList.toggle("dark", saved === "dark" || (saved !== "light" && prefersDark));
       })();
     </script>
   </head>

@@ -8,6 +8,7 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { toast } from "react-hot-toast";
 import { readTextFile } from "@tauri-apps/plugin-fs";
 import { Clipboard } from "lucide-react";
+import { PageHeader } from "@/components/ui/page-header";
 import failGif from "@/assets/fail.gif";
 
 const OWNER = "gethopp";
@@ -86,30 +87,39 @@ export function Report() {
   };
 
   return (
-    <div className="flex flex-col p-6 max-w-2xl mx-auto">
-      <h1 className="text-2xl font-semibold mb-2">Report an Issue</h1>
-      <div className="mt-2 mb-4 flex justify-center">
-        <img src={failGif} alt="Funny fail GIF" className="max-w-full h-auto rounded-lg" />
-      </div>
-      <p className="text-sm text-muted-foreground mb-4">
-        This opens a GitHub bug report form in your browser. Use the clipboard icon to copy logs.
-      </p>
-
-      <div className="flex w-full items-center space-x-2">
-        <Button onClick={handleOpenTemplate} className="w-full" disabled={isSubmitting}>
-          {isSubmitting ? "Opening GitHub…" : "Open Bug Report Form"}
-        </Button>
-        <Button className="shrink-0" onClick={handleCopyLogs} variant="outline" size="icon" disabled={isCopying}>
-          <Clipboard className="size-4" />
-        </Button>
-      </div>
-
-      <div className="mt-4 text-xs text-muted-foreground">
-        Learn more in the official project{" "}
-        <a href="https://docs.gethopp.app/" target="_blank" rel="noreferrer" className="underline hover-no-underline">
-          documentation
-        </a>
-        .
+    <div className="flex w-full flex-col">
+      <PageHeader title="Report an issue" />
+      <div className="flex flex-col gap-3.5 px-3.5 pb-4 pt-1">
+        <img
+          src={failGif}
+          alt=""
+          className="h-[176px] w-full rounded-xl object-cover ring-1 ring-border"
+          draggable="false"
+        />
+        <p className="text-[13px] leading-5 text-muted-foreground">
+          This opens a GitHub bug report form in your browser. Copy your logs first so you can paste them in.
+        </p>
+        <div className="flex w-full items-center gap-2">
+          <Button onClick={handleOpenTemplate} className="min-w-0 flex-1" disabled={isSubmitting}>
+            {isSubmitting ? "Opening GitHub…" : "Open bug report"}
+          </Button>
+          <Button className="shrink-0 gap-1.5" onClick={handleCopyLogs} variant="outline" disabled={isCopying}>
+            <Clipboard className="size-3.5" />
+            Copy logs
+          </Button>
+        </div>
+        <p className="text-xs leading-[18px] text-faint-foreground">
+          Learn more in the{" "}
+          <a
+            href="https://docs.gethopp.app/"
+            target="_blank"
+            rel="noreferrer"
+            className="text-muted-foreground underline underline-offset-2 transition-colors hover:text-foreground"
+          >
+            documentation
+          </a>
+          .
+        </p>
       </div>
     </div>
   );

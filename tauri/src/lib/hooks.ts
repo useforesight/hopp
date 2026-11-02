@@ -14,41 +14,6 @@ const appWindow = getCurrentWebviewWindow();
 const CALL_END_TIMEOUT_MS = 5_000;
 
 /**
- * Hook to detect and listen for system theme changes (light/dark mode).
- * Updates the document's root element with the 'dark' class based on system preference.
- * @returns The current theme ('light' or 'dark')
- */
-export const useSystemTheme = () => {
-  const [theme, setTheme] = useState<"light" | "dark">(() => {
-    // Initialize with current system preference
-    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-  });
-
-  useEffect(() => {
-    const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
-
-    // Update theme and document class
-    const updateTheme = (e: MediaQueryListEvent | MediaQueryList) => {
-      const isDark = e.matches;
-      setTheme(isDark ? "dark" : "light");
-      document.documentElement.classList.toggle("dark", isDark);
-    };
-
-    // Set initial state
-    updateTheme(mediaQuery);
-
-    // Listen for changes
-    mediaQuery.addEventListener("change", updateTheme);
-
-    return () => {
-      mediaQuery.removeEventListener("change", updateTheme);
-    };
-  }, []);
-
-  return theme;
-};
-
-/**
  * This is a hack to prevent the context menu from being shown
  * when the user right clicks on the screen.
  * @see: https://github.com/tauri-apps/tauri/discussions/3844#discussioncomment-8578187

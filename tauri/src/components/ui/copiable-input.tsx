@@ -30,7 +30,9 @@ const CopiableInput = React.forwardRef<HTMLInputElement, CopiableInputProps>(
         <Input ref={ref} className={cn("pr-10", className)} {...props} />
         <div className="absolute right-0 top-0 h-full flex flex-row justify-center items-center gap-2 w-10">
           <Button variant="ghost" size="icon-sm" onClick={handleCopy} disabled={isCopied} {...buttonProps}>
-            {isCopied ? <HiCheck className="text-green-500" /> : <HiOutlineClipboard />}
+            {isCopied ?
+              <HiCheck className="text-success" />
+            : <HiOutlineClipboard />}
           </Button>
         </div>
       </div>
