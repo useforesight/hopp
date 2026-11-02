@@ -168,8 +168,8 @@ fn stop_sound(app: tauri::AppHandle, sound_name: String) {
 #[tauri::command(async)]
 fn reset_core_process(app: tauri::AppHandle) {
     let data = app.state::<Mutex<AppData>>();
-    let data = data.lock().unwrap();
-    if let Err(e) = data.sender.send(Message::CallEnd) {
+    let mut data = data.lock().unwrap();
+    if let Err(e) = data.send_call_end() {
         log::error!("reset_core_process: failed to send message: {e:?}");
     }
 }
@@ -435,9 +435,10 @@ fn set_drawing_enabled(app: tauri::AppHandle, enabled: bool, permanent: bool) {
 #[tauri::command(async)]
 fn quit_app(app: tauri::AppHandle) {
     log::info!("quit_app");
+    hopp::mark_core_shutdown_requested();
     let data = app.state::<Mutex<AppData>>();
-    let data = data.lock().unwrap();
-    if let Err(e) = data.sender.send(Message::CallEnd) {
+    let mut data = data.lock().unwrap();
+    if let Err(e) = data.send_call_end() {
         log::error!("quit_app: failed to send CallEnd: {e:?}");
     }
     drop(data);
@@ -496,6 +497,9 @@ fn call_started(
     app: tauri::AppHandle,
     audio_token: String,
     video_token: String,
+    // Set when rejoining after a core restart, to keep what the user had on or off.
+    mic_on: Option<bool>,
+    camera_on: Option<bool>,
 ) -> Result<(), String> {
     log::info!("call_started");
     let data = app.state::<Mutex<AppData>>();
@@ -549,14 +553,16 @@ fn call_started(
         }
     };
     log::info!("call_started: resolved audio_device_name={audio_device_name:?}");
+    // A CallEnded still on its way from the previous call must not end this one.
+    data.stale_call_ended_events = data.pending_call_end_acks;
     if let Err(e) = data
         .sender
         .send(Message::CallStart(socket_lib::CallStartMessage {
             audio_token: audio_token.clone(),
             video_token: video_token.clone(),
             audio_device_name,
-            start_mic_on_call: Some(user_settings.start_mic_on_call),
-            start_camera_on_call: Some(user_settings.start_camera_on_call),
+            start_mic_on_call: Some(mic_on.unwrap_or(user_settings.start_mic_on_call)),
+            start_camera_on_call: Some(camera_on.unwrap_or(user_settings.start_camera_on_call)),
         }))
     {
         log::error!("call_started: failed to send: {e:?}");
@@ -569,6 +575,11 @@ fn call_started(
         Ok(result) => result,
         Err(e) => {
             log::error!("call_started: recv failed: {e:?}");
+            // Core may still be joining. The UI is about to report a failure, so stop it
+            // from ending up in a call nobody can see, with a live mic.
+            if let Err(e) = data.send_call_end() {
+                log::error!("call_started: failed to send CallEnd: {e:?}");
+            }
             Err("Failed to receive message from hopp_core".to_string())
         }
     };
@@ -576,6 +587,8 @@ fn call_started(
         data.call_active = true;
         data.is_camera_on = false;
         data.is_screensharing = false;
+        // A core that died mid-call never reported CallEnded, so these may still be set.
+        shortcuts::unregister_call_shortcuts(&app);
         shortcuts::register_call_shortcuts(&app, resolved_call_shortcuts(&data.app_state));
     }
     result
@@ -685,6 +698,16 @@ fn resolved_call_shortcuts(app_state: &hopp::app_state::AppState) -> shortcuts::
 }
 
 #[tauri::command(async)]
+fn show_call_alert_window(app: tauri::AppHandle) -> Result<(), String> {
+    hopp::call_alert::show(&app)
+}
+
+#[tauri::command(async)]
+fn close_call_alert_window(app: tauri::AppHandle) {
+    hopp::call_alert::hide(&app);
+}
+
+#[tauri::command(async)]
 fn get_user_settings(app: tauri::AppHandle) -> UserSettings {
     log::info!("get_user_settings");
     let data = app.state::<Mutex<AppData>>();
@@ -723,9 +746,9 @@ fn set_shortcut_toggle_mic(app: tauri::AppHandle, accel: String) {
     log::info!("set_shortcut_toggle_mic: {accel}");
     let data = app.state::<Mutex<AppData>>();
     let mut data = data.lock().unwrap();
-    let value = if accel.is_empty() { None } else { Some(accel) };
+    // An empty accelerator means disabled. None would bring the default back.
     data.app_state
-        .update_user_setting(|s| s.shortcut_toggle_mic = value);
+        .update_user_setting(|s| s.shortcut_toggle_mic = Some(accel));
     if data.call_active {
         shortcuts::unregister_call_shortcuts(&app);
         shortcuts::register_call_shortcuts(&app, resolved_call_shortcuts(&data.app_state));
@@ -737,9 +760,9 @@ fn set_shortcut_toggle_camera(app: tauri::AppHandle, accel: String) {
     log::info!("set_shortcut_toggle_camera: {accel}");
     let data = app.state::<Mutex<AppData>>();
     let mut data = data.lock().unwrap();
-    let value = if accel.is_empty() { None } else { Some(accel) };
+    // An empty accelerator means disabled. None would bring the default back.
     data.app_state
-        .update_user_setting(|s| s.shortcut_toggle_camera = value);
+        .update_user_setting(|s| s.shortcut_toggle_camera = Some(accel));
     if data.call_active {
         shortcuts::unregister_call_shortcuts(&app);
         shortcuts::register_call_shortcuts(&app, resolved_call_shortcuts(&data.app_state));
@@ -751,9 +774,9 @@ fn set_shortcut_toggle_screenshare(app: tauri::AppHandle, accel: String) {
     log::info!("set_shortcut_toggle_screenshare: {accel}");
     let data = app.state::<Mutex<AppData>>();
     let mut data = data.lock().unwrap();
-    let value = if accel.is_empty() { None } else { Some(accel) };
+    // An empty accelerator means disabled. None would bring the default back.
     data.app_state
-        .update_user_setting(|s| s.shortcut_toggle_screenshare = value);
+        .update_user_setting(|s| s.shortcut_toggle_screenshare = Some(accel));
     if data.call_active {
         shortcuts::unregister_call_shortcuts(&app);
         shortcuts::register_call_shortcuts(&app, resolved_call_shortcuts(&data.app_state));
@@ -765,9 +788,9 @@ fn set_shortcut_end_call(app: tauri::AppHandle, accel: String) {
     log::info!("set_shortcut_end_call: {accel}");
     let data = app.state::<Mutex<AppData>>();
     let mut data = data.lock().unwrap();
-    let value = if accel.is_empty() { None } else { Some(accel) };
+    // An empty accelerator means disabled. None would bring the default back.
     data.app_state
-        .update_user_setting(|s| s.shortcut_end_call = value);
+        .update_user_setting(|s| s.shortcut_end_call = Some(accel));
     if data.call_active {
         shortcuts::unregister_call_shortcuts(&app);
         shortcuts::register_call_shortcuts(&app, resolved_call_shortcuts(&data.app_state));
@@ -1073,7 +1096,7 @@ fn end_call(app: tauri::AppHandle) {
     let state = app.state::<Mutex<AppData>>();
     #[allow(unused_mut)]
     let mut data = state.lock().unwrap();
-    if let Err(e) = data.sender.send(Message::CallEnd) {
+    if let Err(e) = data.send_call_end() {
         log::error!("end_call: failed to send: {e:?}");
     }
     data.call_active = false;
@@ -1141,6 +1164,12 @@ fn forward_core_events(events_rx: std_mpsc::Receiver<Message>, app: tauri::AppHa
                 log::info!("forward_core_events: call ended");
                 let data = app.state::<Mutex<AppData>>();
                 let mut data = data.lock().unwrap();
+                data.pending_call_end_acks = data.pending_call_end_acks.saturating_sub(1);
+                if data.stale_call_ended_events > 0 {
+                    data.stale_call_ended_events -= 1;
+                    log::info!("forward_core_events: ignoring CallEnded from a previous call");
+                    continue;
+                }
                 data.call_active = false;
                 data.is_camera_on = false;
                 data.is_screensharing = false;
@@ -1228,6 +1257,18 @@ fn forward_core_events(events_rx: std_mpsc::Receiver<Message>, app: tauri::AppHa
                     log::error!("forward_core_events: failed to emit mic audio level: {e:?}");
                 }
             }
+            Message::MicrophoneSilent(device_name) => {
+                log::error!("forward_core_events: no sound from mic: {device_name}");
+                if let Err(e) = app.emit("core_microphone_silent", &device_name) {
+                    log::error!("forward_core_events: failed to emit microphone silent: {e:?}");
+                }
+            }
+            Message::MicrophoneRecovered => {
+                log::info!("forward_core_events: mic is producing sound again");
+                if let Err(e) = app.emit("core_microphone_recovered", &()) {
+                    log::error!("forward_core_events: failed to emit microphone recovered: {e:?}");
+                }
+            }
             Message::StartScreenShareResult(Err(error)) => {
                 log::error!("forward_core_events: screen share failed: {error}");
                 if let Err(e) = app.emit("core_screenshare_failed", &error) {
@@ -1253,9 +1294,10 @@ fn forward_core_events(events_rx: std_mpsc::Receiver<Message>, app: tauri::AppHa
             }
             Message::ExitRequested => {
                 log::info!("forward_core_events: exit requested from core");
+                hopp::mark_core_shutdown_requested();
                 let data = app.state::<Mutex<AppData>>();
-                let data = data.lock().unwrap();
-                if let Err(e) = data.sender.send(Message::CallEnd) {
+                let mut data = data.lock().unwrap();
+                if let Err(e) = data.send_call_end() {
                     log::error!("forward_core_events: failed to send CallEnd: {e:?}");
                 }
                 drop(data);
@@ -1385,49 +1427,14 @@ fn main() {
             let core_events_rx = event_socket.take_events();
 
             let app_state = AppState::new(&app_data_dir);
-            let noise_cancellation_enabled = app_state.user_settings().noise_cancellation_enabled;
-            if let Err(e) = sender.send(Message::SetNoiseCancellation(noise_cancellation_enabled)) {
-                log::error!("Failed to send initial noise_cancellation_enabled: {e:?}");
-            }
-            let screen_share_resolution = app_state.user_settings().screen_share_resolution;
-            if let Err(e) = sender.send(Message::SetScreenShareResolution(screen_share_resolution)) {
-                log::error!("Failed to send initial screen_share_resolution: {e:?}");
-            }
-            let screen_share_picker_mode = app_state.user_settings().screen_share_picker_mode;
-            if let Err(e) = sender.send(Message::SetScreenSharePickerMode(screen_share_picker_mode)) {
-                log::error!("Failed to send initial screen_share_picker_mode: {e:?}");
-            }
-            let app_veil_bundle_ids = app_state
-                .user_settings()
-                .app_veil_applications
-                .into_iter()
-                .filter(|application| application.enabled)
-                .map(|application| application.bundle_id)
-                .collect();
-            if let Err(e) = sender.send(Message::SetAppVeilBundleIds(app_veil_bundle_ids)) {
-                log::error!("Failed to send initial App Veil settings: {e:?}");
-            }
-            if let Err(e) = sender.send(Message::ControllerDrawPersistChanged(app_state.controller_draw_persist())) {
-                log::error!("Failed to send initial controller_draw_persist: {e:?}");
-            }
-            if let Some(mode) = app_state.last_mode() {
-                if let Err(e) = sender.send(Message::LastModeChanged(mode)) {
-                    log::error!("Failed to send initial last_mode: {e:?}");
-                }
-            }
-            {
-                let telemetry_enabled = app_state.user_settings().telemetry_enabled;
-                sentry_utils::set_telemetry_enabled(telemetry_enabled);
-                if let Err(e) = sender.send(Message::SetTelemetryEnabled(telemetry_enabled)) {
-                    log::error!("Failed to send initial telemetry_enabled: {e:?}");
-                }
-            }
+            hopp::send_initial_core_settings(&sender, &app_state);
             let data = Mutex::new(AppData::new(
                 sender,
                 event_socket,
                 deactivate_hiding_clone,
                 app_state,
                 suppress_hide_on_call_end.clone(),
+                forward_core_events,
             ));
             app.manage(data);
 
@@ -1457,6 +1464,13 @@ fn main() {
                 let dir = dir.unwrap();
                 let log_file = dir.join("hopp.log");
                 if log_file.exists() {
+                    let unix_seconds = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|elapsed| elapsed.as_secs())
+                        .unwrap_or_default();
+                    if let Err(e) = hopp::archive_log_file(&log_file, unix_seconds) {
+                        log::warn!("Failed to keep previous log file: {e:?}");
+                    }
                     if let Err(e) = std::fs::write(&log_file, "") {
                         log::warn!("Failed to clear log file: {e:?}");
                     }
@@ -1712,6 +1726,8 @@ fn main() {
             set_hopp_server_url,
             create_feedback_window,
             create_settings_window,
+            show_call_alert_window,
+            close_call_alert_window,
             get_user_settings,
             list_installed_applications,
             set_app_veil_applications,
@@ -1754,6 +1770,7 @@ fn main() {
     app.run(move |app_handle, event| match event {
         tauri::RunEvent::ExitRequested { .. } => {
             log::info!("Exit requested");
+            hopp::mark_core_shutdown_requested();
             sentry_utils::upload_logs_event("Tauri app quit".to_string());
             sentry_utils::flush(std::time::Duration::from_secs(2));
         }

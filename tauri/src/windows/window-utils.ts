@@ -186,8 +186,13 @@ const setSentryMetadata = async (userId: string) => {
   return await invoke("set_sentry_metadata", { userId, appVersion });
 };
 
-const callStarted = async (audioToken: string, videoToken: string) => {
-  return await invoke("call_started", { audioToken, videoToken });
+const callStarted = async (
+  audioToken: string,
+  videoToken: string,
+  // Overrides the user's call start preferences, to keep their state when rejoining.
+  media?: { micOn: boolean; cameraOn: boolean },
+) => {
+  return await invoke("call_started", { audioToken, videoToken, ...media });
 };
 
 /**

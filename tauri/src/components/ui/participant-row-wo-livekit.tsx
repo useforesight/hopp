@@ -15,6 +15,7 @@ import { tauriUtils } from "@/windows/window-utils";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useAPI } from "@/services/query";
 import { endCallAndWait, useEndCall, useJoinCall } from "@/lib/hooks";
+import { abandonCall } from "@/lib/call-recovery";
 
 const TruncatedName = ({ text, className }: { text: string; className?: string }) => {
   const textRef = useRef<HTMLDivElement>(null);
@@ -210,6 +211,14 @@ export const ParticipantRow = (props: {
     } as TCallRequestMessage);
   }, [props.user, hasIncomingCall]);
 
+  // "Call back" on a missed call card
+  const callbackUserId = useStore((state) => state.callbackUserId);
+  useEffect(() => {
+    if (callbackUserId !== props.user.id) return;
+    useStore.getState().setCallbackUserId(null);
+    if (!inACall) callUser();
+  }, [callbackUserId, props.user.id, inACall, callUser]);
+
   const inviteUser = useCallback(() => {
     posthog.capture("user_invite_request", {
       user_id: props.user.id,
@@ -302,8 +311,9 @@ export const ParticipantRow = (props: {
           });
           try {
             await tauriUtils.callStarted(data.payload.audioToken, data.payload.videoToken);
-          } catch {
-            setCallTokens(null);
+          } catch (error) {
+            console.error("Failed to start call:", error);
+            abandonCall(data.payload.participant, "Couldn't start the call", "Try calling again.");
           }
           break;
         }

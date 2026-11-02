@@ -1,6 +1,4 @@
 import { useEffect, useRef } from "react";
-import { differenceInSeconds, fromUnixTime } from "date-fns";
-import { Button } from "@/components/ui/button";
 import { onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import useStore from "../../store/store";
 import { tauriUtils } from "@/windows/window-utils.ts";
@@ -14,25 +12,19 @@ import { isTauri } from "@tauri-apps/api/core";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { HiOutlineExclamationCircle } from "react-icons/hi2";
 import toast from "react-hot-toast";
-import { CallBanner } from "@/components/ui/call-banner";
-import { InviteBanner } from "@/components/ui/invite-banner";
 import { socketService } from "@/services/socket";
-import {
-  TRejectCallMessage,
-  TIncomingCallMessage,
-  TIncomingInviteMessage,
-  TWebSocketMessage,
-  TPresenceAckMessage,
-} from "@/payloads";
+import { TWebSocketMessage, TPresenceAckMessage } from "@/payloads";
 import { Participants } from "@/components/ui/participants";
 import { CallCenter } from "@/components/ui/call-center";
 import { listen } from "@tauri-apps/api/event";
 import Invite from "./invite";
-import { sounds } from "@/constants/sounds";
-import { useDisableNativeContextMenu } from "@/lib/hooks";
+import { useDisableNativeContextMenu, useJoinCall } from "@/lib/hooks";
 import { processDeepLinkUrl } from "@/lib/deepLinkUtils";
 import { Rooms } from "./tabs/Rooms";
 import { pollUpdates } from "@/lib/auto-update";
+import { setupCallAlertBridge } from "@/lib/call-alert";
+import { setupCallRecoveryListeners } from "@/lib/call-recovery";
+import { setJoinCallHandler, setupIncomingCallHandling } from "@/lib/incoming-call";
 
 function App() {
   const {
@@ -53,7 +45,6 @@ function App() {
     setCallsPresence,
   } = useStore();
 
-  const coreProcessCrashedRef = useRef(false);
   useDisableNativeContextMenu();
 
   const { useQuery } = useAPI();
@@ -192,123 +183,26 @@ function App() {
     prevInCallRef.current = inCall;
   }, [callTokens, tab, setTab]);
 
-  const handleReject = (isInCall?: boolean) => {
-    const { incomingCallCallerId } = useStore.getState();
-    if (!incomingCallCallerId && !isInCall) return;
-    if (!isInCall) {
-      sounds.incomingCall.stop();
-    }
-    socketService.send({
-      type: "call_reject",
-      payload: {
-        caller_id: incomingCallCallerId,
-        reject_reason: "rejected",
-      },
-    } as TRejectCallMessage);
-    setIncomingCallCallerId(null);
-  };
+  const joinOngoingCall = useJoinCall();
+  useEffect(() => setJoinCallHandler(joinOngoingCall), [joinOngoingCall]);
 
-  const handleInCallRejection = (callerID: string) => {
-    socketService.send({
-      type: "call_reject",
-      payload: {
-        caller_id: callerID,
-        reject_reason: "in-call",
-      },
-    } as TRejectCallMessage);
-  };
+  // Incoming calls and invites, the card that shows them, and recovery during calls
+  useEffect(() => {
+    if (!isTauri()) return;
+    const stopCallAlertBridge = setupCallAlertBridge();
+    const stopIncomingCallHandling = setupIncomingCallHandling();
+    const stopCallRecoveryListeners = setupCallRecoveryListeners();
+    return () => {
+      stopCallAlertBridge();
+      stopIncomingCallHandling();
+      stopCallRecoveryListeners();
+    };
+  }, []);
 
   // Generic socket event listeners
   // Need to remove from here and add them to a shared file
   // to be cleaner and easier to manage
   useEffect(() => {
-    socketService.on("incoming_call", (data: TWebSocketMessage) => {
-      if (data.type !== "incoming_call") {
-        return;
-      }
-
-      const MAX_CALL_AGE_S = 60;
-      const incomingMsg = data as TIncomingCallMessage;
-      const initiatedAt = incomingMsg.payload.initiated_at;
-      if (initiatedAt != null) {
-        const ageSeconds = differenceInSeconds(new Date(), fromUnixTime(initiatedAt));
-        if (ageSeconds > MAX_CALL_AGE_S) {
-          console.warn(`Dropping stale incoming call (age: ${ageSeconds}s)`);
-          return;
-        }
-      }
-
-      // Check that there is no ongoing call
-      // If there is, reject the call
-      const { callTokens } = useStore.getState();
-      if (callTokens) {
-        const incomingCallerId = (data as TIncomingCallMessage).payload.caller_id;
-
-        // Special case: If we're receiving a call from the same participant we're already in a call with,
-        // close the current call and allow the new call to proceed
-        // This is an edge case, if we do not get a termination signal but not
-        // sure when its happening yet.
-        if (callTokens.participant === incomingCallerId) {
-          console.log("Received call from current participant - closing current call and accepting new one");
-          setCallTokens(null);
-          tauriUtils.endCallCleanup();
-          // Continue to show the call banner below
-        } else {
-          // Different participant - reject as usual
-          handleInCallRejection(incomingCallerId);
-          return;
-        }
-      }
-
-      if (data.type === "incoming_call") {
-        setIncomingCallCallerId(data.payload.caller_id);
-
-        /* Reject call if update in progress */
-        if (updateInProgress) {
-          handleReject();
-          return;
-        }
-
-        // Open current tauri window
-        // and create call banner
-        toast((t) => <CallBanner callerId={data.payload.caller_id} toastId={t.id} />, {
-          position: "bottom-center",
-          id: "call-banner",
-          duration: Infinity,
-          className: "ml-12",
-          removeDelay: 100,
-          style: {
-            padding: "2px",
-          },
-        });
-        tauriUtils.showWindow("main");
-      }
-    });
-
-    socketService.on("call_end", (data: TWebSocketMessage) => {
-      if (data.type === "call_end") {
-        // Get call info before clearing tokens
-        toast.dismiss("call-banner");
-        toast.dismiss("invite-banner");
-        setIncomingCallCallerId(null);
-        setIncomingInviteInviterId(null);
-
-        const { callTokens: currentCallTokens, user } = useStore.getState();
-        const participantId = currentCallTokens?.participant || "";
-        const roomId = currentCallTokens?.room?.id || data.payload.call_id || "";
-        const teamId = user?.team_id?.toString() || "";
-
-        setCallTokens(null);
-        // Close screen share window
-        tauriUtils.endCallCleanup();
-
-        // Show feedback window if not disabled
-        if (participantId && teamId) {
-          tauriUtils.showFeedbackWindowIfEnabled(teamId, roomId, participantId);
-        }
-      }
-    });
-
     socketService.on("teammate_online", (data: TWebSocketMessage) => {
       if (data.type === "teammate_online") {
         const { teammates } = useStore.getState();
@@ -344,88 +238,10 @@ function App() {
         payload: { room, in_call: inCall },
       } as TPresenceAckMessage);
     });
-
-    socketService.on("incoming_invite", (data: TWebSocketMessage) => {
-      if (data.type !== "incoming_invite") {
-        return;
-      }
-
-      const MAX_INVITE_AGE_S = 60;
-      const incomingMsg = data;
-      const initiatedAt = incomingMsg.payload.initiated_at;
-      if (initiatedAt != null) {
-        const ageSeconds = differenceInSeconds(new Date(), fromUnixTime(initiatedAt));
-        if (ageSeconds > MAX_INVITE_AGE_S) {
-          console.warn(`Dropping stale incoming invite (age: ${ageSeconds}s)`);
-          return;
-        }
-      }
-
-      // Reject if already showing an incoming call or update in progress
-      const { incomingCallCallerId, updateInProgress } = useStore.getState();
-      if (incomingCallCallerId || updateInProgress) {
-        socketService.send({
-          type: "invite_reject",
-          payload: { inviter_id: data.payload.inviter_id, invite_id: data.payload.invite_id },
-        });
-        return;
-      }
-
-      setIncomingInviteInviterId(data.payload.inviter_id);
-
-      // Open current tauri window and create invite banner
-      toast(
-        (t) => <InviteBanner inviterId={data.payload.inviter_id} inviteId={data.payload.invite_id} toastId={t.id} />,
-        {
-          position: "bottom-center",
-          id: "invite-banner",
-          duration: Infinity,
-          className: "ml-12",
-          removeDelay: 100,
-          style: {
-            padding: "2px",
-          },
-        },
-      );
-      tauriUtils.showWindow("main");
-    });
   }, []);
 
   useEffect(() => {
     if (!isTauri()) return;
-    const setupCoreProcessCrashedListener = async () => {
-      const unlistenFn = await listen("core_process_crashed", (data) => {
-        if (coreProcessCrashedRef.current) return;
-
-        console.debug("Core process crashed");
-        coreProcessCrashedRef.current = true;
-
-        tauriUtils.showWindow("main");
-        toast.error(
-          (t) => (
-            <div className="flex flex-row items-center gap-2">
-              <div className="text-sm">{`${data.payload as string}`}</div>
-              <Button
-                size="sm"
-                onClick={() => {
-                  toast.dismiss(t.id);
-                  coreProcessCrashedRef.current = false;
-                }}
-              >
-                Dismiss
-              </Button>
-            </div>
-          ),
-          {
-            duration: 60_000,
-            position: "top-center",
-          },
-        );
-      });
-
-      return unlistenFn;
-    };
-
     // Update auth token when it changes in the backend
     const setupChangeTokenListener = async () => {
       const unlistenFn = await listen("token_changed", (event) => {
@@ -454,11 +270,6 @@ function App() {
       return unlistenFn;
     };
 
-    let unlisten: (() => void) | undefined;
-    setupCoreProcessCrashedListener().then((fn) => {
-      unlisten = fn;
-    });
-
     let unlistenChangeToken: (() => void) | undefined;
     setupChangeTokenListener().then((fn) => {
       unlistenChangeToken = fn;
@@ -470,7 +281,6 @@ function App() {
     });
 
     return () => {
-      if (unlisten) unlisten();
       if (unlistenChangeToken) unlistenChangeToken();
       if (unlistenServerUrl) unlistenServerUrl();
     };

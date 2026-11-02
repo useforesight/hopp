@@ -148,6 +148,13 @@ function formatAccel(accel: string): string {
   return accel;
 }
 
+function acceleratorKey(event: KeyboardEvent): string {
+  // With Option held, event.key is the composed character (◊ for V), which isn't a valid accelerator.
+  if (event.code.startsWith("Key")) return event.code.slice("Key".length);
+  if (event.code.startsWith("Digit")) return event.code.slice("Digit".length);
+  return event.key.toUpperCase();
+}
+
 function ShortcutRow({
   title,
   description,
@@ -189,7 +196,7 @@ function ShortcutRow({
         if (e.altKey) parts.push("Alt");
         if (e.shiftKey) parts.push("Shift");
       }
-      parts.push(e.key.toUpperCase());
+      parts.push(acceleratorKey(e));
       const accel = parts.join("+");
 
       stopRecording();
@@ -214,15 +221,24 @@ function ShortcutRow({
         <span className="text-sm font-medium text-gray-700 dark:text-gray-300">{title}</span>
         <span className="text-sm text-gray-500 dark:text-gray-400">{description}</span>
       </div>
-      <Button
-        variant="outline"
-        className="w-[180px] font-mono text-sm justify-start shrink-0"
-        onClick={() => (recording ? stopRecording() : startRecording())}
-      >
-        {recording ?
-          <span className="text-gray-400 dark:text-gray-500 text-xs">Recording...</span>
-        : <span className="text-gray-600 dark:text-gray-400 text-s">{formatAccel(value)}</span>}
-      </Button>
+      <div className="flex items-center gap-1 shrink-0">
+        {value && !recording && (
+          <Button variant="ghost" size="sm" aria-label={`Clear ${title} shortcut`} onClick={() => onCommit("")}>
+            Clear
+          </Button>
+        )}
+        <Button
+          variant="outline"
+          className="w-[180px] font-mono text-sm justify-start"
+          onClick={() => (recording ? stopRecording() : startRecording())}
+        >
+          {recording ?
+            <span className="text-gray-400 dark:text-gray-500 text-xs">Recording...</span>
+          : value ?
+            <span className="text-gray-600 dark:text-gray-400 text-s">{formatAccel(value)}</span>
+          : <span className="text-gray-400 dark:text-gray-500 text-xs">Not set</span>}
+        </Button>
+      </div>
     </div>
   );
 }
@@ -454,7 +470,7 @@ function SettingsWindow() {
           : other === "camera" ? settings.shortcut_toggle_camera
           : other === "screenshare" ? settings.shortcut_toggle_screenshare
           : settings.shortcut_end_call;
-        if (otherVal === accel) {
+        if (accel && otherVal === accel) {
           await typedInvoke(setters[other], { accel: "" });
         }
       }

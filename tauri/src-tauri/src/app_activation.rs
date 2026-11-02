@@ -40,6 +40,12 @@ impl AppActivationObserver {
                     return;
                 }
 
+                // Clicking the call card activates the app. That click is for the card.
+                if crate::call_alert::is_visible(&app_handle) {
+                    log::info!("app_activation: call alert is showing, skipping");
+                    return;
+                }
+
                 // If the user directly clicked the main
                 if app_handle
                     .get_webview_window("main")

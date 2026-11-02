@@ -2,6 +2,7 @@
 pub mod app_activation;
 pub mod app_state;
 pub mod application_catalog;
+pub mod call_alert;
 pub mod permissions;
 #[cfg(target_os = "macos")]
 pub mod sleep_prevention;
@@ -12,13 +13,10 @@ use log::LevelFilter;
 use rand::{distributions::Alphanumeric, Rng};
 use sounds::SoundEntry;
 use std::env;
-use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
-#[cfg(target_os = "macos")]
-use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
-#[cfg(target_os = "macos")]
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc as std_mpsc, Arc, Mutex};
+use std::time::{Duration, Instant};
 use tauri::async_runtime::Receiver;
 #[cfg(target_os = "macos")]
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -38,6 +36,17 @@ use smappservice_rs::*;
 const PING_SLEEP_SECS: u64 = 30;
 const PING_CORE_PROCESS_INTERVAL_SECS: u64 = 15;
 pub const CORNER_RADIUS: f64 = 12.0;
+const CORE_RESTART_WINDOW: Duration = Duration::from_secs(60);
+const MAX_CORE_RESTARTS_PER_WINDOW: usize = 3;
+const RETAINED_LOG_PREFIX: &str = "hopp-previous-";
+const RETAINED_LOG_COUNT: usize = 5;
+
+/// Set once the app is quitting, so a core that exits with it isn't restarted.
+static CORE_SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+pub fn mark_core_shutdown_requested() {
+    CORE_SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum CoreProcessCreationError {
@@ -45,6 +54,26 @@ pub enum CoreProcessCreationError {
     SocketCreationFailed,
     #[error("Failed to send message to core process")]
     SendMessageFailed,
+    #[error("Failed to spawn core process: {0}")]
+    SpawnFailed(String),
+}
+
+/// Stops a core that dies right after launch from being restarted forever.
+#[derive(Default)]
+pub struct CoreRestartGuard {
+    recent_restarts: Vec<Instant>,
+}
+
+impl CoreRestartGuard {
+    pub fn allow_restart(&mut self, now: Instant) -> bool {
+        self.recent_restarts
+            .retain(|restart| now.saturating_duration_since(*restart) < CORE_RESTART_WINDOW);
+        if self.recent_restarts.len() >= MAX_CORE_RESTARTS_PER_WINDOW {
+            return false;
+        }
+        self.recent_restarts.push(now);
+        true
+    }
 }
 
 /// Wrapper for the core process child handle.
@@ -95,6 +124,17 @@ pub struct AppData {
     /// Whether the local participant is currently screensharing (pushed from frontend snapshots).
     pub is_screensharing: bool,
 
+    /// `CallEnd`s sent to core whose `CallEnded` hasn't come back yet.
+    pub pending_call_end_acks: u32,
+
+    /// How many upcoming `CallEnded`s belong to a call that a new one has already replaced.
+    pub stale_call_ended_events: u32,
+
+    pub core_restart_guard: CoreRestartGuard,
+
+    /// Forwards a restarted core's events to the frontend. It lives in the binary crate.
+    pub core_events_forwarder: fn(std_mpsc::Receiver<Message>, AppHandle),
+
     /// macOS app activation observer — keeps the NSNotificationCenter observer alive.
     #[cfg(target_os = "macos")]
     pub activation_observer: Option<app_activation::AppActivationObserver>,
@@ -115,6 +155,7 @@ impl AppData {
         deactivate_hiding: Arc<Mutex<bool>>,
         app_state: app_state::AppState,
         suppress_hide_on_call_end: Arc<AtomicBool>,
+        core_events_forwarder: fn(std_mpsc::Receiver<Message>, AppHandle),
     ) -> Self {
         AppData {
             sender,
@@ -133,9 +174,21 @@ impl AppData {
             call_active: false,
             is_camera_on: false,
             is_screensharing: false,
+            pending_call_end_acks: 0,
+            stale_call_ended_events: 0,
+            core_restart_guard: CoreRestartGuard::default(),
+            core_events_forwarder,
             #[cfg(target_os = "macos")]
             sleep_prevention: sleep_prevention::SleepPrevention::new(),
         }
+    }
+
+    /// Core answers every `CallEnd` with one `CallEnded`, which can arrive after a new
+    /// call has started, so the answers still owed are counted. See `call_started`.
+    pub fn send_call_end(&mut self) -> Result<(), std::io::Error> {
+        self.sender.send(Message::CallEnd)?;
+        self.pending_call_end_acks += 1;
+        Ok(())
     }
 }
 
@@ -171,9 +224,31 @@ pub fn recv_expected_response<T>(
     }
 }
 
-/// Monitors core process output and emits crash events.
+/// Describes why core exited, for the logs and for the message shown if it can't be restarted.
+fn describe_core_exit(code: Option<i32>) -> String {
+    match code {
+        Some(1) => {
+            "Core process terminated because it failed to receive messages from tauri".to_string()
+        }
+        Some(2) => {
+            "Core process terminated because capturing failed from the OS and couldn't be recovered"
+                .to_string()
+        }
+        Some(3) => {
+            sentry_utils::upload_logs_event("Hang protection triggered".to_string());
+            "Core process terminated because the event loop stopped responding".to_string()
+        }
+        Some(code) => format!("Core process exited with code {code}"),
+        None => {
+            sentry_utils::upload_logs_event("?Unknown crash".to_string());
+            "Core process terminated because of an unknown error".to_string()
+        }
+    }
+}
+
+/// Monitors core process output and restarts core when it exits.
 async fn show_stdout(mut receiver: Receiver<CommandEvent>, app_handle: AppHandle) {
-    let mut crash_msg = String::new();
+    let mut exit_reason = "Core process output closed unexpectedly".to_string();
     while let Some(event) = receiver.recv().await {
         match event {
             CommandEvent::Stdout(line) => {
@@ -185,69 +260,164 @@ async fn show_stdout(mut receiver: Receiver<CommandEvent>, app_handle: AppHandle
             }
             CommandEvent::Terminated(payload) => {
                 log::error!("show_stdout: Terminated {payload:?}");
-                match payload.code {
-                    Some(code) => {
-                        if code == 1 {
-                            crash_msg = "Core process terminated because it failed to receive messages from tauri, please restart the app".to_string();
-                        } else if code == 2 {
-                            // When hopp_core is terminated because capturing failed from the OS
-                            // and couldn't be recovered, we restart it and say to the user to select
-                            // a screen again.
-                            match create_core_process(&app_handle) {
-                                Err(_) => {
-                                    crash_msg = "Core process terminated because capturing failed from the OS and couldn't be recovered, please restart the app".to_string();
-                                }
-                                Ok((_core_process, sender, event_socket)) => {
-                                    crash_msg = "Core process restarted because capturing failed from the OS and couldn't be recovered, please select screen again".to_string();
-
-                                    let data = app_handle.state::<Mutex<AppData>>();
-                                    let mut data = data.lock().unwrap();
-                                    if let Err(e) = sender.send(Message::LivekitServerUrl(
-                                        data.livekit_server_url.clone(),
-                                    )) {
-                                        log::error!(
-                                            "show_stdout: Failed to send livekit server url: {e:?}"
-                                        );
-                                    }
-                                    data.sender = sender;
-                                    data.event_socket = event_socket;
-                                }
-                            }
-                        } else if code == 3 {
-                            crash_msg = "Core process terminated because the event loop stopped responding, please restart the app".to_string();
-                            sentry_utils::upload_logs_event(
-                                "Hang protection triggered".to_string(),
-                            );
-                        }
-                    }
-                    None => {
-                        crash_msg = "Core process terminated because of an unknown error. Please restart the app, please submit a bug report".to_string();
-                        sentry_utils::upload_logs_event("?Unknown crash".to_string());
-                    }
-                }
+                exit_reason = describe_core_exit(payload.code);
                 break;
             }
             CommandEvent::Error(e) => {
+                // A failed read of core's output. Core itself may be fine, and if it
+                // isn't, Terminated still follows.
                 log::error!("show_stdout: Error: {e:?}");
-                break;
             }
             _ => {}
         }
     }
     log::info!("show_stdout: Finished");
 
-    // Communicate to the frontend that the core process has crashed.
-    let res = app_handle.emit("core_process_crashed", crash_msg);
-    if let Err(e) = res {
+    tauri::async_runtime::spawn_blocking(move || restart_core_process(&app_handle, exit_reason));
+}
+
+fn emit_core_process_crashed(app: &AppHandle, reason: &str) {
+    if let Err(e) = app.emit("core_process_crashed", reason) {
         log::error!("Failed to emit core_process_crashed: {e:?}");
     }
+}
+
+/// Replaces a core that exited. The frontend rejoins any call it was in, so the user
+/// doesn't have to quit Hopp to get their audio and video back.
+fn restart_core_process(app: &AppHandle, exit_reason: String) {
+    if CORE_SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
+        log::info!("restart_core_process: app is quitting, not restarting core");
+        return;
+    }
+
+    let Some(state) = app.try_state::<Mutex<AppData>>() else {
+        emit_core_process_crashed(app, &exit_reason);
+        return;
+    };
+    let restart_allowed = state
+        .lock()
+        .unwrap()
+        .core_restart_guard
+        .allow_restart(Instant::now());
+    if !restart_allowed {
+        log::error!("restart_core_process: core keeps exiting, giving up: {exit_reason}");
+        emit_core_process_crashed(app, &exit_reason);
+        return;
+    }
+
+    log::warn!("restart_core_process: restarting core: {exit_reason}");
+    let (sender, mut event_socket) = match create_core_process(app) {
+        Ok((_core_process, sender, event_socket)) => (sender, event_socket),
+        Err(e) => {
+            log::error!("restart_core_process: failed to restart core: {e:?}");
+            emit_core_process_crashed(app, &exit_reason);
+            return;
+        }
+    };
+    let core_events = event_socket.take_events();
+
+    let mut data = state.lock().unwrap();
+    send_initial_core_settings(&sender, &data.app_state);
+    if let Err(e) = sender.send(Message::LivekitServerUrl(data.livekit_server_url.clone())) {
+        log::error!("restart_core_process: failed to send livekit server url: {e:?}");
+    }
+    data.sender = sender;
+    data.event_socket = event_socket;
+    data.call_active = false;
+    data.is_camera_on = false;
+    data.is_screensharing = false;
+    data.pending_call_end_acks = 0;
+    data.stale_call_ended_events = 0;
+    let core_events_forwarder = data.core_events_forwarder;
+    drop(data);
+
+    let forwarder_app = app.clone();
+    std::thread::spawn(move || core_events_forwarder(core_events, forwarder_app));
+
+    if let Err(e) = app.emit("core_process_restarted", exit_reason) {
+        log::error!("Failed to emit core_process_restarted: {e:?}");
+    }
+}
+
+/// Sends a newly started core the settings it doesn't remember between runs.
+pub fn send_initial_core_settings(sender: &SocketSender, app_state: &app_state::AppState) {
+    let user_settings = app_state.user_settings();
+    if let Err(e) = sender.send(Message::SetNoiseCancellation(
+        user_settings.noise_cancellation_enabled,
+    )) {
+        log::error!("Failed to send initial noise_cancellation_enabled: {e:?}");
+    }
+    if let Err(e) = sender.send(Message::SetScreenShareResolution(
+        user_settings.screen_share_resolution,
+    )) {
+        log::error!("Failed to send initial screen_share_resolution: {e:?}");
+    }
+    if let Err(e) = sender.send(Message::SetScreenSharePickerMode(
+        user_settings.screen_share_picker_mode,
+    )) {
+        log::error!("Failed to send initial screen_share_picker_mode: {e:?}");
+    }
+    let app_veil_bundle_ids = user_settings
+        .app_veil_applications
+        .into_iter()
+        .filter(|application| application.enabled)
+        .map(|application| application.bundle_id)
+        .collect();
+    if let Err(e) = sender.send(Message::SetAppVeilBundleIds(app_veil_bundle_ids)) {
+        log::error!("Failed to send initial App Veil settings: {e:?}");
+    }
+    if let Err(e) = sender.send(Message::ControllerDrawPersistChanged(
+        app_state.controller_draw_persist(),
+    )) {
+        log::error!("Failed to send initial controller_draw_persist: {e:?}");
+    }
+    if let Some(mode) = app_state.last_mode() {
+        if let Err(e) = sender.send(Message::LastModeChanged(mode)) {
+            log::error!("Failed to send initial last_mode: {e:?}");
+        }
+    }
+    let telemetry_enabled = user_settings.telemetry_enabled;
+    sentry_utils::set_telemetry_enabled(telemetry_enabled);
+    if let Err(e) = sender.send(Message::SetTelemetryEnabled(telemetry_enabled)) {
+        log::error!("Failed to send initial telemetry_enabled: {e:?}");
+    }
+}
+
+/// Copies the log aside before it's cleared for a new session, because the session
+/// that went wrong is usually the one the user just quit.
+pub fn archive_log_file(log_file: &Path, unix_seconds: u64) -> std::io::Result<()> {
+    if std::fs::metadata(log_file)?.len() == 0 {
+        return Ok(());
+    }
+    let Some(log_dir) = log_file.parent() else {
+        return Ok(());
+    };
+    std::fs::copy(
+        log_file,
+        log_dir.join(format!("{RETAINED_LOG_PREFIX}{unix_seconds}.log")),
+    )?;
+
+    let mut retained_logs: Vec<PathBuf> = std::fs::read_dir(log_dir)?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(RETAINED_LOG_PREFIX))
+        })
+        .collect();
+    retained_logs.sort();
+    let excess_logs = retained_logs.len().saturating_sub(RETAINED_LOG_COUNT);
+    for old_log in retained_logs.iter().take(excess_logs) {
+        std::fs::remove_file(old_log)?;
+    }
+    Ok(())
 }
 
 /// Spawns the core process sidecar with required arguments.
 fn start_sidecar(
     app: &tauri::AppHandle,
     socket_path: &str,
-) -> (Receiver<CommandEvent>, CommandChild) {
+) -> Result<(Receiver<CommandEvent>, CommandChild), CoreProcessCreationError> {
     log::info!("start_sidecar:");
 
     /* First we check if the process is already running and kill it. */
@@ -275,9 +445,14 @@ fn start_sidecar(
     if cfg!(debug_assertions) {
         hopp_core_name = format!("hopp_core{}", env::var("HOPP_SUFFIX").unwrap_or_default());
     }
-    let command = app.shell().sidecar(hopp_core_name).unwrap().args(args);
-    let (rx, child) = command.spawn().expect("Failed to spawn sidecar");
-    (rx, child)
+    let command = app
+        .shell()
+        .sidecar(hopp_core_name)
+        .map_err(|e| CoreProcessCreationError::SpawnFailed(e.to_string()))?
+        .args(args);
+    command
+        .spawn()
+        .map_err(|e| CoreProcessCreationError::SpawnFailed(e.to_string()))
 }
 
 /// Creates a socket connection to communicate with the core process.
@@ -331,7 +506,7 @@ pub fn create_core_process(
     let socket_name = format!("core-socket-{}", create_random_suffix());
     let socket_path = format!("{}/{socket_name}", tmp_dir.display());
 
-    let (rx, core_process) = start_sidecar(app, &socket_path);
+    let (rx, core_process) = start_sidecar(app, &socket_path)?;
     tauri::async_runtime::spawn(show_stdout(rx, app.clone()));
     let (sender, event_socket) = create_core_process_socket(&socket_path)?;
     let ping_sender = sender.clone();
@@ -837,4 +1012,88 @@ pub fn create_media_window(app: &AppHandle, config: MediaWindowConfig<'_>) -> Re
         .map_err(|e| format!("Failed to run on main thread: {}", e))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod reliability_tests {
+    use super::*;
+
+    #[test]
+    fn restarts_are_limited_within_the_window() {
+        let start = Instant::now();
+        let mut guard = CoreRestartGuard::default();
+        for _ in 0..MAX_CORE_RESTARTS_PER_WINDOW {
+            assert!(guard.allow_restart(start));
+        }
+        assert!(!guard.allow_restart(start + Duration::from_secs(59)));
+    }
+
+    #[test]
+    fn restarts_are_allowed_again_after_the_window() {
+        let start = Instant::now();
+        let mut guard = CoreRestartGuard::default();
+        for _ in 0..MAX_CORE_RESTARTS_PER_WINDOW {
+            assert!(guard.allow_restart(start));
+        }
+        assert!(guard.allow_restart(start + CORE_RESTART_WINDOW));
+    }
+
+    fn temporary_log_dir(test_name: &str) -> PathBuf {
+        let log_dir =
+            std::env::temp_dir().join(format!("hopp-{test_name}-{}", create_random_suffix()));
+        std::fs::create_dir_all(&log_dir).unwrap();
+        log_dir
+    }
+
+    fn retained_log_names(log_dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(log_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .filter(|name| name.starts_with(RETAINED_LOG_PREFIX))
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn archiving_keeps_the_previous_log_contents() {
+        let log_dir = temporary_log_dir("archive");
+        let log_file = log_dir.join("hopp.log");
+        std::fs::write(&log_file, "call failed").unwrap();
+
+        archive_log_file(&log_file, 1_000).unwrap();
+
+        let archived = log_dir.join(format!("{RETAINED_LOG_PREFIX}1000.log"));
+        assert_eq!(std::fs::read_to_string(archived).unwrap(), "call failed");
+        std::fs::remove_dir_all(log_dir).unwrap();
+    }
+
+    #[test]
+    fn archiving_skips_an_empty_log() {
+        let log_dir = temporary_log_dir("empty");
+        let log_file = log_dir.join("hopp.log");
+        std::fs::write(&log_file, "").unwrap();
+
+        archive_log_file(&log_file, 1_000).unwrap();
+
+        assert!(retained_log_names(&log_dir).is_empty());
+        std::fs::remove_dir_all(log_dir).unwrap();
+    }
+
+    #[test]
+    fn archiving_prunes_the_oldest_logs() {
+        let log_dir = temporary_log_dir("prune");
+        let log_file = log_dir.join("hopp.log");
+        std::fs::write(&log_file, "log").unwrap();
+
+        for unix_seconds in 1_000..1_007 {
+            archive_log_file(&log_file, unix_seconds).unwrap();
+        }
+
+        let expected: Vec<String> = (1_002..1_007)
+            .map(|unix_seconds| format!("{RETAINED_LOG_PREFIX}{unix_seconds}.log"))
+            .collect();
+        assert_eq!(retained_log_names(&log_dir), expected);
+        std::fs::remove_dir_all(log_dir).unwrap();
+    }
 }

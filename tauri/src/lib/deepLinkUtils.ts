@@ -58,14 +58,27 @@ export const processDeepLinkUrl = async (url: string): Promise<boolean> => {
   }
 };
 
+let isJoiningSession = false;
+
 /**
- * Handles joining a Slack pairing session by fetching tokens and setting up the call.
+ * Handles joining a Slack pairing session by fetching tokens and starting the call.
  *
  * @param sessionId The session/room ID to join
  * @returns true if successfully joined, false otherwise
  */
 export const handleJoinSessionDeepLink = async (sessionId: string): Promise<boolean> => {
-  const { authToken, setCallTokens, setTab, user } = useStore.getState();
+  if (isJoiningSession) return false;
+
+  isJoiningSession = true;
+  try {
+    return await joinSession(sessionId);
+  } finally {
+    isJoiningSession = false;
+  }
+};
+
+const joinSession = async (sessionId: string): Promise<boolean> => {
+  const { authToken, callTokens, setCallTokens, setTab, user } = useStore.getState();
 
   if (!authToken) {
     toast.error("Please log in first to join the session");
@@ -74,15 +87,28 @@ export const handleJoinSessionDeepLink = async (sessionId: string): Promise<bool
     return false;
   }
 
+  if (callTokens) {
+    await tauriUtils.showWindow("main");
+    if (callTokens.room?.id === sessionId) {
+      setTab("call");
+      return true;
+    }
+    toast.error("Leave your current call first");
+    return false;
+  }
+
   try {
     toast.loading("Joining session", { id: "join-session" });
 
     // Fetch tokens for the session
-    const response = await fetch(`${Constants.backendUrl}/api/auth/slack/session/${sessionId}/tokens`, {
-      headers: {
-        Authorization: `Bearer ${authToken}`,
+    const response = await fetch(
+      `${Constants.backendUrl}/api/auth/slack/session/${encodeURIComponent(sessionId)}/tokens`,
+      {
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+        },
       },
-    });
+    );
 
     if (!response.ok) {
       toast.dismiss("join-session");
@@ -108,9 +134,17 @@ export const handleJoinSessionDeepLink = async (sessionId: string): Promise<bool
     }
 
     const data: components["schemas"]["SessionTokensResponse"] = await response.json();
+    const { startMic, startCamera } = await tauriUtils.getCallStartPreferences();
+
+    // A call may have started during those requests.
+    if (useStore.getState().callTokens) {
+      toast.dismiss("join-session");
+      toast.error("Leave your current call first");
+      await tauriUtils.showWindow("main");
+      return false;
+    }
 
     // Set up the call with the tokens
-    const { startMic, startCamera } = await tauriUtils.getCallStartPreferences();
     setCallTokens({
       ...data,
       timeStarted: new Date(),
@@ -127,12 +161,22 @@ export const handleJoinSessionDeepLink = async (sessionId: string): Promise<bool
         name: "Slack Session",
         user_id: user?.id || "",
       },
+      isInitialisingCall: true,
       micLevel: 0,
     });
 
-    // Switch to the rooms tab and show the window
     await tauriUtils.showWindow("main");
-    setTab("rooms");
+
+    try {
+      await tauriUtils.callStarted(data.audioToken, data.videoToken);
+    } catch (err) {
+      console.error("Failed to start session call:", err);
+      tauriUtils.endCallCleanup();
+      setCallTokens(null);
+      toast.dismiss("join-session");
+      toast.error("Failed to start the call");
+      return false;
+    }
 
     toast.dismiss("join-session");
     return true;
