@@ -5,6 +5,14 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Hopp - Remote pairing app</title>
+    <script>
+      // Apply the saved theme before the first paint so the window doesn't flash
+      (function () {
+        const saved = localStorage.getItem("hopp-theme");
+        const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+        document.documentElement.classList.toggle("dark", saved === "dark" || (saved !== "light" && prefersDark));
+      })();
+    </script>
   </head>
 
   <body>

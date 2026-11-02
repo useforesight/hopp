@@ -60,23 +60,21 @@ const PointerClickIcon = (props: SVGProps<SVGSVGElement>) => (
  */
 const MicWithLevel = ({ level, className }: { level: number; className?: string }) => {
   const [smoothedLevel, setSmoothedLevel] = useState(0);
-  const targetLevelRef = useRef(level);
+  const smoothedLevelRef = useRef(0);
   const animationRef = useRef<number>();
 
   useEffect(() => {
-    targetLevelRef.current = level;
-
     const animate = () => {
-      setSmoothedLevel((prev) => {
-        const target = targetLevelRef.current;
-        const diff = target - prev;
-        // Ease towards target - faster when going up, slower when going down
-        const speed = diff > 0 ? 0.3 : 0.15;
-        const newValue = prev + diff * speed;
-        // Stop animating when close enough
-        if (Math.abs(diff) < 0.001) return target;
-        return newValue;
-      });
+      const diff = level - smoothedLevelRef.current;
+      // Stop animating when close enough
+      if (Math.abs(diff) < 0.001) {
+        smoothedLevelRef.current = level;
+        setSmoothedLevel(level);
+        return;
+      }
+      // Ease towards target - faster when going up, slower when going down
+      smoothedLevelRef.current += diff * (diff > 0 ? 0.3 : 0.15);
+      setSmoothedLevel(smoothedLevelRef.current);
       animationRef.current = requestAnimationFrame(animate);
     };
 

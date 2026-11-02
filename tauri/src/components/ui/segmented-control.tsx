@@ -58,7 +58,7 @@ const SegmentedControl = React.forwardRef<HTMLOListElement, SegmentedControlProp
         <ol
           ref={ref}
           className={cn(
-            "inline-flex m-0 p-0.5 list-none bg-gray-500/80 dark:bg-zinc-600 rounded-lg h-[28px] cursor-default",
+            "inline-flex m-0 p-0.5 list-none bg-gray-500/80 rounded-lg h-[28px] cursor-default",
             disabled && "opacity-50 cursor-not-allowed",
             className,
           )}
@@ -76,7 +76,7 @@ const SegmentedControl = React.forwardRef<HTMLOListElement, SegmentedControlProp
                   "relative mb-0 mt-0 leading-none pl-0",
                   // Divider styles
                   showDivider &&
-                    "after:absolute after:top-[15%] after:right-[-0.5px] after:block after:w-px after:h-[70%] after:bg-gray-100 after:opacity-20 after:transition-opacity after:duration-200 after:ease-out after:content-['']",
+                    "after:absolute after:top-[15%] after:right-[-0.5px] after:block after:w-px after:h-[70%] after:bg-subtle after:opacity-20 after:transition-opacity after:duration-200 after:ease-out after:content-['']",
                   // Hide divider for last item
                   i === items.length - 1 && "after:hidden",
                   // Hide divider when it shouldn't show
@@ -100,7 +100,7 @@ const SegmentedControl = React.forwardRef<HTMLOListElement, SegmentedControlProp
                         {isActive && (
                           <motion.div
                             layoutId={layoutId}
-                            className="absolute inset-0 z-1 bg-slate-300/50 rounded-md"
+                            className="absolute inset-0 z-1 bg-subtle-strong/50 rounded-md"
                             style={{
                               boxShadow: "0 1px 2px rgba(0,0,0,.1)",
                             }}
@@ -125,7 +125,7 @@ const SegmentedControl = React.forwardRef<HTMLOListElement, SegmentedControlProp
                     {isActive && (
                       <motion.div
                         layoutId={layoutId}
-                        className="absolute inset-0 z-1 bg-slate-300/50 rounded-md"
+                        className="absolute inset-0 z-1 bg-subtle-strong/50 rounded-md"
                         style={{
                           boxShadow: "0 1px 2px rgba(0,0,0,.1)",
                         }}

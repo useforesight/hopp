@@ -1,5 +1,6 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@radix-ui/react-avatar";
 import { clsx } from "clsx";
+import { cn } from "@/lib/utils";
 import { LuMicOff } from "react-icons/lu";
 
 type Status = "online" | "offline";
@@ -20,13 +21,14 @@ interface HoppAvatarProps {
   callPeers?: CallPeer[];
 }
 
-
-const ColorsClasses: string[] = [
-  "oklch(54.1% 0.281 293.009)", // Violet 600
-  "oklch(59.6% 0.145 163.225)", // Emerald 700
-  "oklch(55.5% 0.163 48.998)", // Amber 700
-  "oklch(51.1% 0.096 186.391)" // Teal 700
-]
+const AvatarGradients: string[] = [
+  "linear-gradient(135deg, #8f8eff, #4f46e5)",
+  "linear-gradient(135deg, #34d399, #0d9488)",
+  "linear-gradient(135deg, #fbbf24, #ea580c)",
+  "linear-gradient(135deg, #22d3ee, #2563eb)",
+  "linear-gradient(135deg, #f472b6, #9333ea)",
+  "linear-gradient(135deg, #fb7185, #e11d48)",
+];
 
 // Source: https://stackoverflow.com/a/7616484
 const generateHash = (string: string) => {
@@ -45,80 +47,92 @@ export function pickFromArray<T>(key: string, options: readonly T[]): T {
   return options[index] as T;
 }
 
+export const avatarGradient = (name: string) => pickFromArray(name, AvatarGradients);
+
+const PersonAvatar = ({
+  src,
+  firstName,
+  lastName,
+  className,
+  fallbackClassName,
+}: {
+  src?: string;
+  firstName: string;
+  lastName: string;
+  className?: string;
+  fallbackClassName: string;
+}) => (
+  <Avatar
+    className={cn("flex shrink-0 items-center justify-center overflow-hidden text-white", className)}
+    style={{ background: avatarGradient(firstName + lastName) }}
+  >
+    <AvatarImage className="h-full object-cover" src={src || ""} />
+    <AvatarFallback className={clsx("font-semibold tracking-tight", fallbackClassName)}>
+      {firstName[0]}
+      {lastName[0]}
+    </AvatarFallback>
+  </Avatar>
+);
 
 export const HoppAvatar = ({ src, firstName, lastName, status, className, isMuted, callPeers }: HoppAvatarProps) => {
-
   const peers = callPeers ?? [];
 
   if (peers.length === 0) {
     return (
       <div className="relative overflow-visible">
-        <Avatar
+        <PersonAvatar
+          src={src}
+          firstName={firstName}
+          lastName={lastName}
           className={clsx(
-            "size-10 shrink-0 rounded-[9px] text-white flex justify-center items-center overflow-hidden",
+            "size-9 rounded-[11px] shadow-card",
+            status === "offline" && "opacity-55 saturate-50",
             className,
           )}
-          style={{ backgroundColor: pickFromArray(firstName + lastName, ColorsClasses) }}
-        >
-          <AvatarImage className="object-cover h-full" src={src || ""} />
-          <AvatarFallback className="font-medium text-[12px]">
-            {firstName[0]}
-            {lastName[0]}
-          </AvatarFallback>
-        </Avatar>
-        {/* Absolute gray blanket for muted indicator */}
+          fallbackClassName="text-[12px]"
+        />
+        {/* Absolute blanket for muted indicator */}
         {isMuted && (
-          <div className="absolute flex items-center justify-center inset-0 bg-gray-500/40 rounded-[9px] w-full h-full">
+          <div className="absolute inset-0 flex items-center justify-center rounded-[inherit] bg-black/45">
             <LuMicOff className="size-4 text-white" />
           </div>
         )}
         {status && (
           <div
-            className={clsx("absolute bottom-0 right-0 size-2 outline-solid outline-3 outline-white rounded-full", {
-              "bg-emerald-500": status === "online",
-              "bg-red-400": status === "offline",
-            })}
-          />)
-        }
+            className={clsx(
+              "absolute -bottom-0.5 -right-0.5 size-[11px] rounded-full border-[2.5px] border-background",
+              {
+                "bg-success": status === "online",
+                "bg-faint-foreground": status === "offline",
+              },
+            )}
+          />
+        )}
       </div>
-    )
+    );
   }
 
   if (peers.length === 1 && peers[0]) {
     // Diagonal based, a bit of overlap, and no status badges
     return (
-      <div className="relative overflow-visible size-10">
-        <Avatar
-          className={clsx(
-            "size-[23px] shrink-0 rounded-[5px] text-white flex justify-center items-center overflow-hidden border border-white",
-            className,
-          )}
-          style={{ backgroundColor: pickFromArray(firstName + lastName, ColorsClasses) }}
-        >
-          <AvatarImage className="object-cover h-full" src={src || ""} />
-          <AvatarFallback className="font-medium text-[7px]">
-            {firstName[0]}
-            {lastName[0]}
-          </AvatarFallback>
-        </Avatar>
-
-        <Avatar
-          className={clsx(
-            "size-[23px] shrink-0 rounded-[5px] text-white flex justify-center items-center overflow-hidden border border-white absolute bottom-0 right-0",
-            className,
-          )}
-          style={{ backgroundColor: pickFromArray(peers[0].firstName + peers[0].lastName, ColorsClasses) }}
-        >
-          <AvatarImage className="object-cover h-full" src={peers[0].avatarUrl || ""} />
-          <AvatarFallback className="font-medium text-[7px]">
-            {peers[0].firstName[0]}
-            {peers[0].lastName[0]}
-          </AvatarFallback>
-        </Avatar>
+      <div className="relative size-9 overflow-visible">
+        <PersonAvatar
+          src={src}
+          firstName={firstName}
+          lastName={lastName}
+          className={clsx("size-[23px] rounded-[7px]", className)}
+          fallbackClassName="text-[8px]"
+        />
+        <PersonAvatar
+          src={peers[0].avatarUrl}
+          firstName={peers[0].firstName}
+          lastName={peers[0].lastName}
+          className={clsx("absolute bottom-0 right-0 size-[23px] rounded-[7px] ring-2 ring-background", className)}
+          fallbackClassName="text-[8px]"
+        />
       </div>
-    )
+    );
   }
-
 
   if (peers.length >= 2 && peers.every((peer) => peer !== undefined)) {
     const isOverflow = peers.length > 3;
@@ -127,45 +141,32 @@ export const HoppAvatar = ({ src, firstName, lastName, status, className, isMute
     // Grid based, no overlap, and no status badges
     // For >4 peers, we add a +N text element to the bottom right
     return (
-      <div className="relative overflow-visible size-10 grid grid-cols-2 gap-px">
-        <Avatar
-          className={clsx(
-            "size-[19px] shrink-0 rounded-[5px] text-white flex justify-center items-center overflow-hidden",
-            className,
-          )}
-          style={{ backgroundColor: pickFromArray(firstName + lastName, ColorsClasses) }}
-        >
-          <AvatarImage className="object-cover h-full" src={src || ""} />
-          <AvatarFallback className="font-medium text-[7px]">
-            {firstName[0]}
-            {lastName[0]}
-          </AvatarFallback>
-        </Avatar>
-
+      <div className="relative grid size-9 grid-cols-2 gap-0.5 overflow-visible">
+        <PersonAvatar
+          src={src}
+          firstName={firstName}
+          lastName={lastName}
+          className={clsx("size-[17px] rounded-[5px]", className)}
+          fallbackClassName="text-[7px]"
+        />
         {visiblePeers.map((peer, i) => (
-          <Avatar
+          <PersonAvatar
             key={i}
-            className={clsx(
-              "size-[19px] shrink-0 rounded-[5px] text-white flex justify-center items-center overflow-hidden",
-              className,
-            )}
-            style={{ backgroundColor: pickFromArray(peer.firstName + peer.lastName, ColorsClasses) }}
-          >
-            <AvatarImage className="object-cover h-full" src={peer.avatarUrl || ""} />
-            <AvatarFallback className="font-medium text-[7px]">
-              {peer.firstName[0]}
-              {peer.lastName[0]}
-            </AvatarFallback>
-          </Avatar>
+            src={peer.avatarUrl}
+            firstName={peer.firstName}
+            lastName={peer.lastName}
+            className={clsx("size-[17px] rounded-[5px]", className)}
+            fallbackClassName="text-[7px]"
+          />
         ))}
         {isOverflow && (
-          <div className="size-[19px] shrink-0 text-slate-600 flex justify-center items-center overflow-hidden text-[11px] font-semibold">
+          <div className="flex size-[17px] shrink-0 items-center justify-center overflow-hidden rounded-[5px] bg-subtle-strong text-[9px] font-semibold text-muted-foreground">
             +{peers.length - 2}
           </div>
         )}
       </div>
-    )
+    );
   }
 
-  return null
-}
+  return null;
+};

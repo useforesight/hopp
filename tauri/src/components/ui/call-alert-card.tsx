@@ -1,14 +1,20 @@
+import clsx from "clsx";
 import { HiMiniPhone, HiMiniPhoneArrowDownLeft, HiMiniPhoneXMark } from "react-icons/hi2";
 import { Button } from "./button";
 import { HoppAvatar } from "./hopp-avatar";
 import { CallAlert, CallAlertAction } from "@/lib/call-alert-types";
+import { cn } from "@/lib/utils";
 
 const CARD_CLASS_NAME =
-  "flex h-full w-full flex-col justify-between gap-2 overflow-hidden rounded-xl border border-black/10 bg-white p-3 text-black dark:border-white/10 dark:bg-zinc-900 dark:text-white";
+  "flex h-full w-full flex-col justify-between gap-2.5 overflow-hidden rounded-2xl bg-raised p-3 text-foreground ring-1 ring-inset ring-border-strong animate-in fade-in-0 zoom-in-95 duration-200";
+
+const SECONDARY_ACTION_CLASS_NAME = "h-8 flex-1 gap-1.5 rounded-[10px]";
+const ANSWER_ACTION_CLASS_NAME =
+  "h-8 flex-1 gap-1.5 rounded-[10px] bg-success text-success-foreground shadow-card hover:bg-success/90";
 
 const PERSON_SUBTITLES = {
-  ringing: "Calling you...",
-  connecting: "Connecting...",
+  ringing: "Calling you…",
+  connecting: "Connecting…",
   missed: "Missed call",
   invite: "Invited you to join a call",
   "missed-invite": "Missed invite to a call",
@@ -23,17 +29,22 @@ export const CallAlertCard = ({
 }) => {
   if (alert.kind === "notice") {
     return (
-      <div className={CARD_CLASS_NAME}>
+      <div className={cn(CARD_CLASS_NAME, "gap-1.5")}>
         <div className="flex min-w-0 flex-col">
-          <span className="truncate text-sm font-medium">{alert.title}</span>
-          <span className="line-clamp-2 text-xs text-muted-foreground">{alert.body}</span>
+          <span className="truncate text-sm leading-5 font-semibold tracking-[-0.005em]">{alert.title}</span>
+          <span className="line-clamp-2 text-xs leading-[17px] text-muted-foreground">{alert.body}</span>
         </div>
-        <div className="flex flex-row justify-end gap-1">
-          <Button variant="ghost" size="sm" onClick={() => onAction("dismiss")}>
+        <div className="flex flex-row gap-1.5">
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => onAction("dismiss")}
+            className={SECONDARY_ACTION_CLASS_NAME}
+          >
             Dismiss
           </Button>
           {alert.actionLabel && (
-            <Button variant="outline" size="sm" onClick={() => onAction("notice-action")}>
+            <Button size="sm" onClick={() => onAction("notice-action")} className={SECONDARY_ACTION_CLASS_NAME}>
               {alert.actionLabel}
             </Button>
           )}
@@ -44,34 +55,43 @@ export const CallAlertCard = ({
 
   const { caller } = alert;
   const callerName = `${caller.firstName} ${caller.lastName}`.trim() || "Someone";
+  const isAskingToJoin = alert.kind === "ringing" || alert.kind === "invite";
+  const isMissed = alert.kind === "missed" || alert.kind === "missed-invite";
 
   return (
-    <div className={CARD_CLASS_NAME}>
-      <div className="flex min-w-0 flex-row items-center gap-2">
-        <HoppAvatar src={caller.avatarUrl ?? undefined} firstName={caller.firstName} lastName={caller.lastName} />
+    <div className={cn(CARD_CLASS_NAME, alert.kind === "connecting" && "justify-center")}>
+      <div className="flex min-w-0 flex-row items-center gap-2.5 pl-0.5">
+        <div className="relative shrink-0">
+          {isAskingToJoin && (
+            <span className="absolute inset-0 animate-ping rounded-[11px] bg-success/50 [animation-duration:1.6s]" />
+          )}
+          <div className="relative">
+            <HoppAvatar src={caller.avatarUrl ?? undefined} firstName={caller.firstName} lastName={caller.lastName} />
+          </div>
+        </div>
         <div className="flex min-w-0 flex-col">
-          <span className="truncate text-sm font-medium">{callerName}</span>
-          <span className="truncate text-xs text-muted-foreground">{PERSON_SUBTITLES[alert.kind]}</span>
+          <span className="truncate text-sm leading-5 font-semibold tracking-[-0.005em]">{callerName}</span>
+          <span className={clsx("truncate text-xs leading-4", isMissed ? "text-destructive" : "text-muted-foreground")}>
+            {PERSON_SUBTITLES[alert.kind]}
+          </span>
         </div>
       </div>
       {alert.kind !== "connecting" && (
-        <div className="flex flex-row justify-end gap-1">
+        <div className="flex flex-row gap-1.5">
           {(alert.kind === "ringing" || alert.kind === "invite") && (
             <>
               <Button
                 variant="ghost"
                 size="sm"
                 onClick={() => onAction("decline")}
-                className="flex flex-row gap-2 hover:bg-red-100 dark:hover:bg-red-950"
+                className={clsx(
+                  SECONDARY_ACTION_CLASS_NAME,
+                  "bg-destructive-soft text-destructive hover:bg-destructive hover:text-destructive-foreground",
+                )}
               >
                 <HiMiniPhoneXMark className="size-4" /> {alert.kind === "ringing" ? "Decline" : "Not now"}
               </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => onAction("answer")}
-                className="flex flex-row gap-2 px-4 hover:text-green-700"
-              >
+              <Button size="sm" onClick={() => onAction("answer")} className={ANSWER_ACTION_CLASS_NAME}>
                 <HiMiniPhoneArrowDownLeft className="size-4 min-h-4 min-w-4" />
                 {alert.kind === "ringing" ? "Answer" : "Join"}
               </Button>
@@ -79,30 +99,30 @@ export const CallAlertCard = ({
           )}
           {alert.kind === "missed" && (
             <>
-              <Button variant="ghost" size="sm" onClick={() => onAction("dismiss")}>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => onAction("dismiss")}
+                className={SECONDARY_ACTION_CLASS_NAME}
+              >
                 Dismiss
               </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => onAction("call-back")}
-                className="flex flex-row gap-2 px-4 hover:text-green-700"
-              >
+              <Button size="sm" onClick={() => onAction("call-back")} className={ANSWER_ACTION_CLASS_NAME}>
                 <HiMiniPhone className="size-4 min-h-4 min-w-4" /> Call back
               </Button>
             </>
           )}
           {alert.kind === "missed-invite" && (
             <>
-              <Button variant="ghost" size="sm" onClick={() => onAction("dismiss")}>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => onAction("dismiss")}
+                className={SECONDARY_ACTION_CLASS_NAME}
+              >
                 Dismiss
               </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => onAction("answer")}
-                className="flex flex-row gap-2 px-4 hover:text-green-700"
-              >
+              <Button size="sm" onClick={() => onAction("answer")} className={ANSWER_ACTION_CLASS_NAME}>
                 <HiMiniPhoneArrowDownLeft className="size-4 min-h-4 min-w-4" /> Join
               </Button>
             </>

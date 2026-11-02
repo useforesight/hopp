@@ -4,6 +4,7 @@ import React, { useEffect, useState } from "react";
 import ReactDOM from "react-dom/client";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { CallAlertCard } from "@/components/ui/call-alert-card";
+import { initTheme } from "@/lib/theme";
 import {
   CALL_ALERT_ACTION_EVENT,
   CALL_ALERT_READY_EVENT,
@@ -12,6 +13,8 @@ import {
   CallAlertActionEvent,
   CallAlertEnvelope,
 } from "@/lib/call-alert-types";
+
+initTheme();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
@@ -30,14 +33,6 @@ function CallAlertWindow() {
     return () => {
       unlisten.then((stopListening) => stopListening());
     };
-  }, []);
-
-  useEffect(() => {
-    const darkModeQuery = window.matchMedia("(prefers-color-scheme: dark)");
-    const applyTheme = () => document.documentElement.classList.toggle("dark", darkModeQuery.matches);
-    applyTheme();
-    darkModeQuery.addEventListener("change", applyTheme);
-    return () => darkModeQuery.removeEventListener("change", applyTheme);
   }, []);
 
   useEffect(() => {

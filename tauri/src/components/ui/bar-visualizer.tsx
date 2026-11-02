@@ -11,8 +11,9 @@ export interface AudioAnalyserOptions {
 }
 
 function createAudioAnalyser(mediaStream: MediaStream, options: AudioAnalyserOptions = {}) {
-  const audioContext = new (window.AudioContext ||
-    (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+  const audioContext = new (
+    window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+  )();
   const source = audioContext.createMediaStreamSource(mediaStream);
   const analyser = audioContext.createAnalyser();
 
@@ -418,7 +419,7 @@ const BarVisualizerComponent = React.forwardRef<HTMLDivElement, BarVisualizerPro
         className={cn(
           "relative flex justify-center gap-1.5",
           centerAlign ? "items-center" : "items-end",
-          "bg-slate-100 h-32 w-full overflow-hidden rounded-lg p-4 dark:bg-slate-800",
+          "bg-subtle h-32 w-full overflow-hidden rounded-lg p-4",
           className,
         )}
         style={{
@@ -451,8 +452,8 @@ const Bar = React.memo<{
     className={cn(
       "max-w-[12px] min-w-[8px] flex-1 transition-all duration-150",
       "rounded-full",
-      "bg-slate-200 data-[highlighted=true]:bg-slate-900 dark:bg-slate-800 dark:data-[highlighted=true]:bg-slate-50",
-      state === "speaking" && "bg-slate-900 dark:bg-slate-50",
+      "bg-subtle-strong data-[highlighted=true]:bg-slate-900",
+      state === "speaking" && "bg-slate-900",
       state === "thinking" && isHighlighted && "animate-pulse",
     )}
     style={{

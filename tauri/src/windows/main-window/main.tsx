@@ -7,6 +7,7 @@ import "@/services/sentry";
 import "core-js/actual/iterator";
 import "../../App.css";
 import { OS } from "@/constants";
+import { initTheme, toastStyle } from "@/lib/theme";
 import { disableWebViewAppNap } from "@/lib/utils";
 import React from "react";
 import ReactDOM from "react-dom/client";
@@ -20,6 +21,9 @@ import { BOTTOM_ARROW, POSTHOG_API_KEY, POSTHOG_HOST } from "@/constants";
 import { typedInvoke } from "@/core_payloads";
 import { listen } from "@tauri-apps/api/event";
 import posthog from "posthog-js";
+import { MotionConfig } from "framer-motion";
+
+initTheme();
 
 const options: Partial<PostHogConfig> = {
   api_host: POSTHOG_HOST,
@@ -78,13 +82,18 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
         {/* Custom type-safe provider */}
         <QueryProvider>
           <Toaster
-            position="bottom-right"
+            // The call controls live along the bottom, and a toast there would swallow a click on End
+            position="top-center"
+            containerStyle={{ top: 20 }}
             toastOptions={{
               duration: 1_500,
+              style: toastStyle,
               loading: { duration: Infinity },
             }}
           />
-          <App />
+          <MotionConfig reducedMotion="user">
+            <App />
+          </MotionConfig>
         </QueryProvider>
       </QueryClientProvider>
     </PostHogProvider>

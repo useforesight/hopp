@@ -1,8 +1,20 @@
 import "../../App.css";
 import React, { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import ReactDOM from "react-dom/client";
+import clsx from "clsx";
+import {
+  HiCheck,
+  HiMagnifyingGlass,
+  HiOutlineAdjustmentsHorizontal,
+  HiOutlineEyeSlash,
+  HiOutlinePhone,
+  HiOutlineSwatch,
+  HiXMark,
+} from "react-icons/hi2";
+import { LuCommand } from "react-icons/lu";
 import { useDisableNativeContextMenu } from "@/lib/hooks";
-import { Checkbox } from "@/components/ui/checkbox";
+import { initTheme, setThemePreference, useThemePreference, type ThemePreference } from "@/lib/theme";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -20,6 +32,8 @@ import posthog from "posthog-js";
 import useStore from "@/store/store";
 
 const queryClient = new QueryClient();
+
+initTheme();
 
 const screenShareResolutionItems = [
   { id: "P1080", title: "1080p", description: "Lowest latency" },
@@ -40,7 +54,25 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   </React.StrictMode>,
 );
 
-function CheckboxRow({
+const settingTitleClass = "text-[13px] leading-[18px] font-medium text-foreground";
+const settingDescriptionClass = "text-xs leading-[18px] text-muted-foreground";
+
+function SettingsGroup({ title, children }: { title?: string; children: ReactNode }) {
+  return (
+    <section className="flex flex-col gap-2">
+      {title && (
+        <h2 className="border-none pb-0 pl-0.5 text-xs leading-4 font-medium tracking-normal text-muted-foreground">
+          {title}
+        </h2>
+      )}
+      <div className="flex flex-col divide-y divide-border rounded-xl bg-surface shadow-card ring-1 ring-inset ring-border">
+        {children}
+      </div>
+    </section>
+  );
+}
+
+function SwitchRow({
   title,
   description,
   checked,
@@ -52,40 +84,50 @@ function CheckboxRow({
   onCheckedChange: (checked: boolean) => void;
 }) {
   return (
-    <label className="flex items-start gap-2 cursor-pointer">
-      <Checkbox
-        className="mt-0.5 rounded border-gray-300 dark:border-gray-600"
-        checked={checked}
-        onCheckedChange={(v) => onCheckedChange(v === true)}
-      />
-      <div className="flex flex-col">
-        <span className="text-sm font-medium text-gray-700 dark:text-gray-300">{title}</span>
-        <span className="text-sm text-gray-500 dark:text-gray-400">{description}</span>
+    <label className="flex min-h-[56px] items-center justify-between gap-6 px-3.5 py-2.5">
+      <div className="flex min-w-0 flex-col">
+        <span className={settingTitleClass}>{title}</span>
+        <span className={settingDescriptionClass}>{description}</span>
       </div>
+      <Switch checked={checked} onCheckedChange={onCheckedChange} />
     </label>
   );
 }
 
-function ResolutionRow({
+function RadioCardsRow<Value extends string>({
+  title,
+  description,
+  name,
+  items,
   value,
   onValueChange,
 }: {
-  value: ScreenShareResolution;
-  onValueChange: (value: ScreenShareResolution) => void;
+  title: string;
+  description: string;
+  name: string;
+  items: Array<{ id: Value; title: string; description: string }>;
+  value: Value;
+  onValueChange: (value: Value) => void;
 }) {
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-2.5 px-3.5 py-3">
       <div className="flex flex-col">
-        <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Screen share resolution</span>
-        <span className="text-sm text-gray-500 dark:text-gray-400">Choose stream quality for screen sharing</span>
+        <span className={settingTitleClass}>{title}</span>
+        <span className={settingDescriptionClass}>{description}</span>
       </div>
-      <div className="flex flex-col gap-2">
-        {screenShareResolutionItems.map((item) => (
-          <label key={item.id} className="flex items-start gap-2 cursor-pointer">
+      <div className="grid auto-cols-fr grid-flow-col gap-2">
+        {items.map((item) => (
+          <label
+            key={item.id}
+            className={clsx(
+              "relative flex flex-col gap-0.5 rounded-lg p-2.5 ring-1 ring-inset transition-[background-color,box-shadow] duration-150 has-[:focus-visible]:ring-2",
+              value === item.id ? "bg-accent-soft ring-accent" : "bg-subtle ring-border hover:ring-border-strong",
+            )}
+          >
             <input
               type="radio"
-              name="screen-share-resolution"
-              className="mt-0.5 size-4 cursor-pointer accent-slate-700 dark:accent-slate-300"
+              name={name}
+              className="sr-only"
               checked={value === item.id}
               onChange={(event) => {
                 if (event.target.checked && value !== item.id) {
@@ -93,10 +135,13 @@ function ResolutionRow({
                 }
               }}
             />
-            <div className="flex flex-col">
-              <span className="text-sm font-medium text-gray-700 dark:text-gray-300">{item.title}</span>
-              <span className="text-sm text-gray-500 dark:text-gray-400">{item.description}</span>
-            </div>
+            <span className={settingTitleClass}>{item.title}</span>
+            <span className="text-[11px] leading-4 text-muted-foreground">{item.description}</span>
+            {value === item.id && (
+              <span className="absolute right-2 top-2 flex size-4 items-center justify-center rounded-full bg-accent text-accent-foreground">
+                <HiCheck className="size-2.5" strokeWidth={1.5} />
+              </span>
+            )}
           </label>
         ))}
       </div>
@@ -104,48 +149,107 @@ function ResolutionRow({
   );
 }
 
-function PickerModeRow({
-  value,
-  onValueChange,
-}: {
-  value: ScreenSharePickerMode;
-  onValueChange: (value: ScreenSharePickerMode) => void;
-}) {
+const THEME_OPTIONS: { id: ThemePreference; title: string }[] = [
+  { id: "system", title: "Auto" },
+  { id: "light", title: "Light" },
+  { id: "dark", title: "Dark" },
+];
+
+const THEME_PREVIEW_COLORS = {
+  light: { background: "#fbfbfc", rail: "#f0f0f3", line: "rgb(16 17 24 / 0.14)", edge: "rgb(16 17 24 / 0.09)" },
+  dark: { background: "#0f1013", rail: "#0b0c0e", line: "rgb(255 255 255 / 0.16)", edge: "rgb(255 255 255 / 0.08)" },
+};
+
+const PREVIEW_AVATAR_COLORS = ["#22d3ee", "#f472b6", "#34d399"];
+
+// A tiny Hopp window, painted with fixed colours so it shows that theme whichever one is active
+function ThemePreview({ appearance }: { appearance: "light" | "dark" }) {
+  const colors = THEME_PREVIEW_COLORS[appearance];
+  return (
+    <div className="absolute inset-0 flex" style={{ background: colors.background }}>
+      <div className="h-full w-[18%] border-r" style={{ background: colors.rail, borderColor: colors.edge }} />
+      <div className="flex flex-1 flex-col gap-[7px] p-2.5">
+        <div className="mb-0.5 h-1.5 w-2/5 rounded-full" style={{ background: colors.line }} />
+        {PREVIEW_AVATAR_COLORS.map((avatarColor) => (
+          <div key={avatarColor} className="flex items-center gap-1.5">
+            <div className="size-3.5 shrink-0 rounded-[4px]" style={{ background: avatarColor }} />
+            <div className="h-1 w-3/5 rounded-full" style={{ background: colors.line }} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AppearanceSettings() {
+  const preference = useThemePreference();
+
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex flex-col">
-        <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Default picker mode</span>
-        <span className="text-sm text-gray-500 dark:text-gray-400">
-          Choose what to select when screen sharing starts
-        </span>
+      <div className="grid grid-cols-3 gap-3" role="radiogroup" aria-label="Appearance">
+        {THEME_OPTIONS.map((option) => {
+          const selected = preference === option.id;
+          return (
+            <button
+              key={option.id}
+              type="button"
+              role="radio"
+              aria-checked={selected}
+              onClick={() => setThemePreference(option.id)}
+              className="group flex flex-col items-center gap-2 rounded-xl outline-none"
+            >
+              <span
+                className={clsx(
+                  "relative block aspect-[4/3] w-full overflow-hidden rounded-xl shadow-card ring-1 transition-[box-shadow,transform] duration-200 group-active:scale-[0.98] group-focus-visible:ring-2 group-focus-visible:ring-ring",
+                  selected ?
+                    "ring-2 ring-accent ring-offset-2 ring-offset-background"
+                  : "ring-border-strong group-hover:ring-faint-foreground",
+                )}
+              >
+                {option.id === "system" ?
+                  <>
+                    <ThemePreview appearance="light" />
+                    <span className="absolute inset-0 block [clip-path:polygon(100%_0,100%_100%,0_100%)]">
+                      <ThemePreview appearance="dark" />
+                    </span>
+                  </>
+                : <ThemePreview appearance={option.id} />}
+              </span>
+              <span
+                className={clsx(
+                  "text-[13px] leading-[18px]",
+                  selected ? "font-medium text-foreground" : "text-muted-foreground",
+                )}
+              >
+                {option.title}
+              </span>
+            </button>
+          );
+        })}
       </div>
-      <div className="flex flex-col gap-2">
-        {screenSharePickerModeItems.map((item) => (
-          <label key={item.id} className="flex items-start gap-2 cursor-pointer">
-            <input
-              type="radio"
-              name="screen-share-picker-mode"
-              className="mt-0.5 size-4 cursor-pointer accent-slate-700 dark:accent-slate-300"
-              checked={value === item.id}
-              onChange={(event) => {
-                if (event.target.checked && value !== item.id) {
-                  onValueChange(item.id);
-                }
-              }}
-            />
-            <div className="flex flex-col">
-              <span className="text-sm font-medium text-gray-700 dark:text-gray-300">{item.title}</span>
-              <span className="text-sm text-gray-500 dark:text-gray-400">{item.description}</span>
-            </div>
-          </label>
-        ))}
-      </div>
+      <p className="text-xs leading-[18px] text-muted-foreground">
+        Auto follows your system appearance. Every Hopp window switches together.
+      </p>
     </div>
   );
 }
 
-function formatAccel(accel: string): string {
-  return accel;
+const MAC_KEY_SYMBOLS: Record<string, string> = {
+  CommandOrControl: "⌘",
+  CmdOrCtrl: "⌘",
+  Command: "⌘",
+  Cmd: "⌘",
+  Control: "⌃",
+  Ctrl: "⌃",
+  Option: "⌥",
+  Alt: "⌥",
+  Shift: "⇧",
+};
+
+function formatAccel(accel: string): string[] {
+  const keys = accel.split("+");
+  if (OS === "macos") return keys.map((key) => MAC_KEY_SYMBOLS[key] ?? key);
+  return keys.map((key) => (key === "CommandOrControl" || key === "CmdOrCtrl" ? "Ctrl" : key));
 }
 
 function acceleratorKey(event: KeyboardEvent): string {
@@ -216,28 +320,34 @@ function ShortcutRow({
   };
 
   return (
-    <div className="flex items-start justify-between gap-2">
-      <div className="flex flex-col">
-        <span className="text-sm font-medium text-gray-700 dark:text-gray-300">{title}</span>
-        <span className="text-sm text-gray-500 dark:text-gray-400">{description}</span>
+    <div className="flex min-h-[56px] items-center justify-between gap-4 px-3.5 py-2.5">
+      <div className="flex min-w-0 flex-col">
+        <span className={settingTitleClass}>{title}</span>
+        <span className={settingDescriptionClass}>{description}</span>
       </div>
-      <div className="flex items-center gap-1 shrink-0">
+      <div className="flex shrink-0 items-center gap-1">
         {value && !recording && (
           <Button variant="ghost" size="sm" aria-label={`Clear ${title} shortcut`} onClick={() => onCommit("")}>
             Clear
           </Button>
         )}
-        <Button
-          variant="outline"
-          className="w-[180px] font-mono text-sm justify-start"
+        <button
+          type="button"
+          aria-label={`Record ${title} shortcut`}
           onClick={() => (recording ? stopRecording() : startRecording())}
+          className={clsx(
+            "flex h-8 w-[136px] items-center justify-center gap-0.5 rounded-lg px-2 text-xs ring-1 ring-inset transition-[background-color,box-shadow] duration-150 outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            recording ?
+              "bg-accent-soft font-medium text-accent ring-accent"
+            : "bg-subtle text-faint-foreground ring-border hover:ring-border-strong",
+          )}
         >
           {recording ?
-            <span className="text-gray-400 dark:text-gray-500 text-xs">Recording...</span>
+            "Press keys…"
           : value ?
-            <span className="text-gray-600 dark:text-gray-400 text-s">{formatAccel(value)}</span>
-          : <span className="text-gray-400 dark:text-gray-500 text-xs">Not set</span>}
-        </Button>
+            formatAccel(value).map((key) => <kbd key={key}>{key}</kbd>)
+          : "Not set"}
+        </button>
       </div>
     </div>
   );
@@ -295,11 +405,12 @@ function AppVeilSettings({
 
   return (
     <div className="flex flex-col gap-3">
-      <span className="text-sm text-gray-500 dark:text-gray-400">
+      <p className="text-[13px] leading-5 text-muted-foreground">
         Hide selected applications from viewers when sharing a screen. You will still see and use them normally.
-      </span>
+      </p>
 
       <div className="relative">
+        <HiMagnifyingGlass className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-faint-foreground" />
         <Input
           aria-label="Add application to App Veil"
           role="combobox"
@@ -307,6 +418,7 @@ function AppVeilSettings({
           aria-controls="app-veil-results"
           aria-activedescendant={results[highlighted] ? `app-veil-result-${highlighted}` : undefined}
           placeholder="Add application…"
+          className="pl-8"
           value={query}
           disabled={saving}
           onChange={(event) => {
@@ -334,10 +446,10 @@ function AppVeilSettings({
           <div
             id="app-veil-results"
             role="listbox"
-            className="absolute z-20 mt-1 max-h-56 w-full overflow-y-auto rounded-md border border-gray-200 bg-white p-1 shadow-lg dark:border-gray-700 dark:bg-gray-900"
+            className="absolute z-20 mt-1.5 max-h-56 w-full overflow-y-auto rounded-xl border border-border-strong bg-raised p-1 shadow-pop"
           >
             {results.length === 0 ?
-              <div className="px-2 py-3 text-sm text-gray-500">No installed applications found.</div>
+              <div className="px-2 py-3 text-[13px] text-muted-foreground">No installed applications found.</div>
             : results.map((application, index) => {
                 const added = addedBundleIds.has(application.bundle_id);
                 const icon = applicationIcon(application);
@@ -348,20 +460,21 @@ function AppVeilSettings({
                     aria-selected={index === highlighted}
                     key={application.bundle_id}
                     disabled={added || saving}
-                    className={`flex w-full items-center gap-2 rounded px-2 py-2 text-left text-sm ${
-                      index === highlighted ? "bg-gray-100 dark:bg-gray-800" : ""
-                    } disabled:opacity-60`}
+                    className={clsx(
+                      "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] disabled:opacity-60",
+                      index === highlighted && "bg-subtle",
+                    )}
                     onMouseEnter={() => setHighlighted(index)}
                     onClick={() => void add(application)}
                   >
                     {icon && <img src={icon} alt="" className="size-7 shrink-0" />}
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate text-gray-700 dark:text-gray-300">{application.name}</span>
+                      <span className="block truncate text-foreground">{application.name}</span>
                       {(nameCounts[application.name] ?? 0) > 1 && (
-                        <span className="block truncate text-xs text-gray-500">{application.bundle_id}</span>
+                        <span className="block truncate text-xs text-muted-foreground">{application.bundle_id}</span>
                       )}
                     </span>
-                    {added && <span className="text-xs text-gray-500">Added</span>}
+                    {added && <span className="text-xs text-muted-foreground">Added</span>}
                   </button>
                 );
               })
@@ -370,25 +483,37 @@ function AppVeilSettings({
         )}
       </div>
 
-      <div className="max-h-[220px] overflow-y-auto rounded-md border border-gray-200 dark:border-gray-700">
+      <SettingsGroup>
         {rows.length === 0 ?
-          <div className="px-3 py-4 text-sm text-gray-500">No applications are hidden yet.</div>
+          <div className="flex flex-col items-center gap-1 px-4 py-9 text-center">
+            <HiOutlineEyeSlash className="mb-1 size-5 text-faint-foreground" />
+            <span className={settingTitleClass}>Nothing is hidden yet</span>
+            <span className={settingDescriptionClass}>Search above to add an app, like your password manager.</span>
+          </div>
         : rows.map((row) => {
             const application = installedApplications.find((candidate) => candidate.bundle_id === row.bundle_id);
             const name = application?.name ?? "Application not found";
             const icon = application && applicationIcon(application);
             return (
-              <div
-                key={row.bundle_id}
-                className="group flex min-h-11 items-center gap-2 border-b border-gray-200 px-3 py-2 last:border-b-0 dark:border-gray-700"
-              >
+              <div key={row.bundle_id} className="group flex min-h-12 items-center gap-2.5 px-3.5 py-2">
                 {icon ?
                   <img src={icon} alt="" className="size-7 shrink-0" />
-                : <div aria-hidden className="size-7 shrink-0 rounded bg-gray-100 dark:bg-gray-800" />}
+                : <div aria-hidden className="size-7 shrink-0 rounded-lg bg-subtle" />}
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm text-gray-700 dark:text-gray-300">{name}</span>
-                  {!application && <span className="block truncate text-xs text-gray-500">{row.bundle_id}</span>}
+                  <span className={clsx("block truncate", settingTitleClass)}>{name}</span>
+                  {!application && (
+                    <span className="block truncate text-xs text-muted-foreground">{row.bundle_id}</span>
+                  )}
                 </span>
+                <button
+                  type="button"
+                  aria-label={`Remove ${application?.name ?? row.bundle_id} from App Veil`}
+                  disabled={saving}
+                  className="flex size-7 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity outline-none group-hover:opacity-100 hover:bg-subtle focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring"
+                  onClick={() => void commit(rows.filter((candidate) => candidate.bundle_id !== row.bundle_id))}
+                >
+                  <HiXMark className="size-4" />
+                </button>
                 <Switch
                   aria-label={`Hide ${application?.name ?? row.bundle_id} from viewers`}
                   checked={row.enabled}
@@ -401,38 +526,30 @@ function AppVeilSettings({
                     )
                   }
                 />
-                <button
-                  type="button"
-                  aria-label={`Remove ${application?.name ?? row.bundle_id} from App Veil`}
-                  disabled={saving}
-                  className="size-7 rounded text-lg text-gray-500 opacity-0 hover:bg-gray-100 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-gray-400 group-hover:opacity-100 dark:hover:bg-gray-800"
-                  onClick={() => void commit(rows.filter((candidate) => candidate.bundle_id !== row.bundle_id))}
-                >
-                  −
-                </button>
               </div>
             );
           })
         }
-      </div>
+      </SettingsGroup>
     </div>
   );
 }
 
-type SectionId = "call" | "app-veil" | "shortcuts" | "misc";
+type SectionId = "appearance" | "call" | "app-veil" | "shortcuts" | "misc";
 
-const SECTIONS: { id: SectionId; title: string; macOnly?: boolean }[] = [
-  { id: "call", title: "Call settings" },
-  { id: "app-veil", title: "App Veil (beta)", macOnly: true },
-  { id: "shortcuts", title: "Shortcuts" },
-  { id: "misc", title: "Miscellaneous" },
+const SECTIONS: { id: SectionId; title: string; icon: ReactNode; beta?: boolean; macOnly?: boolean }[] = [
+  { id: "appearance", title: "Appearance", icon: <HiOutlineSwatch /> },
+  { id: "call", title: "Calls", icon: <HiOutlinePhone /> },
+  { id: "app-veil", title: "App Veil", icon: <HiOutlineEyeSlash />, beta: true, macOnly: true },
+  { id: "shortcuts", title: "Shortcuts", icon: <LuCommand /> },
+  { id: "misc", title: "General", icon: <HiOutlineAdjustmentsHorizontal /> },
 ];
 
 function SettingsWindow() {
   useDisableNativeContextMenu();
 
   const [serverUrl, setServerUrl] = useState("");
-  const [section, setSection] = useState<SectionId>("call");
+  const [section, setSection] = useState<SectionId>("appearance");
 
   const { data: settings, refetch: refetchSettings } = useQuery({
     queryKey: ["user-settings"],
@@ -480,139 +597,148 @@ function SettingsWindow() {
     refetchSettings();
   }
 
-  if (!settings) return null;
+  if (!settings) return <div className="h-full min-h-screen bg-background" />;
 
   const visibleSections = SECTIONS.filter((s) => !s.macOnly || OS === "macos");
 
   return (
-    <div className="h-full min-h-full overflow-hidden text-black dark:text-white flex flex-col">
+    <div className="flex h-screen overflow-hidden bg-background text-foreground">
       <div data-tauri-drag-region className="fixed inset-x-0 top-0 z-50 h-[32px]" />
 
-      <div className="flex-1 flex flex-col min-h-0 px-5 pb-5 pt-12">
-        <h1 className="text-[22px] font-semibold mb-6 text-black dark:text-white">Settings</h1>
-
-        <div className="flex-1 flex min-h-0 gap-8">
-          <nav className="w-[150px] shrink-0 flex flex-col gap-1">
-            {visibleSections.map((s) => (
-              <button
-                key={s.id}
-                onClick={() => setSection(s.id)}
-                className={`rounded-md px-3 py-1.5 text-left text-sm ${
-                  section === s.id ?
-                    "bg-gray-200 font-medium text-black dark:bg-gray-700 dark:text-white"
-                  : "text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
-                }`}
-              >
-                {s.title}
-              </button>
-            ))}
-          </nav>
-
-          <main className="flex-1 min-w-0 overflow-y-auto pr-1">
-            {section === "call" && (
-              <div className="flex flex-col gap-5">
-                <div className="flex flex-col gap-3">
-                  <h3 className="text-base font-medium text-black dark:text-white">Call settings</h3>
-                  <CheckboxRow
-                    title="Call feedback popup"
-                    description="Show a feedback popup when call ends"
-                    checked={settings.call_feedback_popup}
-                    onCheckedChange={(v) => {
-                      typedInvoke("set_call_feedback_popup", { enabled: v }).then(() => refetchSettings());
-                    }}
-                  />
-                  <CheckboxRow
-                    title="Show dock icon when in call"
-                    description="Hide dock icon to save space when you are in a call"
-                    checked={settings.show_dock_icon_in_call}
-                    onCheckedChange={(v) => {
-                      typedInvoke("set_show_dock_icon_in_call", { enabled: v }).then(() => refetchSettings());
-                    }}
-                  />
-                </div>
-
-                <hr className="h-px w-full border-none bg-gray-300 dark:bg-gray-600" />
-
-                <div className="flex flex-col gap-3">
-                  <h3 className="text-base font-medium text-black dark:text-white">Camera settings</h3>
-                  <CheckboxRow
-                    title="Start camera on call start"
-                    description="Open camera when you start the call"
-                    checked={settings.start_camera_on_call}
-                    onCheckedChange={(v) => {
-                      typedInvoke("set_start_camera_on_call", { enabled: v }).then(() => refetchSettings());
-                    }}
-                  />
-                </div>
-
-                <hr className="h-px w-full border-none bg-gray-300 dark:bg-gray-600" />
-
-                <div className="flex flex-col gap-3">
-                  <h3 className="text-base font-medium text-black dark:text-white">Audio settings</h3>
-                  <CheckboxRow
-                    title="Start microphone on call start"
-                    description="Unmute microphone when you start the call"
-                    checked={settings.start_mic_on_call}
-                    onCheckedChange={(v) => {
-                      typedInvoke("set_start_mic_on_call", { enabled: v }).then(() => refetchSettings());
-                    }}
-                  />
-                  <CheckboxRow
-                    title="Noise cancellation"
-                    description="Noise suppression on microphone input"
-                    checked={settings.noise_cancellation_enabled}
-                    onCheckedChange={(v) => {
-                      typedInvoke("set_noise_cancellation", { enabled: v }).then(() => refetchSettings());
-                    }}
-                  />
-                </div>
-
-                <hr className="h-px w-full border-none bg-gray-300 dark:bg-gray-600" />
-
-                <div className="flex flex-col gap-3">
-                  <h3 className="text-base font-medium text-black dark:text-white">Screen share settings</h3>
-                  <CheckboxRow
-                    title="Enable remote control by default"
-                    description="Allow teammates to control your computer when screen sharing starts"
-                    checked={settings.remote_control_enabled}
-                    onCheckedChange={(v) => {
-                      typedInvoke("set_remote_control_enabled", { enabled: v }).then(() => refetchSettings());
-                    }}
-                  />
-                  <ResolutionRow
-                    value={settings.screen_share_resolution}
-                    onValueChange={(resolution) => {
-                      typedInvoke("set_screen_share_resolution", { resolution }).then(() => refetchSettings());
-                    }}
-                  />
-                  {OS === "macos" && (
-                    <PickerModeRow
-                      value={settings.screen_share_picker_mode}
-                      onValueChange={(mode) => {
-                        typedInvoke("set_screen_share_picker_mode", { mode }).then(() => refetchSettings());
-                      }}
-                    />
-                  )}
-                </div>
-              </div>
+      <nav className="flex w-[188px] shrink-0 flex-col gap-0.5 border-r border-border bg-rail px-2.5 pb-3 pt-12">
+        {visibleSections.map((s) => (
+          <button
+            key={s.id}
+            onClick={() => setSection(s.id)}
+            className={clsx(
+              "flex h-8 items-center gap-2 rounded-lg px-2 text-left text-[13px] transition-colors duration-150 [&>svg]:size-4 [&>svg]:shrink-0",
+              section === s.id ?
+                "bg-subtle-strong font-medium text-foreground"
+              : "text-muted-foreground hover:bg-subtle hover:text-foreground",
             )}
-
-            {section === "app-veil" && OS === "macos" && (
-              <AppVeilSettings
-                rows={settings.app_veil_applications}
-                installedApplications={installedApplications}
-                onChange={async (applications) => {
-                  try {
-                    await typedInvoke("set_app_veil_applications", { applications });
-                  } finally {
-                    await refetchSettings();
-                  }
-                }}
-              />
+          >
+            {s.icon}
+            {s.title}
+            {s.beta && (
+              <span className="ml-auto rounded-[5px] bg-accent-soft px-1.5 text-[10px] leading-4 font-medium text-accent">
+                Beta
+              </span>
             )}
+          </button>
+        ))}
+      </nav>
 
-            {section === "shortcuts" && (
-              <div className="flex flex-col gap-3">
+      <main key={section} className="min-w-0 flex-1 overflow-y-auto">
+        <div className="mx-auto flex max-w-[580px] flex-col gap-5 px-8 pb-10 pt-12 animate-in fade-in-0 duration-200">
+          <h1 className="text-[22px] leading-7 font-semibold tracking-[-0.02em] text-foreground">
+            {visibleSections.find((s) => s.id === section)?.title}
+          </h1>
+
+          {section === "appearance" && <AppearanceSettings />}
+
+          {section === "call" && (
+            <>
+              <SettingsGroup>
+                <SwitchRow
+                  title="Call feedback popup"
+                  description="Ask how the call went when it ends"
+                  checked={settings.call_feedback_popup}
+                  onCheckedChange={(v) => {
+                    typedInvoke("set_call_feedback_popup", { enabled: v }).then(() => refetchSettings());
+                  }}
+                />
+                <SwitchRow
+                  title="Show dock icon when in call"
+                  description="Turn off to save dock space during calls"
+                  checked={settings.show_dock_icon_in_call}
+                  onCheckedChange={(v) => {
+                    typedInvoke("set_show_dock_icon_in_call", { enabled: v }).then(() => refetchSettings());
+                  }}
+                />
+              </SettingsGroup>
+
+              <SettingsGroup title="Joining a call">
+                <SwitchRow
+                  title="Start with camera on"
+                  description="Open your camera when you start a call"
+                  checked={settings.start_camera_on_call}
+                  onCheckedChange={(v) => {
+                    typedInvoke("set_start_camera_on_call", { enabled: v }).then(() => refetchSettings());
+                  }}
+                />
+                <SwitchRow
+                  title="Start with microphone on"
+                  description="Unmute your microphone when you start a call"
+                  checked={settings.start_mic_on_call}
+                  onCheckedChange={(v) => {
+                    typedInvoke("set_start_mic_on_call", { enabled: v }).then(() => refetchSettings());
+                  }}
+                />
+              </SettingsGroup>
+
+              <SettingsGroup title="Audio">
+                <SwitchRow
+                  title="Noise cancellation"
+                  description="Suppress background noise on your microphone"
+                  checked={settings.noise_cancellation_enabled}
+                  onCheckedChange={(v) => {
+                    typedInvoke("set_noise_cancellation", { enabled: v }).then(() => refetchSettings());
+                  }}
+                />
+              </SettingsGroup>
+
+              <SettingsGroup title="Screen share">
+                <SwitchRow
+                  title="Enable remote control by default"
+                  description="Allow teammates to control your computer when screen sharing starts"
+                  checked={settings.remote_control_enabled}
+                  onCheckedChange={(v) => {
+                    typedInvoke("set_remote_control_enabled", { enabled: v }).then(() => refetchSettings());
+                  }}
+                />
+                <RadioCardsRow
+                  title="Resolution"
+                  description="Choose stream quality for screen sharing"
+                  name="screen-share-resolution"
+                  items={screenShareResolutionItems}
+                  value={settings.screen_share_resolution}
+                  onValueChange={(resolution) => {
+                    typedInvoke("set_screen_share_resolution", { resolution }).then(() => refetchSettings());
+                  }}
+                />
+                {OS === "macos" && (
+                  <RadioCardsRow
+                    title="Default picker mode"
+                    description="Choose what to select when screen sharing starts"
+                    name="screen-share-picker-mode"
+                    items={screenSharePickerModeItems}
+                    value={settings.screen_share_picker_mode}
+                    onValueChange={(mode) => {
+                      typedInvoke("set_screen_share_picker_mode", { mode }).then(() => refetchSettings());
+                    }}
+                  />
+                )}
+              </SettingsGroup>
+            </>
+          )}
+
+          {section === "app-veil" && OS === "macos" && (
+            <AppVeilSettings
+              rows={settings.app_veil_applications}
+              installedApplications={installedApplications}
+              onChange={async (applications) => {
+                try {
+                  await typedInvoke("set_app_veil_applications", { applications });
+                } finally {
+                  await refetchSettings();
+                }
+              }}
+            />
+          )}
+
+          {section === "shortcuts" && (
+            <>
+              <SettingsGroup>
                 <ShortcutRow
                   title="Mute / unmute mic"
                   description="Toggle microphone during call"
@@ -637,12 +763,18 @@ function SettingsWindow() {
                   value={settings.shortcut_end_call}
                   onCommit={(accel) => commitShortcut("end_call", accel)}
                 />
-              </div>
-            )}
+              </SettingsGroup>
+              <p className="text-xs leading-[18px] text-muted-foreground">
+                Click a shortcut, then press the keys. It needs {OS === "macos" ? "⌘, ⌃ or ⌥" : "Ctrl or Alt"}. Esc
+                cancels.
+              </p>
+            </>
+          )}
 
-            {section === "misc" && (
-              <div className="flex flex-col gap-3">
-                <CheckboxRow
+          {section === "misc" && (
+            <>
+              <SettingsGroup>
+                <SwitchRow
                   title="Send anonymous telemetry"
                   description="Help improve Hopp by sending anonymous usage data and error reports"
                   checked={settings.telemetry_enabled}
@@ -658,7 +790,7 @@ function SettingsWindow() {
                   }}
                 />
                 {OS === "macos" && (
-                  <CheckboxRow
+                  <SwitchRow
                     title="Automatic updates"
                     description="Download and install updates automatically when you're not in a call"
                     checked={settings.auto_update_enabled}
@@ -667,12 +799,16 @@ function SettingsWindow() {
                     }}
                   />
                 )}
-                <div className="flex flex-col gap-1">
-                  <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Custom Backend URL</span>
-                  <span className="text-sm text-gray-500 dark:text-gray-400">
-                    Change backend server. Leave empty to use default.
-                  </span>
+              </SettingsGroup>
+
+              <SettingsGroup title="Server">
+                <div className="flex flex-col gap-2.5 px-3.5 py-3">
+                  <label htmlFor="custom-backend-url" className="flex flex-col">
+                    <span className={settingTitleClass}>Custom backend URL</span>
+                    <span className={settingDescriptionClass}>Change backend server. Leave empty to use default.</span>
+                  </label>
                   <Input
+                    id="custom-backend-url"
                     type="text"
                     placeholder={URLS.API_BASE_URL}
                     value={serverUrl}
@@ -697,11 +833,11 @@ function SettingsWindow() {
                     }}
                   />
                 </div>
-              </div>
-            )}
-          </main>
+              </SettingsGroup>
+            </>
+          )}
         </div>
-      </div>
+      </main>
     </div>
   );
 }

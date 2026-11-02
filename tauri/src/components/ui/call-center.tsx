@@ -1,17 +1,14 @@
 import { showCallNotice } from "@/lib/call-alert";
-import { formatDistanceToNow } from "date-fns";
-import { LuMicOff, LuVideo, LuVideoOff, LuScreenShare, LuScreenShareOff } from "react-icons/lu";
+import { LuMicOff, LuPhoneOff, LuVideo, LuVideoOff, LuScreenShare, LuScreenShareOff } from "react-icons/lu";
 import { PiScribbleLoopBold, PiCursorBold } from "react-icons/pi";
 import useStore, { CallState, ParticipantRole } from "@/store/store";
-import { Separator } from "@/components/ui/separator";
-import { ToggleIconButton } from "@/components/ui/toggle-icon-button";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuTrigger,
   DropdownMenuCheckboxItem,
 } from "@/components/ui/dropdown-menu";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Select, SelectContent, SelectItem, SelectTrigger } from "./select";
 import { SelectPortal } from "@radix-ui/react-select";
 import { Button } from "./button";
@@ -19,30 +16,69 @@ import { tauriUtils } from "@/windows/window-utils";
 import { HiOutlineCursorClick, HiOutlineEye } from "react-icons/hi";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { CustomIcons } from "@/components/ui/icons";
+import { avatarGradient, HoppAvatar } from "@/components/ui/hopp-avatar";
 import clsx from "clsx";
 import { ChevronDownIcon } from "@radix-ui/react-icons";
 import { MoreHorizontal, X } from "lucide-react";
-import { HiOutlinePhoneXMark, HiMiniLink } from "react-icons/hi2";
+import { HiLockClosed, HiMiniLink } from "react-icons/hi2";
+import { CgSpinner } from "react-icons/cg";
 import toast from "react-hot-toast";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { Constants } from "@/constants";
 import { useEndCall } from "@/lib/hooks";
-import { typedInvoke } from "@/core_payloads";
+import { CoreParticipantState, typedInvoke } from "@/core_payloads";
 import { useQuery } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import { getAllWindows } from "@tauri-apps/api/window";
 import { sounds } from "@/constants/sounds";
 
-const Colors = {
-  deactivatedIcon: "text-slate-600",
-  deactivatedText: "text-slate-500",
-  mic: { text: "text-blue-600", icon: "text-blue-600", ring: "ring-blue-600" },
-  camera: { text: "text-green-600", icon: "text-green-600", ring: "ring-green-600" },
-  screen: { text: "text-yellow-600", icon: "text-yellow-600", ring: "ring-yellow-600" },
-} as const;
+const NO_PARTICIPANTS: CoreParticipantState[] = [];
+
+type DockTone = "neutral" | "danger" | "success" | "accent" | "end";
+
+const dockToneClass: Record<DockTone, string> = {
+  neutral: "bg-subtle text-foreground ring-border hover:bg-subtle-strong",
+  danger: "bg-destructive-soft text-destructive ring-destructive/25 hover:bg-destructive/20",
+  success: "bg-success-soft text-success ring-success/25 hover:bg-success/20",
+  accent: "bg-accent-soft text-accent ring-accent/25 hover:bg-accent/25",
+  end: "bg-destructive text-destructive-foreground ring-transparent shadow-card hover:bg-destructive/90",
+};
+
+const DockButton = React.forwardRef<
+  HTMLButtonElement,
+  { tone: DockTone; icon: React.ReactNode; label: string } & React.ComponentPropsWithoutRef<"button">
+>(({ tone, icon, label, className, ...props }, ref) => (
+  <button
+    ref={ref}
+    type="button"
+    {...props}
+    className={clsx(
+      "flex h-[58px] w-full flex-col items-center justify-center gap-1 rounded-[14px] text-[11px] leading-4 font-medium ring-1 ring-inset transition-[background-color,color,transform] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.97] disabled:opacity-50",
+      dockToneClass[tone],
+      className,
+    )}
+  >
+    {icon}
+    {label}
+  </button>
+));
+DockButton.displayName = "DockButton";
+
+const deviceMenuTriggerClass =
+  "flex size-5 items-center justify-center rounded-md border-0 bg-transparent p-0 text-current opacity-70 hover:bg-subtle-strong hover:opacity-100 focus:ring-0 focus-visible:ring-2 focus-visible:ring-ring";
+
+const sharingToolClass =
+  "relative flex size-8 items-center justify-center rounded-[10px] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50";
+
+const ShortcutTooltip = ({ shortcut }: { shortcut?: string }) =>
+  shortcut ?
+    <TooltipContent sideOffset={4} side="top" className="flex flex-row items-center px-1.5">
+      <kbd>{shortcut}</kbd>
+    </TooltipContent>
+  : null;
 
 export function CallCenter() {
-  const { callTokens, teammates } = useStore();
+  const { callTokens } = useStore();
   const [controllerCursorState, setControllerCursorState] = useState(true);
   const [accessibilityPermission, setAccessibilityPermission] = useState(true);
 
@@ -146,175 +182,105 @@ export function CallCenter() {
 
   if (!callTokens) return null;
 
+  const toggleControllerCursor = () => {
+    let controllerCursorTmp = !controllerCursorState;
+    tauriUtils.setControllerCursor(controllerCursorTmp);
+    setControllerCursorState(controllerCursorTmp);
+  };
+
   return (
-    <div className="flex flex-col items-center w-full max-w-sm mx-auto bg-white pt-4 mb-4">
-      {/* Reconnecting Banner */}
-      {callTokens.isReconnecting && (
-        <div className="bg-amber-100 border border-amber-300 rounded-md px-3 py-2 mb-3 flex items-center justify-center gap-2">
-          <div className="animate-spin h-4 w-4 border-2 border-amber-600 border-t-transparent rounded-full" />
-          <span className="text-xs font-medium text-amber-800">Reconnecting...</span>
+    <div className="flex h-[var(--app-height)] w-full flex-col gap-2.5 px-3 pb-3 pt-3.5">
+      <CallHeader onCopyRoomLink={handleCopyRoomLink} />
+      <CallParticipants />
+
+      {callTokens.role === ParticipantRole.CONTROLLER && (
+        <Button
+          className="w-full gap-2 rounded-[14px] bg-accent-soft text-accent hover:bg-accent/25 hover:text-accent"
+          variant="ghost"
+          onClick={() => {
+            typedInvoke("open_screenshare_viewer");
+          }}
+        >
+          <HiOutlineEye className="size-4" />
+          Open shared window
+        </Button>
+      )}
+
+      {callTokens.role === ParticipantRole.SHARER && (
+        <div className="flex items-center gap-1 rounded-[14px] bg-accent-soft py-1 pl-3 pr-1 ring-1 ring-inset ring-accent/20 animate-in fade-in-0 slide-in-from-bottom-1 duration-200">
+          <span className="min-w-0 flex-1 truncate text-xs font-medium text-accent">Sharing your screen</span>
+          <TooltipProvider>
+            <Tooltip delayDuration={100}>
+              <TooltipTrigger asChild>
+                <span className="inline-flex">
+                  <button
+                    type="button"
+                    aria-label={`${controllerCursorState ? "Disable" : "Enable"} remote control`}
+                    aria-pressed={controllerCursorState}
+                    onClick={toggleControllerCursor}
+                    disabled={!accessibilityPermission}
+                    className={clsx(
+                      sharingToolClass,
+                      controllerCursorState ?
+                        "bg-accent text-accent-foreground"
+                      : "text-muted-foreground hover:bg-subtle-strong",
+                    )}
+                  >
+                    <HiOutlineCursorClick className="size-4" />
+                    {!controllerCursorState && (
+                      <HiLockClosed className="absolute bottom-1 right-1 size-2.5 text-destructive" />
+                    )}
+                  </button>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="top">
+                {!accessibilityPermission ?
+                  "Remote control needs Accessibility permission"
+                : `${controllerCursorState ? "Disable" : "Enable"} remote control`}
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+          <DrawingEnableButton />
         </div>
       )}
 
-      <div className="w-full">
-        {/* Initial connecting banner */}
-        {callTokens.isInitialisingCall && (
-          <div className="mb-4 text-xs font-medium flex flex-row gap-2 items-center justify-center">
-            <div className="animate-spin size-3 border-[1.5px] border-slate-400 border-t-transparent rounded-full" />
-            Connecting to call
-          </div>
-        )}
-
-        {/* Call Timer */}
-        {!callTokens.isInitialisingCall &&
-          (callTokens.room ?
-            <div className="w-full flex flex-col items-center gap-0.5 mb-4">
-              <div className="flex items-center justify-center gap-1.5">
-                <span className="text-xs font-medium">{callTokens.room.name}</span>
-                <TooltipProvider delayDuration={100}>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <button
-                        type="button"
-                        onClick={handleCopyRoomLink}
-                        className="flex items-center justify-center size-5 rounded-sm text-slate-500 hover:bg-slate-200 hover:text-slate-700"
-                        aria-label="Copy room link"
-                      >
-                        <HiMiniLink className="size-3" />
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom" className="flex flex-col items-center gap-0">
-                      <span>Copy room link for web</span>
-                      <span className="text-xs text-slate-400">Share with teammates</span>
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-              </div>
-              <span className="text-xs muted font-medium">
-                started{" "}
-                {formatDistanceToNow(callTokens.timeStarted, {
-                  addSuffix: true,
-                })}
-              </span>
-            </div>
-          : <div className="w-full text-center mb-4">
-              <span className="text-xs font-medium">Pairing</span>{" "}
-              <span className="text-xs muted font-medium">
-                started{" "}
-                {formatDistanceToNow(callTokens.timeStarted, {
-                  addSuffix: true,
-                })}
-              </span>
-            </div>)}
-      </div>
-      <div className="gap-2 px-3 flex flex-col items-center w-full mb-2">
-        <div className="flex flex-row gap-1 w-full">
-          <MediaDevicesSettings
-            micShortcut={userSettings?.shortcut_toggle_mic}
-            cameraShortcut={userSettings?.shortcut_toggle_camera}
-            screenShareShortcut={userSettings?.shortcut_toggle_screenshare}
-          />
-        </div>
-        <div className="flex flex-col gap-2 w-full">
-          {callTokens?.role === ParticipantRole.CONTROLLER && (
-            <Button
-              className="w-full border-gray-500 text-gray-600 flex flex-row gap-2"
-              variant="gradient-white"
-              onClick={() => {
-                typedInvoke("open_screenshare_viewer");
-              }}
-            >
-              <HiOutlineEye className="size-4" />
-              Open shared window
-            </Button>
-          )}
-          <div className="w-full flex flex-row gap-2">
-            {callTokens?.role === ParticipantRole.SHARER && (
-              <TooltipProvider>
-                <Tooltip delayDuration={100}>
-                  <TooltipTrigger>
-                    <ToggleIconButton
-                      onClick={() => {
-                        let controllerCursorTmp = !controllerCursorState;
-                        tauriUtils.setControllerCursor(controllerCursorTmp);
-                        setControllerCursorState(controllerCursorTmp);
-                      }}
-                      state={
-                        controllerCursorState ? "active"
-                        : !accessibilityPermission ?
-                          "deactivated"
-                        : "neutral"
-                      }
-                      size="unsized"
-                      className="size-9"
-                      disabled={!accessibilityPermission}
-                    >
-                      {controllerCursorState && (
-                        <HiOutlineCursorClick
-                          className={clsx("size-4", {
-                            "text-red-800": !controllerCursorState,
-                          })}
-                        />
-                      )}
-                      {!controllerCursorState && (
-                        <div className="relative">
-                          <HiOutlineCursorClick className="size-4 text-red-800" />
-                          <span className="absolute bottom-[-8px] right-[-7px] text-[10px]">🔒</span>
-                        </div>
-                      )}
-                    </ToggleIconButton>
-                  </TooltipTrigger>
-                  <TooltipContent side="bottom">
-                    {controllerCursorState ? "Disable" : "Enable"} remote control
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-            )}
-            {callTokens?.role === ParticipantRole.SHARER && <DrawingEnableButton />}
-            <TooltipProvider>
-              <Tooltip delayDuration={100}>
-                <TooltipTrigger asChild>
-                  <Button
-                    className="w-full border-red-500 text-red-600 flex flex-row gap-2"
-                    variant="gradient-white"
-                    onClick={handleEndCall}
-                  >
-                    <HiOutlinePhoneXMark className="size-4" />
-                    End call
-                  </Button>
-                </TooltipTrigger>
-                {userSettings?.shortcut_end_call && (
-                  <TooltipContent sideOffset={0} side="bottom" variant="transparent">
-                    <kbd className="text-xs">{userSettings.shortcut_end_call}</kbd>
-                  </TooltipContent>
-                )}
-              </Tooltip>
-            </TooltipProvider>
-          </div>
-        </div>
-      </div>
-      <CallParticipants />
-      {/* Horizontal line */}
-      <Separator className="w-full mt-4" />
+      <MediaDevicesSettings
+        micShortcut={userSettings?.shortcut_toggle_mic}
+        cameraShortcut={userSettings?.shortcut_toggle_camera}
+        screenShareShortcut={userSettings?.shortcut_toggle_screenshare}
+        endCallShortcut={userSettings?.shortcut_end_call}
+        onEndCall={handleEndCall}
+      />
     </div>
   );
 }
 
-function CallParticipants() {
-  const { callTokens, teammates, user } = useStore();
-  const coreParticipants = callTokens?.participants ?? [];
-  const isRoomCall = !!(callTokens?.isRoomCall || callTokens?.room);
-  const prevCountRef = useRef(coreParticipants.length);
+// Ticks on its own, so the rest of the call screen doesn't re-render every second
+function CallTimer({ startedAt }: { startedAt: Date }) {
+  const [now, setNow] = useState(() => Date.now());
 
-  // Play sound when a new participant connects (count increases)
   useEffect(() => {
-    if (coreParticipants.length > prevCountRef.current && prevCountRef.current !== 0) {
-      sounds.callAccepted.play();
-    }
-    prevCountRef.current = coreParticipants.length;
-  }, [coreParticipants.length]);
+    const interval = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, []);
 
-  const participantList = useMemo(() => {
+  const totalSeconds = Math.max(0, Math.floor((now - new Date(startedAt).getTime()) / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = String(Math.floor((totalSeconds % 3600) / 60)).padStart(hours > 0 ? 2 : 1, "0");
+  const seconds = String(totalSeconds % 60).padStart(2, "0");
+
+  return <span className="tabular-nums">{hours > 0 ? `${hours}:${minutes}:${seconds}` : `${minutes}:${seconds}`}</span>;
+}
+
+function useCallTiles() {
+  const coreParticipants = useStore((state) => state.callTokens?.participants ?? NO_PARTICIPANTS);
+  const hasAudioEnabled = useStore((state) => state.callTokens?.hasAudioEnabled ?? true);
+  const hasCameraEnabled = useStore((state) => state.callTokens?.hasCameraEnabled ?? false);
+  const isSharing = useStore((state) => state.callTokens?.role === ParticipantRole.SHARER);
+  const teammates = useStore((state) => state.teammates);
+  const user = useStore((state) => state.user);
+
+  return useMemo(() => {
     const extractUserId = (identity: string): string => {
       const parts = identity.split(":");
       return parts.length >= 4 ? (parts[2] ?? identity) : identity;
@@ -326,13 +292,15 @@ function CallParticipants() {
     };
 
     const localEntry =
-      isRoomCall && user ?
+      user ?
         {
           id: "local",
-          participantId: user.id,
           user,
+          name: `${user.first_name} ${user.last_name}`,
           isLocal: true,
-          isMicrophoneEnabled: callTokens?.hasAudioEnabled ?? true,
+          isMicrophoneEnabled: hasAudioEnabled,
+          hasCamera: hasCameraEnabled,
+          isScreensharing: isSharing,
         }
       : null;
 
@@ -344,70 +312,204 @@ function CallParticipants() {
         return pid !== user?.id;
       })
       .map((p) => {
-        const participantId = extractUserId(p.identity);
+        const teammate = findUser(extractUserId(p.identity));
         return {
           id: p.identity,
-          participantId,
-          user: findUser(participantId),
+          user: teammate,
+          name: teammate ? `${teammate.first_name} ${teammate.last_name}` : p.name || "Unknown user",
           isLocal: false,
           isMicrophoneEnabled: !p.muted,
+          hasCamera: p.has_camera,
+          isScreensharing: p.is_screensharing,
         };
       });
 
     return localEntry ? [localEntry, ...remoteEntries] : remoteEntries;
-  }, [coreParticipants, teammates, user, isRoomCall, callTokens?.hasAudioEnabled]);
+  }, [coreParticipants, teammates, user, hasAudioEnabled, hasCameraEnabled, isSharing]);
+}
 
-  if (participantList.length === 0) return null;
+function useCallPeerName() {
+  const peerId = useStore((state) => state.callTokens?.participant);
+  const teammates = useStore((state) => state.teammates);
+  return teammates?.find((teammate) => teammate.id === peerId)?.first_name;
+}
+
+function CallHeader({ onCopyRoomLink }: { onCopyRoomLink: () => void }) {
+  const isReconnecting = useStore((state) => !!state.callTokens?.isReconnecting);
+  const isInitialising = useStore((state) => !!state.callTokens?.isInitialisingCall);
+  const timeStarted = useStore((state) => state.callTokens?.timeStarted);
+  const room = useStore((state) => state.callTokens?.room);
+  const peerName = useCallPeerName();
+  const remoteTiles = useCallTiles().filter((tile) => !tile.isLocal);
+
+  const remoteFirstNames = remoteTiles.map((tile) => tile.user?.first_name ?? tile.name);
+  const title =
+    room?.name ??
+    (remoteFirstNames.length === 0 ?
+      peerName ? `Pairing with ${peerName}`
+      : "Pairing"
+    : remoteFirstNames.length === 1 ? `Pairing with ${remoteFirstNames[0]}`
+    : remoteFirstNames.length === 2 ? `Pairing with ${remoteFirstNames[0]} & ${remoteFirstNames[1]}`
+    : `Pairing with ${remoteFirstNames.length} people`);
 
   return (
-    <div className="flex flex-col w-full mt-3 px-3">
-      <span className="text-xs font-medium text-slate-600 mb-2">Participants</span>
-      <div className="flex flex-col gap-3">
-        {participantList.map((participant) => (
-          <div key={participant.id} className="flex items-center gap-3">
-            {participant.user ?
-              <>
-                <div className="size-8 rounded-md bg-emerald-200 flex items-center justify-center shrink-0 overflow-hidden ring-1 ring-white">
-                  {participant.user.avatar_url ?
-                    <img
-                      src={participant.user.avatar_url}
-                      alt={`${participant.user.first_name} ${participant.user.last_name}`}
-                      className="size-full object-cover"
-                    />
-                  : <span className="text-[10px] font-medium text-emerald-700">
-                      {participant.user.first_name[0]}
-                      {participant.user.last_name[0]}
-                    </span>
-                  }
-                </div>
-                <div className="flex flex-col">
-                  <span className="text-sm font-medium">
-                    {participant.user.first_name} {participant.user.last_name}
-                    {participant.isLocal && " (You)"}
-                  </span>
-                  {!participant.isMicrophoneEnabled && (
-                    <span className="flex items-center gap-1 text-xs font-medium text-orange-500">
-                      <LuMicOff className="size-3" />
-                      <span className="mt-0.5">Muted</span>
-                    </span>
-                  )}
-                </div>
-              </>
-            : <>
-                <div className="size-8 rounded-md bg-slate-200 flex items-center justify-center shrink-0">
-                  <span className="text-xs font-medium text-slate-600">?</span>
-                </div>
-                <div className="flex flex-col">
-                  <span className="text-sm font-medium text-slate-600">
-                    Unknown user
-                    {participant.isLocal && " (You)"}
-                  </span>
-                </div>
-              </>
-            }
-          </div>
-        ))}
+    <div className="flex flex-col gap-1.5">
+      <div className="flex min-h-6 items-center justify-between gap-2">
+        {isReconnecting ?
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-warning-soft px-2 py-0.5 text-[11px] leading-4 font-semibold text-warning">
+            <CgSpinner className="size-3 animate-spin" />
+            Reconnecting…
+          </span>
+        : isInitialising ?
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-subtle px-2 py-0.5 text-[11px] leading-4 font-semibold text-muted-foreground">
+            <span className="size-1.5 animate-pulse rounded-full bg-current" />
+            Connecting…
+          </span>
+        : <span className="inline-flex items-center gap-1.5 rounded-full bg-success-soft px-2 py-0.5 text-[11px] leading-4 font-semibold text-success">
+            <span className="size-1.5 rounded-full bg-current" />
+            Live
+            {timeStarted && <CallTimer startedAt={timeStarted} />}
+          </span>
+        }
+        {room && (
+          <TooltipProvider delayDuration={100}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={onCopyRoomLink}
+                  className="flex size-6 items-center justify-center rounded-lg text-muted-foreground transition-colors duration-150 hover:bg-subtle hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  aria-label="Copy room link"
+                >
+                  <HiMiniLink className="size-3.5" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="flex flex-col items-center gap-0">
+                <span>Copy room link for web</span>
+                <span className="text-xs font-normal text-muted-foreground">Share with teammates</span>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        )}
       </div>
+      <h1 className="truncate text-[19px] leading-6 font-semibold tracking-[-0.015em] text-foreground">{title}</h1>
+    </div>
+  );
+}
+
+// Grows with the local mic level. Raw RMS for speech is ~0.001–0.03, so scale until peak speech fills it.
+function MicLevelRing() {
+  const micLevel = useStore((state) => state.callTokens?.micLevel ?? 0);
+  const level = Math.min(1, Math.max(0, micLevel * 40));
+
+  return (
+    <div
+      aria-hidden
+      className="absolute inset-0 rounded-[17px] transition-[box-shadow] duration-100 ease-out"
+      style={{
+        boxShadow: `0 0 0 ${1 + level * 3.5}px color-mix(in srgb, var(--success) ${40 + level * 40}%, transparent)`,
+      }}
+    />
+  );
+}
+
+function CallParticipants() {
+  const coreParticipantCount = useStore((state) => state.callTokens?.participants.length ?? 0);
+  const isInitialising = useStore((state) => !!state.callTokens?.isInitialisingCall);
+  const isRoomCall = useStore((state) => !!(state.callTokens?.isRoomCall || state.callTokens?.room));
+  const setTab = useStore((state) => state.setTab);
+  const peerName = useCallPeerName();
+  const tiles = useCallTiles();
+  const prevCountRef = useRef(coreParticipantCount);
+
+  // Play sound when a new participant connects (count increases)
+  useEffect(() => {
+    if (coreParticipantCount > prevCountRef.current && prevCountRef.current !== 0) {
+      sounds.callAccepted.play();
+    }
+    prevCountRef.current = coreParticipantCount;
+  }, [coreParticipantCount]);
+
+  const isAlone = tiles.every((tile) => tile.isLocal);
+  const tileCount = tiles.length + (isAlone ? 1 : 0);
+
+  return (
+    <div
+      className={clsx(
+        "grid min-h-0 flex-1 gap-2 overflow-y-auto",
+        tileCount <= 2 ? "grid-cols-1 auto-rows-fr"
+        : tileCount <= 4 ? "grid-cols-2 auto-rows-fr"
+        : "grid-cols-2 auto-rows-[112px]",
+      )}
+    >
+      {tiles.map((tile) => (
+        <div
+          key={tile.id}
+          className="relative flex min-h-0 flex-col items-center justify-center gap-2 overflow-hidden rounded-2xl bg-subtle px-2 py-2 ring-1 ring-inset ring-border animate-in fade-in-0 zoom-in-95 duration-300"
+        >
+          {/* A wash of the person's own colour, so tiles are easy to tell apart at a glance */}
+          <div
+            aria-hidden
+            className="absolute inset-0 opacity-25 [mask-image:radial-gradient(90%_90%_at_50%_0%,black,transparent)]"
+            style={{ background: avatarGradient((tile.user?.first_name ?? "") + (tile.user?.last_name ?? "")) }}
+          />
+          <div className="absolute right-2 top-2 flex items-center gap-1 text-muted-foreground">
+            {tile.hasCamera && <LuVideo aria-label="Camera on" className="size-3.5 text-success" />}
+            {tile.isScreensharing && <LuScreenShare aria-label="Sharing screen" className="size-3.5 text-accent" />}
+          </div>
+          <div className="relative">
+            {tile.isLocal && tile.isMicrophoneEnabled && <MicLevelRing />}
+            {tile.user ?
+              <HoppAvatar
+                src={tile.user.avatar_url || undefined}
+                firstName={tile.user.first_name}
+                lastName={tile.user.last_name}
+                className="size-[52px] rounded-[17px] [&_span]:text-[16px]"
+              />
+            : <div className="flex size-[52px] items-center justify-center rounded-[17px] bg-subtle-strong text-base font-semibold text-muted-foreground">
+                ?
+              </div>
+            }
+            {!tile.isMicrophoneEnabled && (
+              <span
+                aria-label="Muted"
+                className="absolute -bottom-1 -right-1 flex size-[22px] items-center justify-center rounded-full bg-destructive text-destructive-foreground ring-[3px] ring-background"
+              >
+                <LuMicOff className="size-3" />
+              </span>
+            )}
+          </div>
+          <span className="relative max-w-full truncate text-[13px] leading-[18px] font-medium text-foreground">
+            {tile.name}
+            {tile.isLocal && <span className="font-normal text-muted-foreground"> (You)</span>}
+          </span>
+        </div>
+      ))}
+
+      {isAlone && (
+        <div className="flex min-h-0 flex-col items-center justify-center gap-1.5 rounded-2xl border border-dashed border-border-strong px-3 py-2 text-center animate-in fade-in-0 duration-300">
+          {isInitialising ?
+            <>
+              <CgSpinner className="size-5 animate-spin text-faint-foreground" />
+              <span className="text-xs text-muted-foreground">Connecting your call…</span>
+            </>
+          : <>
+              <span className="text-xs text-muted-foreground">
+                {isRoomCall ?
+                  "No one else is here yet"
+                : peerName ?
+                  `Waiting for ${peerName}…`
+                : "Waiting for your teammate…"}
+              </span>
+              {isRoomCall && (
+                <Button size="sm" variant="ghost" className="h-7" onClick={() => setTab("user-list")}>
+                  Invite teammates
+                </Button>
+              )}
+            </>
+          }
+        </div>
+      )}
     </div>
   );
 }
@@ -479,7 +581,7 @@ function DrawingEnableButton() {
                     dismissHintToast();
                   }}
                   aria-label="Dismiss drawing hint"
-                  className="size-6 shrink-0 rounded-full border-0 bg-white p-0 text-slate-900 transition-colors hover:bg-slate-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400/60"
+                  className="size-6 shrink-0 rounded-full border-0 bg-surface p-0 text-foreground transition-colors hover:bg-subtle-strong focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-strong/60"
                 >
                   <X className="mx-auto size-3 stroke-[1.25]" />
                 </button>
@@ -506,22 +608,26 @@ function DrawingEnableButton() {
   };
 
   return (
-    <div className="inline-flex -space-x-px rounded-lg shadow-xs">
+    <div className="inline-flex">
       <TooltipProvider>
         <Tooltip delayDuration={100}>
           <TooltipTrigger asChild>
-            <Button
-              variant="outline"
-              size="icon"
+            <button
+              type="button"
+              aria-label={drawingEnabled ? "Disable drawing" : "Enable drawing"}
+              aria-pressed={drawingEnabled}
               onClick={handleToggleDrawing}
-              className="rounded-none first:rounded-l-lg focus:z-10"
+              className={clsx(
+                sharingToolClass,
+                drawingEnabled ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-subtle-strong",
+              )}
             >
               {drawingEnabled ?
                 <PiCursorBold className="size-4" />
               : <PiScribbleLoopBold className="size-4" />}
-            </Button>
+            </button>
           </TooltipTrigger>
-          <TooltipContent side="bottom">{drawingEnabled ? "Disable drawing" : "Enable drawing"}</TooltipContent>
+          <TooltipContent side="top">{drawingEnabled ? "Disable drawing" : "Enable drawing"}</TooltipContent>
         </Tooltip>
       </TooltipProvider>
       <DropdownMenu open={dropdownOpen} onOpenChange={setDropdownOpen}>
@@ -529,22 +635,22 @@ function DrawingEnableButton() {
           <Tooltip delayDuration={100}>
             <TooltipTrigger asChild>
               <DropdownMenuTrigger asChild>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="rounded-none last:rounded-r-lg focus:z-10"
+                <button
+                  type="button"
+                  className={clsx(sharingToolClass, "w-6 text-muted-foreground hover:bg-subtle-strong")}
                   aria-label="Drawing options"
                 >
                   <MoreHorizontal className="size-4" />
-                </Button>
+                </button>
               </DropdownMenuTrigger>
             </TooltipTrigger>
-            <TooltipContent side="bottom">Drawing options</TooltipContent>
+            <TooltipContent side="top">Drawing options</TooltipContent>
           </Tooltip>
         </TooltipProvider>
         <DropdownMenuContent
           onCloseAutoFocus={(e) => e.preventDefault()}
-          align="start"
+          align="end"
+          side="top"
           className="w-auto min-w-[200px]"
         >
           <DropdownMenuCheckboxItem checked={drawingPermanent} onCheckedChange={handlePermanentToggle}>
@@ -644,70 +750,50 @@ function MicrophoneIcon({ shortcut }: { shortcut?: string }) {
   );
 
   return (
-    <TooltipProvider>
-      <Tooltip delayDuration={100} open={tooltipOpen} onOpenChange={handleTooltipOpenChange}>
-        <TooltipTrigger asChild>
-          <ToggleIconButton
-            onPointerEnter={() => {
-              if (!selectOpen) {
-                suppressTooltipRef.current = false;
+    <div className="relative min-w-0">
+      <TooltipProvider>
+        <Tooltip delayDuration={100} open={tooltipOpen} onOpenChange={handleTooltipOpenChange}>
+          <TooltipTrigger asChild>
+            <DockButton
+              onPointerEnter={() => {
+                if (!selectOpen) {
+                  suppressTooltipRef.current = false;
+                }
+              }}
+              onClick={handleMicToggle}
+              tone={hasAudioEnabled ? "neutral" : "danger"}
+              aria-pressed={!hasAudioEnabled}
+              icon={
+                hasAudioEnabled ?
+                  <CustomIcons.MicWithLevel level={callTokens?.micLevel ?? 0} className="size-[18px]" />
+                : <LuMicOff className="size-[18px]" />
               }
-            }}
-            onClick={handleMicToggle}
-            icon={
-              <div className="relative flex items-center justify-center">
-                {hasAudioEnabled ?
-                  <CustomIcons.MicWithLevel
-                    level={callTokens?.micLevel ?? 0}
-                    className={`size-4 ${Colors.mic.icon} relative z-10`}
-                  />
-                : <LuMicOff className={`size-4 ${Colors.deactivatedIcon} relative z-10`} />}
-              </div>
-            }
-            state={hasAudioEnabled ? "active" : "neutral"}
-            size="unsized"
-            className={clsx("flex-1 min-w-0", {
-              [Colors.deactivatedText]: !hasAudioEnabled,
-              [`${Colors.mic.text} ${Colors.mic.ring}`]: hasAudioEnabled,
-            })}
-            cornerIcon={
-              <Select
-                value={activeMicId}
-                onValueChange={handleMicrophoneChange}
-                onOpenChange={handleDropdownOpenChange}
-              >
-                <SelectTrigger
-                  iconClassName={clsx({
-                    [Colors.mic.text]: hasAudioEnabled,
-                    [Colors.deactivatedIcon]: !hasAudioEnabled,
-                  })}
-                  className="hover:outline-solid hover:outline-1 hover:outline-slate-300 focus:ring-0 focus-visible:ring-0 hover:bg-slate-200 size-4 rounded-xs p-0 border-0 shadow-none hover:shadow-xs"
-                />
-                <SelectPortal container={document.getElementsByClassName("container")[0]}>
-                  <SelectContent align="center">
-                    {microphoneDevices.map(
-                      (device) =>
-                        device.name !== "" && (
-                          <SelectItem key={device.name} value={device.name}>
-                            <span className="text-xs truncate">{device.name}</span>
-                          </SelectItem>
-                        ),
-                    )}
-                  </SelectContent>
-                </SelectPortal>
-              </Select>
-            }
-          >
-            {hasAudioEnabled ? "Mute me" : "Open mic"}
-          </ToggleIconButton>
-        </TooltipTrigger>
-        {shortcut && (
-          <TooltipContent sideOffset={0} side="bottom" variant="transparent">
-            <kbd className="text-xs">{shortcut}</kbd>
-          </TooltipContent>
-        )}
-      </Tooltip>
-    </TooltipProvider>
+              label={hasAudioEnabled ? "Mute" : "Unmute"}
+            />
+          </TooltipTrigger>
+          <ShortcutTooltip shortcut={shortcut} />
+        </Tooltip>
+      </TooltipProvider>
+      <span
+        className={clsx("absolute right-0.5 top-0.5", hasAudioEnabled ? "text-muted-foreground" : "text-destructive")}
+      >
+        <Select value={activeMicId} onValueChange={handleMicrophoneChange} onOpenChange={handleDropdownOpenChange}>
+          <SelectTrigger aria-label="Choose microphone" iconClassName="size-3.5" className={deviceMenuTriggerClass} />
+          <SelectPortal container={document.getElementsByClassName("container")[0]}>
+            <SelectContent align="center">
+              {microphoneDevices.map(
+                (device) =>
+                  device.name !== "" && (
+                    <SelectItem key={device.name} value={device.name}>
+                      <span className="text-xs truncate">{device.name}</span>
+                    </SelectItem>
+                  ),
+              )}
+            </SelectContent>
+          </SelectPortal>
+        </Select>
+      </span>
+    </div>
   );
 }
 
@@ -734,49 +820,39 @@ function ScreenShareIcon({ callTokens, shortcut }: { callTokens: CallState | nul
     tauriUtils.getAvailableContent();
   }, [callTokens]);
 
+  const isSharing = callTokens?.role === ParticipantRole.SHARER;
+
   return (
-    <TooltipProvider>
-      <Tooltip delayDuration={100}>
-        <TooltipTrigger asChild>
-          <ToggleIconButton
-            onClick={toggleScreenShare}
-            icon={
-              callTokens?.role === ParticipantRole.SHARER ?
-                <LuScreenShareOff className={`size-4 ${Colors.screen.icon}`} />
-              : <LuScreenShare className={`size-4 ${Colors.deactivatedIcon}`} />
-            }
-            state={callTokens?.role === ParticipantRole.SHARER ? "active" : "neutral"}
-            size="unsized"
-            className={clsx("flex-1 min-w-0", {
-              [Colors.deactivatedText]: !(callTokens?.role === ParticipantRole.SHARER),
-              [`${Colors.screen.text} ${Colors.screen.ring}`]: callTokens?.role === ParticipantRole.SHARER,
-            })}
-            cornerIcon={
-              callTokens?.role === ParticipantRole.SHARER && (
-                <button
-                  onClick={changeScreenShare}
-                  className="hover:outline-solid hover:outline-1 hover:outline-slate-300 focus:ring-0 focus-visible:ring-0 hover:bg-slate-200 size-4 rounded-sm p-0 border-0 shadow-none hover:shadow-xs"
-                >
-                  <ChevronDownIcon
-                    className={clsx("size-4", {
-                      [Colors.screen.icon]: callTokens?.role === ParticipantRole.SHARER,
-                      [Colors.deactivatedIcon]: !(callTokens?.role === ParticipantRole.SHARER),
-                    })}
-                  />
-                </button>
-              )
-            }
+    <div className="relative min-w-0">
+      <TooltipProvider>
+        <Tooltip delayDuration={100}>
+          <TooltipTrigger asChild>
+            <DockButton
+              onClick={toggleScreenShare}
+              tone={isSharing ? "accent" : "neutral"}
+              aria-pressed={isSharing}
+              icon={
+                isSharing ? <LuScreenShareOff className="size-[18px]" /> : <LuScreenShare className="size-[18px]" />
+              }
+              label={isSharing ? "Stop" : "Share"}
+            />
+          </TooltipTrigger>
+          <ShortcutTooltip shortcut={shortcut} />
+        </Tooltip>
+      </TooltipProvider>
+      {isSharing && (
+        <span className="absolute right-0.5 top-0.5 text-accent">
+          <button
+            type="button"
+            aria-label="Change what you're sharing"
+            onClick={changeScreenShare}
+            className={deviceMenuTriggerClass}
           >
-            {callTokens?.role === ParticipantRole.SHARER ? "Stop sharing" : "Share screen"}
-          </ToggleIconButton>
-        </TooltipTrigger>
-        {shortcut && (
-          <TooltipContent sideOffset={0} side="bottom" variant="transparent">
-            <kbd className="text-xs">{shortcut}</kbd>
-          </TooltipContent>
-        )}
-      </Tooltip>
-    </TooltipProvider>
+            <ChevronDownIcon className="size-3.5" />
+          </button>
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -882,61 +958,44 @@ function CameraIcon({ shortcut }: { shortcut?: string }) {
   );
 
   return (
-    <TooltipProvider>
-      <Tooltip delayDuration={100} open={tooltipOpen} onOpenChange={handleTooltipOpenChange}>
-        <TooltipTrigger asChild>
-          <ToggleIconButton
-            onPointerEnter={() => {
-              if (!selectOpen) {
-                suppressTooltipRef.current = false;
-              }
-            }}
-            onClick={handleCameraToggle}
-            icon={
-              cameraEnabled ?
-                <LuVideo className={`size-4 ${Colors.camera.icon}`} />
-              : <LuVideoOff className={`size-4 ${Colors.deactivatedIcon}`} />
-            }
-            state={cameraEnabled ? "active" : "neutral"}
-            size="unsized"
-            className={clsx("flex-1 min-w-0", {
-              [Colors.deactivatedText]: !cameraEnabled,
-              [`${Colors.camera.text} ${Colors.camera.ring}`]: cameraEnabled,
-            })}
-            cornerIcon={
-              <Select value={activeCamera} onValueChange={handleCameraChange} onOpenChange={handleDropdownOpenChange}>
-                <SelectTrigger
-                  iconClassName={clsx({
-                    [Colors.camera.text]: cameraEnabled,
-                    [Colors.deactivatedIcon]: !cameraEnabled,
-                  })}
-                  className="hover:outline hover:outline-slate-300 focus:ring-0 focus-visible:ring-0 hover:bg-slate-200 size-4 rounded-sm p-0 border-0 shadow-none hover:shadow-xs"
-                />
-                <SelectPortal container={document.getElementsByClassName("container")[0]}>
-                  <SelectContent align="center">
-                    {cameraDevices.map(
-                      (device) =>
-                        device.name !== "" && (
-                          <SelectItem key={device.name} value={device.name}>
-                            <span className="text-xs truncate">{device.name}</span>
-                          </SelectItem>
-                        ),
-                    )}
-                  </SelectContent>
-                </SelectPortal>
-              </Select>
-            }
-          >
-            {cameraEnabled ? "Stop sharing" : "Share cam"}
-          </ToggleIconButton>
-        </TooltipTrigger>
-        {shortcut && (
-          <TooltipContent sideOffset={0} side="bottom" variant="transparent">
-            <kbd className="text-xs">{shortcut}</kbd>
-          </TooltipContent>
-        )}
-      </Tooltip>
-    </TooltipProvider>
+    <div className="relative min-w-0">
+      <TooltipProvider>
+        <Tooltip delayDuration={100} open={tooltipOpen} onOpenChange={handleTooltipOpenChange}>
+          <TooltipTrigger asChild>
+            <DockButton
+              onPointerEnter={() => {
+                if (!selectOpen) {
+                  suppressTooltipRef.current = false;
+                }
+              }}
+              onClick={handleCameraToggle}
+              tone={cameraEnabled ? "success" : "neutral"}
+              aria-pressed={cameraEnabled}
+              icon={cameraEnabled ? <LuVideo className="size-[18px]" /> : <LuVideoOff className="size-[18px]" />}
+              label={cameraEnabled ? "Stop cam" : "Start cam"}
+            />
+          </TooltipTrigger>
+          <ShortcutTooltip shortcut={shortcut} />
+        </Tooltip>
+      </TooltipProvider>
+      <span className={clsx("absolute right-0.5 top-0.5", cameraEnabled ? "text-success" : "text-muted-foreground")}>
+        <Select value={activeCamera} onValueChange={handleCameraChange} onOpenChange={handleDropdownOpenChange}>
+          <SelectTrigger aria-label="Choose camera" iconClassName="size-3.5" className={deviceMenuTriggerClass} />
+          <SelectPortal container={document.getElementsByClassName("container")[0]}>
+            <SelectContent align="center">
+              {cameraDevices.map(
+                (device) =>
+                  device.name !== "" && (
+                    <SelectItem key={device.name} value={device.name}>
+                      <span className="text-xs truncate">{device.name}</span>
+                    </SelectItem>
+                  ),
+              )}
+            </SelectContent>
+          </SelectPortal>
+        </Select>
+      </span>
+    </div>
   );
 }
 
@@ -944,18 +1003,30 @@ function MediaDevicesSettings({
   micShortcut,
   cameraShortcut,
   screenShareShortcut,
+  endCallShortcut,
+  onEndCall,
 }: {
   micShortcut?: string;
   cameraShortcut?: string;
   screenShareShortcut?: string;
+  endCallShortcut?: string;
+  onEndCall: () => void;
 }) {
   const { callTokens } = useStore();
 
   return (
-    <div className="flex flex-row gap-1 w-full">
+    <div className="grid w-full shrink-0 grid-cols-4 gap-1.5">
       <MicrophoneIcon shortcut={micShortcut} />
       <CameraIcon shortcut={cameraShortcut} />
       <ScreenShareIcon callTokens={callTokens} shortcut={screenShareShortcut} />
+      <TooltipProvider>
+        <Tooltip delayDuration={100}>
+          <TooltipTrigger asChild>
+            <DockButton tone="end" onClick={onEndCall} icon={<LuPhoneOff className="size-[18px]" />} label="End" />
+          </TooltipTrigger>
+          <ShortcutTooltip shortcut={endCallShortcut} />
+        </Tooltip>
+      </TooltipProvider>
     </div>
   );
 }

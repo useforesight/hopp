@@ -317,48 +317,43 @@ function App() {
   }
 
   return (
-    <div className="container flex flex-row bg-white" id="app-body">
+    <div className="container flex flex-row" id="app-body">
       {/* Action Sidebar */}
       <Sidebar />
-      <ScrollArea
-        key={tab}
-        type="scroll"
-        className="h-100% overflow-y-scroll overflow-x-hidden w-[350px] relative h-full"
-      >
-        {callTokens && (
-          <div className={tab === "call" ? "" : "hidden"}>
-            <CallCenter />
-          </div>
-        )}
-        <div className="w-full h-auto mt-2">
-          {userError && (
-            <Alert variant="destructive" className="py-2 w-[90%] mx-auto">
-              <HiOutlineExclamationCircle className="h-4 w-4" />
-              <AlertTitle>Issue</AlertTitle>
-              <AlertDescription>{userError?.message}</AlertDescription>
-            </Alert>
-          )}
-          {teammatesError && (
-            <Alert variant="destructive" className="py-2 w-[90%] mx-auto">
-              <HiOutlineExclamationCircle className="h-4 w-4" />
-              <AlertTitle>Issue</AlertTitle>
-              <AlertDescription>{teammatesError?.message}</AlertDescription>
-            </Alert>
-          )}
-        </div>
-        {tab === "debug" && <Debug />}
-        {tab === "invite" && <Invite />}
-        {tab === "login" && <Login />}
-        {tab === "rooms" && <Rooms />}
-        {tab === "user-list" && (
-          <>
-            <div className="flex flex-col items-start gap-1.5 p-2">
-              <Participants teammates={teammates || []} />
+      <div className="relative h-full min-w-0 flex-1">
+        <ScrollArea key={tab} type="scroll" className="h-full w-full [&>[data-radix-scroll-area-viewport]>div]:!block">
+          {(userError || teammatesError) && (
+            <div className="flex flex-col gap-2 px-3 pt-3">
+              {userError && (
+                <Alert variant="destructive" className="py-2">
+                  <HiOutlineExclamationCircle className="h-4 w-4" />
+                  <AlertTitle>Issue</AlertTitle>
+                  <AlertDescription>{userError?.message}</AlertDescription>
+                </Alert>
+              )}
+              {teammatesError && (
+                <Alert variant="destructive" className="py-2">
+                  <HiOutlineExclamationCircle className="h-4 w-4" />
+                  <AlertTitle>Issue</AlertTitle>
+                  <AlertDescription>{teammatesError?.message}</AlertDescription>
+                </Alert>
+              )}
             </div>
-          </>
-        )}
-        {tab === "report-issue" && <Report />}
-      </ScrollArea>
+          )}
+          {callTokens && (
+            <div className={tab === "call" ? "" : "hidden"}>
+              <CallCenter />
+            </div>
+          )}
+          {tab === "debug" && <Debug />}
+          {tab === "invite" && <Invite />}
+          {tab === "login" && <Login />}
+          {tab === "rooms" && <Rooms />}
+          {tab === "user-list" && <Participants teammates={teammates || []} />}
+          {tab === "report-issue" && <Report />}
+        </ScrollArea>
+        <div aria-hidden className="aurora pointer-events-none absolute inset-0 z-20" />
+      </div>
     </div>
   );
 }

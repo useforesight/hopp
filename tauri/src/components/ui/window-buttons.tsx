@@ -24,7 +24,7 @@ const WindowActionBase: React.FC<WindowActionProps & { children: React.ReactNode
   return (
     <div
       className={cn(
-        "size-[14px] rounded-full bg-white/50 text-gray-600 flex items-center justify-center cursor-pointer hover:bg-white/70 transition-colors",
+        "size-[14px] rounded-full bg-surface/50 text-muted-foreground flex items-center justify-center cursor-pointer hover:bg-surface/70 transition-colors",
         className,
       )}
       onClick={onClick}
