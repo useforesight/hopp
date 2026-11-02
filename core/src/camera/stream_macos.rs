@@ -8,7 +8,7 @@ use livekit::webrtc::{
 };
 use std::panic::AssertUnwindSafe;
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use dispatch2::DispatchQueue;
 use objc2::{
@@ -152,6 +152,7 @@ struct CameraDelegateState {
     config: Arc<CameraStreamConfig>,
     capture_start: Instant,
     last_frame_time: Instant,
+    has_delivered_frame: bool,
     i420: Option<I420Buffer>,
     stream_frame: Option<VideoFrame<I420Buffer>>,
     prev_stream_w: u32,
@@ -188,6 +189,7 @@ define_class!(
                 return;
             }
             state.last_frame_time = now;
+            state.has_delivered_frame = true;
 
             unsafe {
                 let image_buffer = sample_buffer.image_buffer();
@@ -364,10 +366,81 @@ define_class!(
 
 unsafe impl NSObjectProtocol for CameraDelegate {}
 
-pub struct CameraStream {
+/// startRunning and stopRunning can both block for many seconds on some USB and virtual
+/// cameras. Sessions take turns, so a new one can't start while the last is still stopping.
+static CAPTURE_SESSION_TURN: Mutex<()> = Mutex::new(());
+
+struct CaptureSessionParts {
     session: Retained<AVCaptureSession>,
     input: Retained<AVCaptureDeviceInput>,
     output: Retained<AVCaptureVideoDataOutput>,
+    // Kept alive until the output has let go of them, which is after the stream is gone.
+    _delegate: Retained<CameraDelegate>,
+    _queue: Retained<DispatchQueue>,
+}
+// SAFETY: AVCaptureSession is meant to be driven away from the main thread. Apple's
+// documentation recommends a background queue because startRunning blocks. This thread
+// is the only one using these objects once it has them, apart from the delegate's lock.
+unsafe impl Send for CaptureSessionParts {}
+
+impl CaptureSessionParts {
+    fn start(&self) {
+        let start_result = objc2::rc::autoreleasepool(|_| {
+            exception::catch(AssertUnwindSafe(|| unsafe {
+                self.session.startRunning();
+            }))
+        });
+        if let Err(exception) = start_result {
+            log::error!("CameraStream: startRunning raised an exception: {exception:?}");
+        }
+    }
+
+    fn stop(&self) {
+        let stop_result = objc2::rc::autoreleasepool(|_| {
+            exception::catch(AssertUnwindSafe(|| unsafe {
+                self.output.setSampleBufferDelegate_queue(None, None);
+                self.session.stopRunning();
+                self.session.removeInput(&self.input);
+                self.session.removeOutput(&self.output);
+            }))
+        });
+        if let Err(exception) = stop_result {
+            log::error!("CameraStream: stopping raised an exception: {exception:?}");
+        }
+    }
+}
+
+/// Runs a session's whole life on its own thread, so a slow camera can't block the main
+/// thread and trip the hang protection, which would take the whole call down. A camera
+/// that never comes back only holds up this thread and the next session's start, and
+/// the frame watchdog reports that.
+fn run_capture_session(session_parts: CaptureSessionParts, stop_rx: mpsc::Receiver<()>) {
+    let take_turn = || {
+        CAPTURE_SESSION_TURN
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    };
+
+    let started = {
+        let _turn = take_turn();
+        let stop_requested = !matches!(stop_rx.try_recv(), Err(mpsc::TryRecvError::Empty));
+        if !stop_requested {
+            session_parts.start();
+        }
+        !stop_requested
+    };
+    if started {
+        // Also returns if the stream is dropped without being stopped.
+        let _ = stop_rx.recv();
+    }
+
+    let _turn = take_turn();
+    session_parts.stop();
+    log::info!("CameraStream: capture session stopped");
+}
+
+pub struct CameraStream {
+    stop_tx: mpsc::Sender<()>,
     delegate: Retained<CameraDelegate>,
     #[allow(dead_code)] // Retained to keep dispatch queue alive for output delegate
     queue: Retained<DispatchQueue>,
@@ -517,6 +590,7 @@ impl CameraStream {
             config: config.clone(),
             capture_start: Instant::now(),
             last_frame_time: Instant::now(),
+            has_delivered_frame: false,
             i420: None,
             stream_frame: None,
             prev_stream_w: 0,
@@ -536,12 +610,18 @@ impl CameraStream {
             ProtocolObject::from_ref(&*delegate);
         output.setSampleBufferDelegate_queue(Some(protocol_obj), Some(&queue_retained));
 
-        session.startRunning();
-
-        Ok(Self {
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let session_parts = CaptureSessionParts {
             session,
             input,
             output,
+            _delegate: delegate.clone(),
+            _queue: queue_retained.clone(),
+        };
+        std::thread::spawn(move || run_capture_session(session_parts, stop_rx));
+
+        Ok(Self {
+            stop_tx,
             delegate,
             queue: queue_retained,
             error_tx,
@@ -553,23 +633,27 @@ impl CameraStream {
         })
     }
 
+    /// Returns straight away and leaves the blocking part to the session's thread.
+    /// Calling this again is harmless.
     pub fn stop_capture(&mut self) {
-        unsafe {
-            if let Ok(mut state) = self.delegate.ivars().lock() {
-                *state = None;
-            }
-
-            self.output.setSampleBufferDelegate_queue(None, None);
-            self.session.stopRunning();
-            self.session.removeInput(&self.input);
-            self.session.removeOutput(&self.output);
+        let _ = self.stop_tx.send(());
+        if let Ok(mut state) = self.delegate.ivars().lock() {
+            *state = None;
         }
         self.video_buffer_manager.set_inactive(true);
-        log::info!("CameraStream::stop_capture complete");
+        log::info!("CameraStream::stop_capture requested");
     }
 
     pub fn get_failures_count(&self) -> u32 {
         *self.failures_count.lock().unwrap()
+    }
+
+    /// How long the stream has gone without a frame, and whether it has delivered one yet.
+    pub fn frame_status(&self) -> Option<(Duration, bool)> {
+        let state = self.delegate.ivars().lock().ok()?;
+        state
+            .as_ref()
+            .map(|state| (state.last_frame_time.elapsed(), state.has_delivered_frame))
     }
 
     pub fn device_name(&self) -> &str {

@@ -1,3 +1,4 @@
+import { showCallNotice } from "@/lib/call-alert";
 import { formatDistanceToNow } from "date-fns";
 import { LuMicOff, LuVideo, LuVideoOff, LuScreenShare, LuScreenShareOff } from "react-icons/lu";
 import { PiScribbleLoopBold, PiCursorBold } from "react-icons/pi";
@@ -96,6 +97,11 @@ export function CallCenter() {
       if (!callTokens) return;
       handleEndCallRef.current();
       toast.error("Failed to establish connection");
+      showCallNotice({
+        key: "call-failed",
+        title: "Couldn't connect the call",
+        body: "Hopp couldn't reach the call server. Check your connection and try again.",
+      });
     });
     return () => {
       unlisten.then((fn) => fn());

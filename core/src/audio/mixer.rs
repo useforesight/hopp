@@ -8,7 +8,9 @@ use log::{error, info};
 use parking_lot::Mutex;
 use std::borrow::Cow;
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 pub type SharedProcessor = Arc<Mutex<AudioProcessingModule>>;
 
@@ -27,6 +29,7 @@ struct MixerInner {
     _stream: cpal::Stream,
     mixer: Arc<Mutex<AudioMixer>>,
     apm: SharedProcessor,
+    heartbeat: Arc<OutputHeartbeat>,
     next_ssrc: i32,
 }
 
@@ -104,9 +107,37 @@ impl audio_mixer::AudioMixerSource for AudioSource {
     }
 }
 
+/// Tracks when the OS last asked for speaker audio. CoreAudio can stop calling a
+/// stream without reporting an error, which sounds like nobody is talking.
+pub struct OutputHeartbeat {
+    started_at: Instant,
+    last_callback_ms: AtomicU64,
+}
+
+impl OutputHeartbeat {
+    fn new() -> Self {
+        Self {
+            started_at: Instant::now(),
+            last_callback_ms: AtomicU64::new(0),
+        }
+    }
+
+    fn beat(&self) {
+        let elapsed_ms = self.started_at.elapsed().as_millis() as u64;
+        self.last_callback_ms.store(elapsed_ms, Ordering::Relaxed);
+    }
+
+    pub fn time_since_last_callback(&self) -> Duration {
+        let elapsed_ms = self.started_at.elapsed().as_millis() as u64;
+        let last_callback_ms = self.last_callback_ms.load(Ordering::Relaxed);
+        Duration::from_millis(elapsed_ms.saturating_sub(last_callback_ms))
+    }
+}
+
 fn open_output_stream(
     mixer: Arc<Mutex<AudioMixer>>,
     apm: SharedProcessor,
+    heartbeat: Arc<OutputHeartbeat>,
 ) -> Result<cpal::Stream, String> {
     let host = cpal::default_host();
     let device = host
@@ -139,6 +170,7 @@ fn open_output_stream(
         .build_output_stream(
             &config,
             move |mut data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                heartbeat.beat();
                 while !data.is_empty() {
                     if data.len() <= buf.len() {
                         let rest = buf.split_off(data.len());
@@ -226,12 +258,14 @@ impl MixerHandle {
         )));
         let _ = apm.lock().set_stream_delay_ms(50);
         let mixer = Arc::new(Mutex::new(AudioMixer::new()));
-        let stream = open_output_stream(mixer.clone(), apm.clone())?;
+        let heartbeat = Arc::new(OutputHeartbeat::new());
+        let stream = open_output_stream(mixer.clone(), apm.clone(), heartbeat.clone())?;
         let handle = Self {
             inner: Arc::new(Mutex::new(MixerInner {
                 _stream: stream,
                 mixer,
                 apm: apm.clone(),
+                heartbeat,
                 next_ssrc: 1,
             })),
         };
@@ -255,9 +289,17 @@ impl MixerHandle {
 
     pub fn reconnect(&self) -> Result<(), String> {
         let mut inner = self.inner.lock();
-        let stream = open_output_stream(inner.mixer.clone(), inner.apm.clone())?;
+        let stream = open_output_stream(
+            inner.mixer.clone(),
+            inner.apm.clone(),
+            inner.heartbeat.clone(),
+        )?;
         inner._stream = stream;
         info!("Audio output reconnected");
         Ok(())
+    }
+
+    pub fn output_heartbeat(&self) -> Arc<OutputHeartbeat> {
+        self.inner.lock().heartbeat.clone()
     }
 }

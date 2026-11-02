@@ -49,6 +49,8 @@ type State = {
   inviting: string | null;
   // Inviter id while incoming invite banner is visible
   incomingInviteInviterId: string | null;
+  // Teammate to call as soon as their row in the list picks this up
+  callbackUserId: string | null;
   // Call tokens for LiveKit
   callTokens: CallState | null;
   customServerUrl: string | null;
@@ -74,6 +76,7 @@ type Actions = {
   // TODO(@konsalex): Rename `xxCallToken` as its not
   // representative anymore or the actual state it holds.
   updateCallTokens: (tokens: Partial<CallState>) => void;
+  setCallbackUserId: (userId: string | null) => void;
   setCustomServerUrl: (url: string | null) => void;
   setLivekitUrl: (url: string | null) => void;
   setCallsPresence: (presence: { [userId: string]: components["schemas"]["CallPresence"] } | null) => void;
@@ -91,6 +94,7 @@ const initialState: State = {
   incomingCallCallerId: null,
   inviting: null,
   incomingInviteInviterId: null,
+  callbackUserId: null,
   callTokens: null,
   customServerUrl: null,
   livekitUrl: null,
@@ -144,6 +148,10 @@ const useStore = create<State & Actions>()(
     setIncomingInviteInviterId: (inviterId) =>
       set((state) => {
         state.incomingInviteInviterId = inviterId;
+      }),
+    setCallbackUserId: (userId) =>
+      set((state) => {
+        state.callbackUserId = userId;
       }),
     setCallTokens: (tokens) =>
       set((state) => {

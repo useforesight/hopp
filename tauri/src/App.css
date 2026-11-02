@@ -614,6 +614,19 @@ html.dark .trayNotification-body #root {
   background-color: var(--bg-gray-dark);
 }
 
+.call-alert-body {
+  margin: 0;
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+  background-color: transparent;
+}
+
+.call-alert-body #root {
+  height: 100%;
+  width: 100%;
+}
+
 kbd {
   /* Inspired by: https://dylanatsmith.com/wrote/styling-the-kbd-element */
   background-color: theme("colors.gray.100");

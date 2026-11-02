@@ -1,4 +1,5 @@
 pub mod audio {
+    pub mod capture_health;
     pub mod capturer;
     pub mod denoiser;
     pub mod device_monitor;
@@ -15,6 +16,9 @@ pub mod livekit {
 
 pub mod room_service;
 mod snapshot_sender;
+
+#[path = "app_veil/state.rs"]
+pub mod app_veil_state;
 
 #[cfg(target_os = "macos")]
 #[path = "app_veil/macos.rs"]
@@ -65,6 +69,7 @@ pub(crate) mod windows;
 
 #[cfg(target_os = "macos")]
 use app_veil::AppVeilHost;
+use app_veil_state::AppVeilState;
 use camera::capturer::{poll_camera_stream, CameraCapturer};
 use capture::capturer::{poll_stream, Capturer, MonitorId, ScreenshareExt, ScreenshareFunctions};
 use graphics::graphics_context::participant::CursorMode;
@@ -741,7 +746,12 @@ impl<'a> Application<'a> {
 
         #[cfg(target_os = "macos")]
         if is_display_share {
-            let app_veil_bundle_ids = screen_capturer.app_veil_bundle_ids().to_vec();
+            let app_veil_bundle_ids = screen_capturer
+                .app_veil_state()
+                .applications
+                .iter()
+                .map(|application| application.bundle_id.clone())
+                .collect::<Vec<_>>();
             self.app_veil_host = AppVeilHost::new(
                 screenshare_input.content.id,
                 app_veil_bundle_ids.clone(),
@@ -984,6 +994,20 @@ impl<'a> Application<'a> {
         }
         if let Err(e) = self.socket.send(Message::DrawingDisabled) {
             log::error!("Failed to send DrawingDisabled: {e:?}");
+        }
+    }
+
+    fn refresh_app_veil_capture(&mut self, state: AppVeilState, force: bool) {
+        let mut capturer = self.screen_capturer.lock().unwrap();
+        capturer.refresh_app_veil_filter(state, force);
+        drop(capturer);
+        #[cfg(target_os = "macos")]
+        if let Some(host) = self.app_veil_host.as_mut() {
+            if let Some(snapshot) = host.update_visibility() {
+                if let Some(room_service) = self.room_service.as_ref() {
+                    room_service.set_app_veil_snapshot(snapshot);
+                }
+            }
         }
     }
 
@@ -1446,7 +1470,14 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                     let (sample_tx, sample_rx) = tokio::sync::mpsc::unbounded_channel();
                     let audio_device_name = &call_start.audio_device_name;
                     let audio_device = if audio_device_name.is_empty() { None } else { Some(audio_device_name.as_str()) };
-                    let sample_rate = self.audio_capturer.start_capture(audio_device, sample_tx)?;
+                    let sample_rate = self.audio_capturer.start_capture_with_fallback(audio_device, sample_tx)?;
+                    if let Some(active_device_name) = self.audio_capturer.active_device_name() {
+                        if audio_device.is_some_and(|requested_device| requested_device != active_device_name) {
+                            if let Err(e) = self.socket.send(Message::ActiveMicChanged(active_device_name.to_owned())) {
+                                error!("user_event: Error sending ActiveMicChanged: {e:?}");
+                            }
+                        }
+                    }
                     let processor = self.audio_player.processor().ok_or_else(|| {
                         let msg = "Audio processor not available";
                         log::error!("{msg}");
@@ -1737,32 +1768,34 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
             }
             UserEvent::SetAppVeilBundleIds(bundle_ids) => {
                 #[cfg(target_os = "macos")]
-                let host_bundle_ids = bundle_ids.clone();
-                self.screen_capturer
-                    .lock()
-                    .unwrap()
-                    .set_app_veil_bundle_ids(bundle_ids);
-                #[cfg(target_os = "macos")]
-                if let Some(host) = self.app_veil_host.as_mut() {
-                    host.set_bundle_ids(host_bundle_ids);
-                }
+                let state = if let Some(host) = self.app_veil_host.as_mut() {
+                    host.set_bundle_ids(bundle_ids);
+                    host.state()
+                } else {
+                    AppVeilState::new(bundle_ids)
+                };
+                #[cfg(not(target_os = "macos"))]
+                let state = AppVeilState::new(bundle_ids);
+                self.refresh_app_veil_capture(state, false);
             }
-            UserEvent::RefreshAppVeilFilter => {
-                self.screen_capturer
-                    .lock()
-                    .unwrap()
-                    .refresh_app_veil_filter();
+            UserEvent::RefreshAppVeilFilter(state) => {
+                #[cfg(target_os = "macos")]
+                let state = match self.app_veil_host.as_ref().map(AppVeilHost::state) {
+                    Some(current) if current.capture_policy_eq(&state) => current,
+                    _ => return,
+                };
+                self.refresh_app_veil_capture(state, true);
             }
             #[cfg(target_os = "macos")]
             UserEvent::PolledAppVeilSnapshot(poller_id, revision, snapshot) => {
-                if self
+                if let Some(host) = self
                     .app_veil_host
-                    .as_ref()
-                    .is_some_and(|host| host.accepts_snapshot(poller_id, revision))
+                    .as_mut()
+                    .filter(|host| host.accepts_snapshot(poller_id, revision))
                 {
-                    if let Some(room_service) = self.room_service.as_ref() {
-                        room_service.set_app_veil_snapshot(snapshot);
-                    }
+                    host.apply_snapshot(snapshot);
+                    let state = host.state();
+                    self.refresh_app_veil_capture(state, false);
                 }
             }
             UserEvent::AppVeilSnapshot(snapshot) => {
@@ -2462,18 +2495,47 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                     }
                 }
             }
-            UserEvent::AudioCaptureError => {
-                log::warn!("user_event: AudioCaptureError - capture thread died");
-                self.audio_capturer.handle_default_device_changed(true);
-                self.set_call_controls_mic(
-                    self.audio_capturer.active_device_name().map(str::to_owned),
-                );
-                if let Some(device_name) = self.audio_capturer.active_device_name() {
-                    if let Err(e) = self
-                        .socket
-                        .send(Message::ActiveMicChanged(device_name.to_string()))
-                    {
-                        error!("user_event: Error sending ActiveMicChanged: {e:?}");
+            UserEvent::AudioCaptureStalled { capture_id, reason } => {
+                let previous_device_name =
+                    self.audio_capturer.active_device_name().map(str::to_owned);
+                match self
+                    .audio_capturer
+                    .handle_capture_stalled(capture_id, reason)
+                {
+                    audio::capturer::CaptureStallOutcome::Ignored => {}
+                    audio::capturer::CaptureStallOutcome::Restarted => {
+                        let device_name =
+                            self.audio_capturer.active_device_name().map(str::to_owned);
+                        if device_name != previous_device_name {
+                            self.set_call_controls_mic(device_name.clone());
+                            if let Some(device_name) = device_name {
+                                if let Err(e) =
+                                    self.socket.send(Message::ActiveMicChanged(device_name))
+                                {
+                                    error!("user_event: Error sending ActiveMicChanged: {e:?}");
+                                }
+                            }
+                        }
+                    }
+                    audio::capturer::CaptureStallOutcome::GaveUp { device_name } => {
+                        if let Err(e) = self.socket.send(Message::MicrophoneSilent(device_name)) {
+                            error!("user_event: Error sending MicrophoneSilent: {e:?}");
+                        }
+                    }
+                }
+            }
+            UserEvent::AudioCaptureHealthy { capture_id } => {
+                if self.audio_capturer.handle_capture_healthy(capture_id) {
+                    if let Err(e) = self.socket.send(Message::MicrophoneRecovered) {
+                        error!("user_event: Error sending MicrophoneRecovered: {e:?}");
+                    }
+                }
+            }
+            UserEvent::AudioOutputStalled => {
+                if let Some(mixer) = self.audio_player.mixer() {
+                    log::warn!("Audio output stopped delivering, reconnecting...");
+                    if let Err(e) = mixer.reconnect() {
+                        log::error!("Failed to reconnect audio output: {e}");
                     }
                 }
             }
@@ -3163,9 +3225,9 @@ pub enum UserEvent {
     SharerPosition(f64, f64),
     CaptureFrameChanged,
     SetAppVeilBundleIds(Vec<String>),
-    RefreshAppVeilFilter,
+    RefreshAppVeilFilter(AppVeilState),
     #[cfg(target_os = "macos")]
-    PolledAppVeilSnapshot(u64, u64, room_service::AppVeilSnapshot),
+    PolledAppVeilSnapshot(u64, u64, app_veil::HostSnapshot),
     AppVeilSnapshot(room_service::AppVeilSnapshot),
     Tick(u128),
     ParticipantConnected(ParticipantData),
@@ -3229,7 +3291,14 @@ pub enum UserEvent {
     SharerControlEnabled(bool),
     DefaultOutputDeviceChanged,
     DefaultInputDeviceChanged,
-    AudioCaptureError,
+    AudioCaptureStalled {
+        capture_id: u64,
+        reason: audio::capture_health::CaptureStallReason,
+    },
+    AudioCaptureHealthy {
+        capture_id: u64,
+    },
+    AudioOutputStalled,
     SetNoiseCancellation(bool),
     SetScreenShareResolution(ScreenShareResolution),
     SetScreenSharePickerMode(ScreenSharePickerMode),

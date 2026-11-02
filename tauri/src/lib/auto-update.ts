@@ -16,6 +16,8 @@ async function isIdle(): Promise<boolean> {
 /** Refresh the update badge, and on macOS auto-install when the user is idle. */
 export async function pollUpdates(setNeedsUpdate: (needsUpdate: boolean) => void) {
   if (import.meta.env.DEV) return;
+  // Builds of a fork sign differently, so upstream's updates must not replace them.
+  if (import.meta.env.VITE_DISABLE_AUTO_UPDATE === "true") return;
 
   try {
     const update = await checkForUpdates();

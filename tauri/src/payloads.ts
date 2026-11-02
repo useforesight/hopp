@@ -216,7 +216,8 @@ export const PCallRequestMessage = z.object({
 
 export const PCallEndMessage = z.object({
   type: z.literal("call_end"),
-  payload: z.object({ call_id: z.string() }),
+  // participant_id is who ended the call.
+  payload: z.object({ call_id: z.string().optional(), participant_id: z.string().optional() }),
 });
 
 export const PIncomingCallMessage = z.object({

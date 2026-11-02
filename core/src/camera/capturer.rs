@@ -8,7 +8,14 @@ use crate::livekit::video::VideoBufferManager;
 use super::stream::{CameraStream, CameraStreamConfig, CameraStreamMessage};
 
 pub const MAX_CAMERA_FAILURES_BEFORE_STOP: u32 = 1;
-const POLL_CAMERA_TIMEOUT_SECS: u64 = 100;
+const POLL_CAMERA_TIMEOUT_SECS: u64 = 1;
+#[cfg(target_os = "macos")]
+const CAMERA_STALL_TIMEOUT: Duration = Duration::from_secs(5);
+/// Some USB and virtual cameras take many seconds to deliver their first frame.
+#[cfg(target_os = "macos")]
+const CAMERA_FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(15);
+#[cfg(target_os = "macos")]
+const MAX_CAMERA_STALL_RESTARTS: u32 = 2;
 
 pub struct CameraCapturer {
     stream: Option<CameraStream>,
@@ -16,6 +23,10 @@ pub struct CameraCapturer {
     tx: mpsc::Sender<CameraStreamMessage>,
     socket: Option<SocketSender>,
     stream_config: Arc<CameraStreamConfig>,
+    #[cfg(target_os = "macos")]
+    stall_restarts: u32,
+    #[cfg(target_os = "macos")]
+    stall_reported: bool,
 }
 
 impl Default for CameraCapturer {
@@ -33,6 +44,10 @@ impl CameraCapturer {
             tx,
             socket: None,
             stream_config: Arc::new(CameraStreamConfig::new_high_quality()),
+            #[cfg(target_os = "macos")]
+            stall_restarts: 0,
+            #[cfg(target_os = "macos")]
+            stall_reported: false,
         }
     }
 
@@ -53,6 +68,11 @@ impl CameraCapturer {
     ) -> Result<(), String> {
         self.stop_capture();
         self.socket = Some(socket);
+        #[cfg(target_os = "macos")]
+        {
+            self.stall_restarts = 0;
+            self.stall_reported = false;
+        }
         let name = device_name.unwrap_or("");
         log::info!("CameraCapturer::start_capture: device='{name}'");
         let stream = CameraStream::new(
@@ -119,6 +139,56 @@ impl CameraCapturer {
         };
     }
 
+    /// AVCaptureSession reports nothing when a camera stops sending frames, so the
+    /// only sign of a stuck camera is that the frames stop coming.
+    #[cfg(target_os = "macos")]
+    fn recover_if_stalled(&mut self) {
+        let Some((time_since_frame, has_delivered_frame)) = self
+            .stream
+            .as_ref()
+            .and_then(|stream| stream.frame_status())
+        else {
+            return;
+        };
+        let stall_timeout = if has_delivered_frame {
+            CAMERA_STALL_TIMEOUT
+        } else {
+            CAMERA_FIRST_FRAME_TIMEOUT
+        };
+        if time_since_frame < stall_timeout {
+            // A restarted stream looks healthy until its timeout passes, so only
+            // an actual frame counts as recovery.
+            if has_delivered_frame {
+                self.stall_restarts = 0;
+                self.stall_reported = false;
+            }
+            return;
+        }
+        if self.stall_reported {
+            return;
+        }
+        if self.stall_restarts >= MAX_CAMERA_STALL_RESTARTS {
+            log::error!(
+                "CameraCapturer: no frames after {} restarts, giving up",
+                self.stall_restarts
+            );
+            self.stall_reported = true;
+            if let Some(socket) = &self.socket {
+                let _ = socket.send(Message::CameraFailed(
+                    "Camera stopped sending video".to_string(),
+                ));
+            }
+            return;
+        }
+        self.stall_restarts += 1;
+        log::warn!(
+            "CameraCapturer: no frames for {time_since_frame:?}, restarting (attempt {}/{})",
+            self.stall_restarts,
+            MAX_CAMERA_STALL_RESTARTS
+        );
+        self.restart_stream();
+    }
+
     pub fn set_screensharing_active(&self, active: bool) {
         let target = if active {
             self.stream_config.set_low_quality();
@@ -150,13 +220,21 @@ pub fn poll_camera_stream(capturer: Arc<Mutex<CameraCapturer>>) {
         match rx_lock.recv_timeout(Duration::from_secs(POLL_CAMERA_TIMEOUT_SECS)) {
             Ok(CameraStreamMessage::Failed(reason)) => {
                 log::info!("poll_camera_stream: camera failed: {reason}");
-                // TODO: properly forward this error.
+                #[cfg(target_os = "macos")]
+                if let Ok(mut capturer) = capturer.lock() {
+                    capturer.restart_stream();
+                }
             }
             Ok(CameraStreamMessage::Stop) => {
                 log::info!("poll_camera_stream: stop message");
                 break;
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {} // timeout, loop again
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                #[cfg(target_os = "macos")]
+                if let Ok(mut capturer) = capturer.try_lock() {
+                    capturer.recover_if_stalled();
+                }
+            }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                 log::info!("poll_camera_stream: channel disconnected");
                 break;

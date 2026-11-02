@@ -104,18 +104,14 @@ const DEFAULT_SHORTCUT_MIC: &str = "Cmd+Shift+A";
 #[cfg(not(target_os = "macos"))]
 const DEFAULT_SHORTCUT_MIC: &str = "Ctrl+Shift+A";
 
-#[cfg(target_os = "macos")]
-const DEFAULT_SHORTCUT_CAMERA: &str = "Cmd+Shift+V";
-#[cfg(not(target_os = "macos"))]
-const DEFAULT_SHORTCUT_CAMERA: &str = "Ctrl+Shift+V";
+// These are global during a call, so they take the keys away from every other app.
+// Paste without formatting, Save As and close window are too common to take by default,
+// and turning on your camera or ending the call by accident is costly. Empty means disabled.
+const DEFAULT_SHORTCUT_CAMERA: &str = "";
+const DEFAULT_SHORTCUT_SCREENSHARE: &str = "";
 
 #[cfg(target_os = "macos")]
-const DEFAULT_SHORTCUT_SCREENSHARE: &str = "Cmd+Shift+S";
-#[cfg(not(target_os = "macos"))]
-const DEFAULT_SHORTCUT_SCREENSHARE: &str = "Ctrl+Shift+S";
-
-#[cfg(target_os = "macos")]
-const DEFAULT_SHORTCUT_END_CALL: &str = "Cmd+Shift+W";
+const DEFAULT_SHORTCUT_END_CALL: &str = "";
 #[cfg(not(target_os = "macos"))]
 const DEFAULT_SHORTCUT_END_CALL: &str = "Alt+Q";
 

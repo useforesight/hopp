@@ -189,12 +189,17 @@ export interface CommandMap {
   // Windows
   create_feedback_window: { args: { teamId: string; roomId: string; participantId: string }; return: void };
   create_settings_window: { args: void; return: void };
+  show_call_alert_window: { args: void; return: void };
+  close_call_alert_window: { args: void; return: void };
 
   // Sentry
   set_sentry_metadata: { args: { userId: string; appVersion: string }; return: void };
 
   // Call
-  call_started: { args: { audioToken: string; videoToken: string }; return: void };
+  call_started: {
+    args: { audioToken: string; videoToken: string; micOn?: boolean; cameraOn?: boolean };
+    return: void;
+  };
   end_call: { args: void; return: void };
   toggle_call_sleep_prevention: { args: { enabled: boolean }; return: void };
 

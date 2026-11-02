@@ -46,6 +46,7 @@ export default defineConfig(async () => {
           trayNotification: resolve(__dirname, "trayNotification.html"),
           feedback: resolve(__dirname, "feedback.html"),
           settings: resolve(__dirname, "settings.html"),
+          callAlert: resolve(__dirname, "callAlert.html"),
         },
       },
     },

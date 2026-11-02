@@ -40,6 +40,13 @@ impl AppActivationObserver {
                     return;
                 }
 
+                // Clicking the call card activates the app. That click is for the card, but
+                // a Dock click or Cmd-Tab while the card is up still has to open the app.
+                if crate::call_alert::is_cursor_over(&app_handle) {
+                    log::info!("app_activation: cursor is over the call alert, skipping");
+                    return;
+                }
+
                 // If the user directly clicked the main
                 if app_handle
                     .get_webview_window("main")
