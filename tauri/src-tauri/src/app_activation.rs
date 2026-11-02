@@ -40,9 +40,10 @@ impl AppActivationObserver {
                     return;
                 }
 
-                // Clicking the call card activates the app. That click is for the card.
-                if crate::call_alert::is_visible(&app_handle) {
-                    log::info!("app_activation: call alert is showing, skipping");
+                // Clicking the call card activates the app. That click is for the card, but
+                // a Dock click or Cmd-Tab while the card is up still has to open the app.
+                if crate::call_alert::is_cursor_over(&app_handle) {
+                    log::info!("app_activation: cursor is over the call alert, skipping");
                     return;
                 }
 

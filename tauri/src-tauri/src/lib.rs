@@ -306,7 +306,7 @@ fn restart_core_process(app: &AppHandle, exit_reason: String) {
     }
 
     log::warn!("restart_core_process: restarting core: {exit_reason}");
-    let (sender, mut event_socket) = match create_core_process(app) {
+    let (sender, mut event_socket) = match spawn_core_process(app) {
         Ok((_core_process, sender, event_socket)) => (sender, event_socket),
         Err(e) => {
             log::error!("restart_core_process: failed to restart core: {e:?}");
@@ -420,19 +420,6 @@ fn start_sidecar(
 ) -> Result<(Receiver<CommandEvent>, CommandChild), CoreProcessCreationError> {
     log::info!("start_sidecar:");
 
-    /* First we check if the process is already running and kill it. */
-    if !cfg!(debug_assertions) {
-        let system = sysinfo::System::new_all();
-        for process in system.processes().values() {
-            if let Some(name) = process.name().to_str() {
-                if name.contains("hopp_core") {
-                    log::info!("start_sidecar: Found running core process, killing it");
-                    let _ = process.kill();
-                }
-            }
-        }
-    }
-
     let mut args = vec!["--socket-path", socket_path];
 
     let sentry_dsn = get_sentry_dsn();
@@ -497,11 +484,35 @@ async fn send_ping(sender: SocketSender) {
     log::info!("send_ping: Finished");
 }
 
-/// Creates and initializes the core process with socket communication.
+/// Kills a core left behind by an earlier run of the app.
+fn kill_leftover_core_processes() {
+    if cfg!(debug_assertions) {
+        return;
+    }
+    let system = sysinfo::System::new_all();
+    for process in system.processes().values() {
+        if let Some(name) = process.name().to_str() {
+            if name.contains("hopp_core") {
+                log::info!("kill_leftover_core_processes: Found running core process, killing it");
+                let _ = process.kill();
+            }
+        }
+    }
+}
+
+/// Creates and initializes the core process when the app starts.
 pub fn create_core_process(
     app: &tauri::AppHandle,
 ) -> Result<(CoreProcess, SocketSender, EventSocket), CoreProcessCreationError> {
     log::info!("create_core_process: Creating core process");
+    kill_leftover_core_processes();
+    spawn_core_process(app)
+}
+
+/// Spawns a core process with socket communication.
+fn spawn_core_process(
+    app: &tauri::AppHandle,
+) -> Result<(CoreProcess, SocketSender, EventSocket), CoreProcessCreationError> {
     let tmp_dir = std::env::temp_dir();
     let socket_name = format!("core-socket-{}", create_random_suffix());
     let socket_path = format!("{}/{socket_name}", tmp_dir.display());

@@ -60,10 +60,27 @@ pub fn hide(app: &AppHandle) {
     }
 }
 
-pub fn is_visible(app: &AppHandle) -> bool {
-    app.get_webview_window(CALL_ALERT_WINDOW_LABEL)
-        .and_then(|window| window.is_visible().ok())
-        .unwrap_or(false)
+#[cfg(target_os = "macos")]
+pub fn is_cursor_over(app: &AppHandle) -> bool {
+    use objc2_app_kit::{NSEvent, NSWindow};
+
+    let Some(window) = app.get_webview_window(CALL_ALERT_WINDOW_LABEL) else {
+        return false;
+    };
+    if !window.is_visible().unwrap_or(false) {
+        return false;
+    }
+    let Ok(ns_window) = window.ns_window() else {
+        return false;
+    };
+    let ns_window: &NSWindow = unsafe { &*ns_window.cast() };
+    let frame = ns_window.frame();
+    let cursor = NSEvent::mouseLocation();
+    rect_contains_point(
+        (frame.origin.x, frame.origin.y),
+        (frame.size.width, frame.size.height),
+        (cursor.x, cursor.y),
+    )
 }
 
 /// Uses AppKit directly: positions are in native points, which avoids tao's mixed-DPI

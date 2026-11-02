@@ -1,11 +1,14 @@
 import { listen } from "@tauri-apps/api/event";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { typedInvoke } from "@/core_payloads";
 import { socketService } from "@/services/socket";
 import useStore, { ParticipantRole } from "@/store/store";
 import { tauriUtils } from "@/windows/window-utils";
 import { closeCallNotice, showCallNotice } from "./call-alert";
 
 const RECONNECTED_NOTICE_MS = 4_000;
+// A rejoin also fails when the core dies again under it, and that core's replacement rejoins again.
+const NEXT_RESTART_GRACE_MS = 10_000;
 const MIC_SILENT_NOTICE_KEY = "microphone-silent";
 
 const showCallControls = () => {
@@ -23,7 +26,10 @@ export const abandonCall = (peerId: string | undefined, title: string, body: str
   showCallNotice({ key: "call-failed", title, body });
 };
 
+let coreRestartCount = 0;
+
 const rejoinAfterCoreRestart = async () => {
+  const thisRestart = ++coreRestartCount;
   const { callTokens, updateCallTokens } = useStore.getState();
   if (!callTokens) {
     console.log("Core process restarted outside of a call");
@@ -45,9 +51,17 @@ const rejoinAfterCoreRestart = async () => {
     });
   } catch (error) {
     console.error("Failed to rejoin call after core restart:", error);
+    await new Promise((resolve) => setTimeout(resolve, NEXT_RESTART_GRACE_MS));
+    if (thisRestart !== coreRestartCount) return;
+    if (!useStore.getState().callTokens) {
+      closeCallNotice("call-reconnecting");
+      return;
+    }
     abandonCall(callTokens.participant, "Couldn't reconnect your call", "Call them back to carry on.");
     return;
   }
+
+  if (thisRestart !== coreRestartCount) return;
 
   // The user may have hung up while this was reconnecting.
   if (!useStore.getState().callTokens) {
@@ -74,6 +88,9 @@ export const setupCallRecoveryListeners = () => {
       if (callTokens) {
         socketService.send({ type: "call_end", payload: { participant_id: callTokens.participant } });
         setCallTokens(null);
+        // No core is left to acknowledge the end of the call, which is what normally
+        // lets go of the call shortcuts, the sleep prevention and the Dock icon.
+        typedInvoke("end_call").catch((error) => console.error("Failed to clean up call:", error));
       }
       showCallNotice({
         key: "core-crashed",
@@ -88,6 +105,9 @@ export const setupCallRecoveryListeners = () => {
       const { callTokens, updateCallTokens } = useStore.getState();
       if (!callTokens) return;
       updateCallTokens({ hasCameraEnabled: false });
+      // The core gave up on capturing but still has the track published, and the
+      // button below only offers Start once it's off here. Line the two up.
+      typedInvoke("stop_camera").catch((error) => console.error("Failed to stop camera:", error));
       showCallNotice({
         key: "camera-failed",
         title: "Your camera stopped working",

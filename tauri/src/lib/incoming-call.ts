@@ -21,6 +21,10 @@ let ringTimeout: ReturnType<typeof setTimeout> | undefined;
 let cancelPendingAnswer: (() => void) | undefined;
 let activeInviteId: string | null = null;
 let joinCall: JoinCall = async () => false;
+// People who rang or invited us during this call. The server sends the same
+// call_end for "gave up ringing" and for "last other person left the room", and a
+// room can be down to someone we never knew was in it, so only these are ignored.
+const ringersDuringCall = new Set<string>();
 
 /** The join flow is a React hook, so the main window hands it over. */
 export const setJoinCallHandler = (handler: JoinCall) => {
@@ -256,12 +260,14 @@ const handleIncomingCall = (data: TWebSocketMessage) => {
   if (data.type !== "incoming_call") return;
 
   const { caller_id: callerId, initiated_at: initiatedAt } = (data as TIncomingCallMessage).payload;
+  const { callTokens, updateInProgress, setCallTokens } = useStore.getState();
+  if (callTokens) ringersDuringCall.add(callerId);
+
   if (isTooOld(initiatedAt)) {
     console.warn("Dropping stale incoming call");
     return;
   }
 
-  const { callTokens, updateInProgress, setCallTokens } = useStore.getState();
   if (updateInProgress) {
     rejectCall(callerId, "rejected");
     return;
@@ -297,8 +303,9 @@ const handleCallEnd = (data: TWebSocketMessage) => {
 
   if (!callTokens) return;
   // Someone giving up on ringing us mustn't end the call we're in with someone else.
-  if (senderId && !isCallPeer(callTokens, senderId)) {
-    console.log(`Ignoring call_end from ${senderId}, who isn't in this call`);
+  const wasRingingUs = senderId === incomingCallCallerId || senderId === incomingInviteInviterId;
+  if (senderId && !isCallPeer(callTokens, senderId) && (wasRingingUs || ringersDuringCall.has(senderId))) {
+    console.log(`Ignoring call_end from ${senderId}, who was only ringing us`);
     return;
   }
 
@@ -324,6 +331,8 @@ const handleIncomingInvite = (data: TWebSocketMessage) => {
     invite_id: inviteId,
     initiated_at: initiatedAt,
   } = (data as TIncomingInviteMessage).payload;
+  if (useStore.getState().callTokens) ringersDuringCall.add(inviterId);
+
   if (isTooOld(initiatedAt)) {
     console.warn("Dropping stale incoming invite");
     return;
@@ -353,9 +362,18 @@ export const setupIncomingCallHandling = () => {
   socketService.on("incoming_invite", handleIncomingInvite);
   socketService.on("invite_cancel", handleInviteCancel);
 
-  // A missed call card has done its job once the user is in a call.
   const unsubscribeFromStore = useStore.subscribe((state, previousState) => {
-    if (!state.callTokens || previousState.callTokens) return;
+    if (!state.callTokens) {
+      ringersDuringCall.clear();
+      return;
+    }
+    // Once they've joined, their call_end can be the room emptying out.
+    for (const ringer of ringersDuringCall) {
+      if (isCallPeer(state.callTokens, ringer)) ringersDuringCall.delete(ringer);
+    }
+
+    // A missed call card has done its job once the user is in a call.
+    if (previousState.callTokens) return;
     const activeKind = getActiveCallAlertKind();
     if (activeKind === "missed" || activeKind === "missed-invite") closeCallAlert();
   });

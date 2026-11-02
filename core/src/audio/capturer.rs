@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use thread_priority::{set_current_thread_priority, ThreadPriority};
 use tokio::sync::mpsc;
 
-use super::capture_health::{CaptureHealth, CaptureStallReason};
+use super::capture_health::{silence_timeout_before_signal, CaptureHealth, CaptureStallReason};
 
 const TARGET_SAMPLE_RATE: u32 = 16000;
 const TARGET_CHANNELS: u16 = 1;
@@ -17,6 +17,7 @@ pub const SAMPLES_DIVIDER: u32 = 100;
 const CAPTURE_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const CAPTURE_MONITOR_INTERVAL: Duration = Duration::from_millis(500);
 const MAX_STALL_RECOVERY_ATTEMPTS: u32 = 3;
+const FAILED_RESTART_RETRY_DELAY: Duration = Duration::from_secs(3);
 
 /// Suffix duplicate names with `(2)`, `(3)`, ..., skipping suffixes that collide
 /// with existing raw names.
@@ -117,7 +118,7 @@ impl LevelEmitter {
 
 pub enum CaptureStallOutcome {
     /// Reported by a stream that has since been replaced or stopped, or nothing the
-    /// user needs to hear about.
+    /// user needs to hear about (yet: a failed restart gets retried).
     Ignored,
     Restarted,
     /// Reopening the stream did not bring sound back.
@@ -135,7 +136,10 @@ pub struct Capturer {
     socket: socket_lib::SocketSender,
     proxy: winit::event_loop::EventLoopProxy<crate::UserEvent>,
     capture_id: u64,
-    stall_recovery_attempts: u32,
+    // Counted apart, so a mic that's silent because it's noise gated can't use up the
+    // restarts for a stream that really has stopped.
+    no_samples_restarts: u32,
+    silence_restarts: u32,
     stall_reported_to_user: bool,
     has_had_signal_this_session: bool,
 }
@@ -159,7 +163,8 @@ impl Capturer {
             socket,
             proxy,
             capture_id: 0,
-            stall_recovery_attempts: 0,
+            no_samples_restarts: 0,
+            silence_restarts: 0,
             stall_reported_to_user: false,
             has_had_signal_this_session: false,
         }
@@ -200,7 +205,7 @@ impl Capturer {
         device_name: Option<&str>,
         sample_tx: mpsc::UnboundedSender<Vec<i16>>,
     ) -> Result<u32, String> {
-        self.stall_recovery_attempts = 0;
+        self.reset_stall_history();
         self.open_capture(device_name, sample_tx)
     }
 
@@ -211,8 +216,15 @@ impl Capturer {
         device_name: Option<&str>,
         sample_tx: mpsc::UnboundedSender<Vec<i16>>,
     ) -> Result<u32, String> {
-        self.stall_recovery_attempts = 0;
+        self.reset_stall_history();
         self.open_capture_with_fallback(device_name, sample_tx)
+    }
+
+    /// Each device has its own history, so this runs whenever one gets picked.
+    fn reset_stall_history(&mut self) {
+        self.no_samples_restarts = 0;
+        self.silence_restarts = 0;
+        self.has_had_signal_this_session = false;
     }
 
     fn open_capture_with_fallback(
@@ -335,7 +347,10 @@ impl Capturer {
 
         self.capture_id += 1;
         let capture_id = self.capture_id;
-        let health = Arc::new(CaptureHealth::new(Instant::now()));
+        let health = Arc::new(CaptureHealth::new(
+            Instant::now(),
+            silence_timeout_before_signal(self.has_had_signal_this_session, self.silence_restarts),
+        ));
         spawn_capture_monitor(
             capture_id,
             Arc::clone(&health),
@@ -425,7 +440,12 @@ impl Capturer {
             .ok_or_else(|| "No active capture to switch".to_string())?;
         self.list_sources();
         self.stop_thread();
-        self.start_capture(device_name, sample_tx)
+        let result = self.start_capture(device_name, sample_tx.clone());
+        if result.is_err() {
+            // Still in the call, so picking another device has to keep working.
+            self.sample_tx = Some(sample_tx);
+        }
+        result
     }
 
     pub fn active_device_name(&self) -> Option<&str> {
@@ -447,10 +467,13 @@ impl Capturer {
         let device_name = self.active_device_name.clone();
         let device_label = device_name.clone().unwrap_or_default();
 
-        if self.stall_recovery_attempts >= MAX_STALL_RECOVERY_ATTEMPTS {
+        let restarts_so_far = match reason {
+            CaptureStallReason::NoSamples => self.no_samples_restarts,
+            CaptureStallReason::DigitalSilence => self.silence_restarts,
+        };
+        if restarts_so_far >= MAX_STALL_RECOVERY_ATTEMPTS {
             log::error!(
-                "Mic '{device_label}' still stalled ({reason:?}) after {} restarts, giving up",
-                self.stall_recovery_attempts
+                "Mic '{device_label}' still stalled ({reason:?}) after {restarts_so_far} restarts, giving up"
             );
             // Noise-gated and virtual mics output exact zeros while the user just listens.
             // Having worked earlier in the session, this one is most likely doing that.
@@ -463,18 +486,27 @@ impl Capturer {
             };
         }
 
-        self.stall_recovery_attempts += 1;
+        let attempt = restarts_so_far + 1;
+        match reason {
+            CaptureStallReason::NoSamples => self.no_samples_restarts = attempt,
+            CaptureStallReason::DigitalSilence => self.silence_restarts = attempt,
+        }
         log::warn!(
-            "Mic '{device_label}' stalled ({reason:?}), restarting capture (attempt {}/{})",
-            self.stall_recovery_attempts,
-            MAX_STALL_RECOVERY_ATTEMPTS
+            "Mic '{device_label}' stalled ({reason:?}), restarting capture (attempt {attempt}/{MAX_STALL_RECOVERY_ATTEMPTS})"
         );
         self.list_sources();
         self.stop_thread();
-        match self.open_capture_with_fallback(device_name.as_deref(), sample_tx) {
+        match self.open_capture_with_fallback(device_name.as_deref(), sample_tx.clone()) {
             Ok(_) => CaptureStallOutcome::Restarted,
             Err(error) => {
                 log::error!("Failed to restart mic '{device_label}': {error}");
+                // Still in the call, so a later attempt or picking another device has
+                // to keep working. A device that just changed often opens a moment later.
+                self.sample_tx = Some(sample_tx);
+                if attempt < MAX_STALL_RECOVERY_ATTEMPTS {
+                    self.report_stall_after_delay(reason);
+                    return CaptureStallOutcome::Ignored;
+                }
                 self.stall_reported_to_user = true;
                 CaptureStallOutcome::GaveUp {
                     device_name: device_label,
@@ -483,19 +515,29 @@ impl Capturer {
         }
     }
 
+    /// capture_id only changes when a stream opens, so a stop or a new capture in the
+    /// meantime makes handle_capture_stalled ignore this.
+    fn report_stall_after_delay(&self, reason: CaptureStallReason) {
+        let capture_id = self.capture_id;
+        let proxy = self.proxy.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(FAILED_RESTART_RETRY_DELAY);
+            let _ = proxy.send_event(crate::UserEvent::AudioCaptureStalled { capture_id, reason });
+        });
+    }
+
     /// Called once a stream has produced sound. Returns true if the user was told
     /// the mic is silent and should now be told it is back.
     pub fn handle_capture_healthy(&mut self, capture_id: u64) -> bool {
         if capture_id != self.capture_id {
             return false;
         }
-        if self.stall_recovery_attempts > 0 {
-            log::info!(
-                "Mic recovered after {} capture restart(s)",
-                self.stall_recovery_attempts
-            );
+        let restarts = self.no_samples_restarts + self.silence_restarts;
+        if restarts > 0 {
+            log::info!("Mic recovered after {restarts} capture restart(s)");
         }
-        self.stall_recovery_attempts = 0;
+        self.no_samples_restarts = 0;
+        self.silence_restarts = 0;
         self.has_had_signal_this_session = true;
         std::mem::take(&mut self.stall_reported_to_user)
     }
@@ -543,9 +585,8 @@ impl Capturer {
     pub fn stop_capture(&mut self) {
         self.stop_thread();
         self.active_device_name = None;
-        self.stall_recovery_attempts = 0;
+        self.reset_stall_history();
         self.stall_reported_to_user = false;
-        self.has_had_signal_this_session = false;
     }
 }
 
@@ -556,7 +597,7 @@ fn spawn_capture_monitor(
     proxy: winit::event_loop::EventLoopProxy<crate::UserEvent>,
 ) {
     std::thread::spawn(move || {
-        let mut stall_reported = false;
+        let mut reported_reason = None;
         let mut healthy_reported = false;
         while !stop_flag.load(Ordering::Relaxed) {
             std::thread::sleep(CAPTURE_MONITOR_INTERVAL);
@@ -566,8 +607,9 @@ fn spawn_capture_monitor(
             match health.check(Instant::now()) {
                 Some(reason) => {
                     healthy_reported = false;
-                    if !stall_reported {
-                        stall_reported = true;
+                    // A silent stream can go on to stop altogether, which is worth reporting.
+                    if reported_reason != Some(reason) {
+                        reported_reason = Some(reason);
                         let _ = proxy.send_event(crate::UserEvent::AudioCaptureStalled {
                             capture_id,
                             reason,
@@ -575,7 +617,7 @@ fn spawn_capture_monitor(
                     }
                 }
                 None if health.has_had_signal() && !healthy_reported => {
-                    stall_reported = false;
+                    reported_reason = None;
                     healthy_reported = true;
                     let _ = proxy.send_event(crate::UserEvent::AudioCaptureHealthy { capture_id });
                 }

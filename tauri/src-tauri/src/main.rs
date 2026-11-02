@@ -82,31 +82,6 @@ fn play_sound(app: tauri::AppHandle, sound_name: String) {
     if let Some(tmp_sound_name) = tmp_sound_name {
         log::info!("Playing sound: {}", tmp_sound_name);
     }
-    /*
-     * Check if the sound is already playing, if it has finished we
-     * remove the entry from the sound_entries vector.
-     */
-    {
-        let data = app.state::<Mutex<AppData>>();
-        let mut data = data.lock().unwrap();
-        let mut i = 0;
-        while i < data.sound_entries.len() {
-            if data.sound_entries[i].name == sound_name {
-                /* Send a message to see if the sound is still playing */
-                let res = data.sound_entries[i].tx.send(sounds::SoundCommand::Ping);
-                if res.is_err() {
-                    log::debug!("play_sound: found closed channel for {sound_name}");
-                    data.sound_entries.remove(i);
-                    break;
-                }
-                log::warn!("play_sound: Sound is already playing");
-                return;
-            } else {
-                i += 1;
-            }
-        }
-    }
-
     let sounds = hopp::sounds::get_all_sounds();
     let mut sound_path = "".to_string();
     let mut sound_config = SoundConfig::default();
@@ -127,6 +102,24 @@ fn play_sound(app: tauri::AppHandle, sound_name: String) {
         return;
     }
 
+    // Held from this check until the new entry is in, so that two plays at the same
+    // time can't both start the sound and leave one that nothing can stop.
+    let data = app.state::<Mutex<AppData>>();
+    let mut data = data.lock().unwrap();
+
+    /* A sound that has finished has a closed channel, so its entry goes. */
+    data.sound_entries.retain(|entry| {
+        entry.name != sound_name || entry.tx.send(sounds::SoundCommand::Ping).is_ok()
+    });
+    if data
+        .sound_entries
+        .iter()
+        .any(|entry| entry.name == sound_name)
+    {
+        log::warn!("play_sound: Sound is already playing");
+        return;
+    }
+
     let (tx, rx) = std::sync::mpsc::channel();
     tauri::async_runtime::spawn(async move {
         let res = hopp::sounds::play_sound(sound_path, sound_config, rx);
@@ -135,8 +128,6 @@ fn play_sound(app: tauri::AppHandle, sound_name: String) {
         }
     });
 
-    let data = app.state::<Mutex<AppData>>();
-    let mut data = data.lock().unwrap();
     data.sound_entries.push(sounds::SoundEntry {
         name: sound_name,
         tx,
@@ -152,16 +143,13 @@ fn stop_sound(app: tauri::AppHandle, sound_name: String) {
     }
     let data = app.state::<Mutex<AppData>>();
     let mut data = data.lock().unwrap();
-    let mut i = 0;
-    while i < data.sound_entries.len() {
-        if data.sound_entries[i].name == sound_name {
-            let _ = data.sound_entries[i].tx.send(sounds::SoundCommand::Stop);
-            data.sound_entries.remove(i);
-            break;
-        } else {
-            i += 1;
+    data.sound_entries.retain(|entry| {
+        if entry.name != sound_name {
+            return true;
         }
-    }
+        let _ = entry.tx.send(sounds::SoundCommand::Stop);
+        false
+    });
     log::debug!("stop_sound: entries left: {}", data.sound_entries.len());
 }
 

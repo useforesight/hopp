@@ -23,12 +23,21 @@ type ActiveCallAlert = {
   onAction: CallAlertActionHandler;
   noticeKey?: string;
 };
+type CallNotice = {
+  key: string;
+  title: string;
+  body: string;
+  actionLabel?: string;
+  onAction?: () => void;
+  autoDismissMs?: number;
+};
 
 let activeCallAlert: ActiveCallAlert | null = null;
 let nextCallAlertId = 1;
 let autoDismissTimeout: ReturnType<typeof setTimeout> | undefined;
 let usingFallbackToast = false;
 let windowCommands: Promise<unknown> = Promise.resolve();
+let noticeWaitingForCard: CallNotice | null = null;
 
 // Each command runs on its own thread in Tauri, so a hide and the show right
 // after it could otherwise swap places and leave the card hidden.
@@ -99,27 +108,25 @@ export const closeCallAlert = () => {
   queueWindowCommand(() => typedInvoke("close_call_alert_window")).catch((error) => {
     console.error("Failed to close call alert window:", error);
   });
+
+  const waitingNotice = noticeWaitingForCard;
+  noticeWaitingForCard = null;
+  if (waitingNotice) showCallNotice(waitingNotice);
 };
 
-export const showCallNotice = ({
-  key,
-  title,
-  body,
-  actionLabel,
-  onAction,
-  autoDismissMs,
-}: {
-  key: string;
-  title: string;
-  body: string;
-  actionLabel?: string;
-  onAction?: () => void;
-  autoDismissMs?: number;
-}) => {
+export const showCallNotice = (notice: CallNotice) => {
+  const { key, title, body, actionLabel, onAction, autoDismissMs } = notice;
+
   // Someone waiting for an answer matters more than a notice.
   const activeKind = getActiveCallAlertKind();
   if (activeKind === "ringing" || activeKind === "invite" || activeKind === "connecting") {
     console.warn(`Not showing "${title}" over an incoming call`);
+    return;
+  }
+
+  // Replacing a missed call would lose it, and it can stay up for hours, so this waits.
+  if (activeKind === "missed" || activeKind === "missed-invite") {
+    noticeWaitingForCard = notice;
     return;
   }
 
@@ -138,6 +145,7 @@ export const showCallNotice = ({
 };
 
 export const closeCallNotice = (key: string) => {
+  if (noticeWaitingForCard?.key === key) noticeWaitingForCard = null;
   if (activeCallAlert?.noticeKey === key) closeCallAlert();
 };
 
