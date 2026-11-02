@@ -5,12 +5,18 @@ use std::collections::{HashMap, HashSet};
 use std::num::NonZero;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use thread_priority::{set_current_thread_priority, ThreadPriority};
 use tokio::sync::mpsc;
+
+use super::capture_health::{CaptureHealth, CaptureStallReason};
 
 const TARGET_SAMPLE_RATE: u32 = 16000;
 const TARGET_CHANNELS: u16 = 1;
 pub const SAMPLES_DIVIDER: u32 = 100;
+const CAPTURE_POLL_INTERVAL: Duration = Duration::from_millis(5);
+const CAPTURE_MONITOR_INTERVAL: Duration = Duration::from_millis(500);
+const MAX_STALL_RECOVERY_ATTEMPTS: u32 = 3;
 
 /// Suffix duplicate names with `(2)`, `(3)`, ..., skipping suffixes that collide
 /// with existing raw names.
@@ -109,6 +115,17 @@ impl LevelEmitter {
     }
 }
 
+pub enum CaptureStallOutcome {
+    /// Reported by a stream that has since been replaced or stopped, or nothing the
+    /// user needs to hear about.
+    Ignored,
+    Restarted,
+    /// Reopening the stream did not bring sound back.
+    GaveUp {
+        device_name: String,
+    },
+}
+
 pub struct Capturer {
     available_devices: Vec<AudioDevice>,
     stop_flag: Arc<AtomicBool>,
@@ -117,6 +134,10 @@ pub struct Capturer {
     _device_monitor: super::device_monitor::DeviceMonitor,
     socket: socket_lib::SocketSender,
     proxy: winit::event_loop::EventLoopProxy<crate::UserEvent>,
+    capture_id: u64,
+    stall_recovery_attempts: u32,
+    stall_reported_to_user: bool,
+    has_had_signal_this_session: bool,
 }
 
 impl Capturer {
@@ -137,6 +158,10 @@ impl Capturer {
             .expect("Failed to start input device monitor"),
             socket,
             proxy,
+            capture_id: 0,
+            stall_recovery_attempts: 0,
+            stall_reported_to_user: false,
+            has_had_signal_this_session: false,
         }
     }
 
@@ -171,6 +196,41 @@ impl Capturer {
     // plugged/unplugged will keep their relative order. Then we are using this name to match
     // with our internal vector which has stored the actual mic devices.
     pub fn start_capture(
+        &mut self,
+        device_name: Option<&str>,
+        sample_tx: mpsc::UnboundedSender<Vec<i16>>,
+    ) -> Result<u32, String> {
+        self.stall_recovery_attempts = 0;
+        self.open_capture(device_name, sample_tx)
+    }
+
+    /// Starts capture, falling back to the default device if the requested one
+    /// can't be opened, so a broken device doesn't stop a call from starting.
+    pub fn start_capture_with_fallback(
+        &mut self,
+        device_name: Option<&str>,
+        sample_tx: mpsc::UnboundedSender<Vec<i16>>,
+    ) -> Result<u32, String> {
+        self.stall_recovery_attempts = 0;
+        self.open_capture_with_fallback(device_name, sample_tx)
+    }
+
+    fn open_capture_with_fallback(
+        &mut self,
+        device_name: Option<&str>,
+        sample_tx: mpsc::UnboundedSender<Vec<i16>>,
+    ) -> Result<u32, String> {
+        match self.open_capture(device_name, sample_tx.clone()) {
+            Err(error) if device_name.is_some() => {
+                log::warn!("Failed to open mic {device_name:?}: {error}, trying the default");
+                self.list_sources();
+                self.open_capture(None, sample_tx)
+            }
+            result => result,
+        }
+    }
+
+    fn open_capture(
         &mut self,
         device_name: Option<&str>,
         sample_tx: mpsc::UnboundedSender<Vec<i16>>,
@@ -273,8 +333,17 @@ impl Capturer {
         };
         self.sample_tx = Some(sample_tx.clone());
 
+        self.capture_id += 1;
+        let capture_id = self.capture_id;
+        let health = Arc::new(CaptureHealth::new(Instant::now()));
+        spawn_capture_monitor(
+            capture_id,
+            Arc::clone(&health),
+            Arc::clone(&stop_flag),
+            self.proxy.clone(),
+        );
+
         let socket_for_level = self.socket.clone();
-        let proxy_for_thread = self.proxy.clone();
 
         std::thread::spawn(move || {
             match set_current_thread_priority(ThreadPriority::Max) {
@@ -286,33 +355,41 @@ impl Capturer {
             let mut mic = mic;
             let mut resampler = AudioResampler::default();
             let mut level = LevelEmitter::new(socket_for_level.clone());
-            let mut unexpected_exit = false;
 
             let in_samples_per_frame = actual_sample_rate / SAMPLES_DIVIDER;
             let samples_needed = in_samples_per_frame as usize * num_channels;
             let mut scratch_i16: Vec<i16> = Vec::with_capacity(samples_needed);
+            let mut frame_has_signal = false;
 
             loop {
                 if stop_flag.load(Ordering::Relaxed) {
                     break;
                 }
 
-                scratch_i16.clear();
-                for sample in mic.by_ref().take(samples_needed) {
+                // Microphone::next() sleeps forever once a stream stops delivering,
+                // so only read what the ring buffer says is there. Otherwise this
+                // thread could never see stop_flag and the device would stay open.
+                // CaptureHealth is what notices that the samples stopped coming.
+                let available_samples = mic.size_hint().0;
+                if available_samples == 0 {
+                    std::thread::sleep(CAPTURE_POLL_INTERVAL);
+                    continue;
+                }
+
+                let samples_to_read = available_samples.min(samples_needed - scratch_i16.len());
+                for sample in mic.by_ref().take(samples_to_read) {
+                    frame_has_signal |= sample != 0.0;
                     let clamped = sample.clamp(-1.0, 1.0);
                     level.observe(clamped);
                     scratch_i16.push((clamped * i16::MAX as f32) as i16);
                 }
 
                 if scratch_i16.len() < samples_needed {
-                    log::error!(
-                        "capturing mic: got {}/{} samples, device likely disconnected",
-                        scratch_i16.len(),
-                        samples_needed
-                    );
-                    unexpected_exit = true;
-                    break;
+                    continue;
                 }
+
+                health.record_frame(Instant::now(), frame_has_signal);
+                frame_has_signal = false;
 
                 let output = resampler.remix_and_resample(
                     &scratch_i16,
@@ -327,14 +404,11 @@ impl Capturer {
                     break;
                 }
 
+                scratch_i16.clear();
                 level.emit_if_due();
             }
 
             let _ = socket_for_level.send(socket_lib::Message::MicrophoneAudioLevel(0.0));
-            if unexpected_exit {
-                log::warn!("capture thread died, notifying main thread");
-                let _ = proxy_for_thread.send_event(crate::UserEvent::AudioCaptureError);
-            }
         });
 
         Ok(TARGET_SAMPLE_RATE)
@@ -356,6 +430,74 @@ impl Capturer {
 
     pub fn active_device_name(&self) -> Option<&str> {
         self.active_device_name.as_deref()
+    }
+
+    /// Does what reselecting the device by hand does: re-enumerates and reopens it.
+    pub fn handle_capture_stalled(
+        &mut self,
+        capture_id: u64,
+        reason: CaptureStallReason,
+    ) -> CaptureStallOutcome {
+        if capture_id != self.capture_id {
+            return CaptureStallOutcome::Ignored;
+        }
+        let Some(sample_tx) = self.sample_tx.clone() else {
+            return CaptureStallOutcome::Ignored;
+        };
+        let device_name = self.active_device_name.clone();
+        let device_label = device_name.clone().unwrap_or_default();
+
+        if self.stall_recovery_attempts >= MAX_STALL_RECOVERY_ATTEMPTS {
+            log::error!(
+                "Mic '{device_label}' still stalled ({reason:?}) after {} restarts, giving up",
+                self.stall_recovery_attempts
+            );
+            // Noise-gated and virtual mics output exact zeros while the user just listens.
+            // Having worked earlier in the session, this one is most likely doing that.
+            if reason == CaptureStallReason::DigitalSilence && self.has_had_signal_this_session {
+                return CaptureStallOutcome::Ignored;
+            }
+            self.stall_reported_to_user = true;
+            return CaptureStallOutcome::GaveUp {
+                device_name: device_label,
+            };
+        }
+
+        self.stall_recovery_attempts += 1;
+        log::warn!(
+            "Mic '{device_label}' stalled ({reason:?}), restarting capture (attempt {}/{})",
+            self.stall_recovery_attempts,
+            MAX_STALL_RECOVERY_ATTEMPTS
+        );
+        self.list_sources();
+        self.stop_thread();
+        match self.open_capture_with_fallback(device_name.as_deref(), sample_tx) {
+            Ok(_) => CaptureStallOutcome::Restarted,
+            Err(error) => {
+                log::error!("Failed to restart mic '{device_label}': {error}");
+                self.stall_reported_to_user = true;
+                CaptureStallOutcome::GaveUp {
+                    device_name: device_label,
+                }
+            }
+        }
+    }
+
+    /// Called once a stream has produced sound. Returns true if the user was told
+    /// the mic is silent and should now be told it is back.
+    pub fn handle_capture_healthy(&mut self, capture_id: u64) -> bool {
+        if capture_id != self.capture_id {
+            return false;
+        }
+        if self.stall_recovery_attempts > 0 {
+            log::info!(
+                "Mic recovered after {} capture restart(s)",
+                self.stall_recovery_attempts
+            );
+        }
+        self.stall_recovery_attempts = 0;
+        self.has_had_signal_this_session = true;
+        std::mem::take(&mut self.stall_reported_to_user)
     }
 
     /// Called when the OS default input device changes.
@@ -401,5 +543,44 @@ impl Capturer {
     pub fn stop_capture(&mut self) {
         self.stop_thread();
         self.active_device_name = None;
+        self.stall_recovery_attempts = 0;
+        self.stall_reported_to_user = false;
+        self.has_had_signal_this_session = false;
     }
+}
+
+fn spawn_capture_monitor(
+    capture_id: u64,
+    health: Arc<CaptureHealth>,
+    stop_flag: Arc<AtomicBool>,
+    proxy: winit::event_loop::EventLoopProxy<crate::UserEvent>,
+) {
+    std::thread::spawn(move || {
+        let mut stall_reported = false;
+        let mut healthy_reported = false;
+        while !stop_flag.load(Ordering::Relaxed) {
+            std::thread::sleep(CAPTURE_MONITOR_INTERVAL);
+            if stop_flag.load(Ordering::Relaxed) {
+                break;
+            }
+            match health.check(Instant::now()) {
+                Some(reason) => {
+                    healthy_reported = false;
+                    if !stall_reported {
+                        stall_reported = true;
+                        let _ = proxy.send_event(crate::UserEvent::AudioCaptureStalled {
+                            capture_id,
+                            reason,
+                        });
+                    }
+                }
+                None if health.has_had_signal() && !healthy_reported => {
+                    stall_reported = false;
+                    healthy_reported = true;
+                    let _ = proxy.send_event(crate::UserEvent::AudioCaptureHealthy { capture_id });
+                }
+                None => {}
+            }
+        }
+    });
 }

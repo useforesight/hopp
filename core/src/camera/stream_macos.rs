@@ -8,7 +8,7 @@ use livekit::webrtc::{
 };
 use std::panic::AssertUnwindSafe;
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use dispatch2::DispatchQueue;
 use objc2::{
@@ -152,6 +152,7 @@ struct CameraDelegateState {
     config: Arc<CameraStreamConfig>,
     capture_start: Instant,
     last_frame_time: Instant,
+    has_delivered_frame: bool,
     i420: Option<I420Buffer>,
     stream_frame: Option<VideoFrame<I420Buffer>>,
     prev_stream_w: u32,
@@ -188,6 +189,7 @@ define_class!(
                 return;
             }
             state.last_frame_time = now;
+            state.has_delivered_frame = true;
 
             unsafe {
                 let image_buffer = sample_buffer.image_buffer();
@@ -364,7 +366,13 @@ define_class!(
 
 unsafe impl NSObjectProtocol for CameraDelegate {}
 
+struct SendableCaptureSession(Retained<AVCaptureSession>);
+// SAFETY: AVCaptureSession is meant to be started away from the main thread. Apple's
+// documentation recommends a background queue because startRunning blocks.
+unsafe impl Send for SendableCaptureSession {}
+
 pub struct CameraStream {
+    stop_requested: Arc<Mutex<bool>>,
     session: Retained<AVCaptureSession>,
     input: Retained<AVCaptureDeviceInput>,
     output: Retained<AVCaptureVideoDataOutput>,
@@ -517,6 +525,7 @@ impl CameraStream {
             config: config.clone(),
             capture_start: Instant::now(),
             last_frame_time: Instant::now(),
+            has_delivered_frame: false,
             i420: None,
             stream_frame: None,
             prev_stream_w: 0,
@@ -536,10 +545,32 @@ impl CameraStream {
             ProtocolObject::from_ref(&*delegate);
         output.setSampleBufferDelegate_queue(Some(protocol_obj), Some(&queue_retained));
 
-        session.startRunning();
+        // startRunning blocks until the device is streaming, which some USB and virtual
+        // cameras stretch to many seconds. On the main thread that can trip the hang
+        // protection and take the whole call down, so it gets its own thread.
+        let stop_requested = Arc::new(Mutex::new(false));
+        let session_to_start = SendableCaptureSession(session.clone());
+        let stop_requested_for_start = stop_requested.clone();
+        std::thread::spawn(move || {
+            let session_to_start = session_to_start;
+            // Held across startRunning, so stop_capture can't overtake a start in progress.
+            let stop_requested = stop_requested_for_start.lock().unwrap();
+            if *stop_requested {
+                return;
+            }
+            let start_result = objc2::rc::autoreleasepool(|_| {
+                exception::catch(AssertUnwindSafe(|| unsafe {
+                    session_to_start.0.startRunning();
+                }))
+            });
+            if let Err(exception) = start_result {
+                log::error!("CameraStream: startRunning raised an exception: {exception:?}");
+            }
+        });
 
         Ok(Self {
             session,
+            stop_requested,
             input,
             output,
             delegate,
@@ -554,6 +585,9 @@ impl CameraStream {
     }
 
     pub fn stop_capture(&mut self) {
+        if let Ok(mut stop_requested) = self.stop_requested.lock() {
+            *stop_requested = true;
+        }
         unsafe {
             if let Ok(mut state) = self.delegate.ivars().lock() {
                 *state = None;
@@ -570,6 +604,14 @@ impl CameraStream {
 
     pub fn get_failures_count(&self) -> u32 {
         *self.failures_count.lock().unwrap()
+    }
+
+    /// How long the stream has gone without a frame, and whether it has delivered one yet.
+    pub fn frame_status(&self) -> Option<(Duration, bool)> {
+        let state = self.delegate.ivars().lock().ok()?;
+        state
+            .as_ref()
+            .map(|state| (state.last_frame_time.elapsed(), state.has_delivered_frame))
     }
 
     pub fn device_name(&self) -> &str {

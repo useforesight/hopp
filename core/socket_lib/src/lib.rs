@@ -264,6 +264,10 @@ pub enum Message {
     SetTelemetryEnabled(bool),
     /// Microphone RMS level in [0.0, 1.0], emitted ~1 Hz from core capturer.
     MicrophoneAudioLevel(f32),
+    /// The mic is open but restarting it did not produce any sound.
+    MicrophoneSilent(String),
+    /// A mic reported through `MicrophoneSilent` is producing sound again.
+    MicrophoneRecovered,
 }
 
 impl Message {
