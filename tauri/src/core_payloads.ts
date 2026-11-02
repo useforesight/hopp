@@ -190,6 +190,7 @@ export interface CommandMap {
   create_feedback_window: { args: { teamId: string; roomId: string; participantId: string }; return: void };
   create_settings_window: { args: void; return: void };
   show_call_alert_window: { args: void; return: void };
+  write_launcher_directory: { args: { contents: string }; return: void };
   close_call_alert_window: { args: void; return: void };
 
   // Sentry

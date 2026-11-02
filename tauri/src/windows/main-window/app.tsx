@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { onOpenUrl } from "@tauri-apps/plugin-deep-link";
+import { publishLauncherDirectory } from "@/lib/launcher";
 import useStore from "../../store/store";
 import { tauriUtils } from "@/windows/window-utils.ts";
 import { Sidebar } from "@/components/sidebar/Sidebar";
@@ -160,6 +161,13 @@ function App() {
       if (unlisten) unlisten();
     };
   }, []);
+
+  // Lets launchers such as Raycast see who can be called
+  useEffect(() => {
+    if (!isTauri()) return;
+    if (!authToken) publishLauncherDirectory([]);
+    else if (teammates) publishLauncherDirectory(teammates);
+  }, [authToken, teammates]);
 
   // Check for updates (and auto-install when idle on macOS)
   useEffect(() => {

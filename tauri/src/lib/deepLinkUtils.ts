@@ -3,6 +3,8 @@ import useStore, { ParticipantRole } from "@/store/store";
 import { tauriUtils } from "@/windows/window-utils";
 import { Constants } from "@/constants";
 import { validateAndSetAuthToken } from "./authUtils";
+import { requestCallback } from "./incoming-call";
+import { isLauncherKey } from "./launcher";
 import type { components } from "@/openapi";
 
 /**
@@ -11,6 +13,7 @@ import type { components } from "@/openapi";
  * Supported deep-link formats:
  * - hopp:///authenticate?token=xxx - Authenticate user with token
  * - hopp:///join-session?sessionId=xxx - Join a Slack pairing session
+ * - hopp:///call?userId=xxx&key=xxx - Call a teammate, from a launcher such as Raycast
  *
  * @param url The hopp:// URL to process
  * @returns true if the URL was handled successfully, false otherwise
@@ -49,6 +52,16 @@ export const processDeepLinkUrl = async (url: string): Promise<boolean> => {
       return false;
     }
 
+    // Handle /call deep-link
+    if (pathname === "/call") {
+      const userId = params.get("userId");
+      if (userId && isLauncherKey(params.get("key"))) {
+        return await handleCallDeepLink(userId);
+      }
+      console.warn("Missing user or wrong key in call deep-link");
+      return false;
+    }
+
     console.warn("Unknown deep-link path:", pathname);
     return false;
   } catch (err) {
@@ -56,6 +69,31 @@ export const processDeepLinkUrl = async (url: string): Promise<boolean> => {
     toast.error("Failed to process deep link");
     return false;
   }
+};
+
+const handleCallDeepLink = async (userId: string): Promise<boolean> => {
+  const { authToken, callTokens, calling, incomingCallCallerId, setTab } = useStore.getState();
+
+  if (!authToken) {
+    toast.error("Please log in first to call someone");
+    setTab("login");
+    await tauriUtils.showWindow("main");
+    return false;
+  }
+
+  const blockedReason =
+    callTokens ? "Leave your current call first"
+    : incomingCallCallerId ? "Answer or decline the incoming call first"
+    : calling ? "You're already calling someone"
+    : null;
+  if (blockedReason) {
+    toast.error(blockedReason);
+    await tauriUtils.showWindow("main");
+    return false;
+  }
+
+  requestCallback(userId);
+  return true;
 };
 
 let isJoiningSession = false;

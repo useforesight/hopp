@@ -66,7 +66,7 @@ const rejectInvite = (inviterId: string, inviteId: string) => {
   socketService.send({ type: "invite_reject", payload: { inviter_id: inviterId, invite_id: inviteId } });
 };
 
-const requestCallback = (userId: string) => {
+export const requestCallback = (userId: string) => {
   const { setTab, setCallbackUserId } = useStore.getState();
   setTab("user-list");
   tauriUtils.showWindow("main");
