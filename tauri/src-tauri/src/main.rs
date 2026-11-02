@@ -690,6 +690,25 @@ fn show_call_alert_window(app: tauri::AppHandle) -> Result<(), String> {
     hopp::call_alert::show(&app)
 }
 
+/// Publishes the team list and call key for launchers such as Raycast. Only this user can read the
+/// file, which is what stops a web page that opens a hopp:// link from starting a call.
+#[tauri::command(async)]
+fn write_launcher_directory(app: tauri::AppHandle, contents: String) -> Result<(), String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let temporary_path = app_data_dir.join("launcher.json.tmp");
+
+    let mut open_options = std::fs::OpenOptions::new();
+    open_options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut open_options, 0o600);
+
+    let mut file = open_options
+        .open(&temporary_path)
+        .map_err(|e| e.to_string())?;
+    std::io::Write::write_all(&mut file, contents.as_bytes()).map_err(|e| e.to_string())?;
+    std::fs::rename(&temporary_path, app_data_dir.join("launcher.json")).map_err(|e| e.to_string())
+}
+
 #[tauri::command(async)]
 fn close_call_alert_window(app: tauri::AppHandle) {
     hopp::call_alert::hide(&app);
@@ -1715,6 +1734,7 @@ fn main() {
             create_feedback_window,
             create_settings_window,
             show_call_alert_window,
+            write_launcher_directory,
             close_call_alert_window,
             get_user_settings,
             list_installed_applications,

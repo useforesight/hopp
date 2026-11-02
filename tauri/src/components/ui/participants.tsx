@@ -47,6 +47,14 @@ export const Participants = ({ teammates }: ParticipantsProps) => {
     setFilteredTeammates(filteredTeammates);
   }, [teammates, searchQuery]);
 
+  // A row can only pick up a requested call if the search isn't hiding it
+  const callbackUserId = useStore((state) => state.callbackUserId);
+  useEffect(() => {
+    if (!callbackUserId) return;
+    setSearchQuery("");
+    setSelectedId(null);
+  }, [callbackUserId]);
+
   // Open the window, type a name, press return
   useEffect(() => {
     const focusSearch = () => searchInputRef.current?.focus();
