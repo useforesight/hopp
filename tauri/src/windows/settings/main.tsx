@@ -18,6 +18,7 @@ import { initTheme, setThemePreference, useThemePreference, type ThemePreference
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   typedInvoke,
   type AppVeilApplication,
@@ -550,6 +551,8 @@ function SettingsWindow() {
 
   const [serverUrl, setServerUrl] = useState("");
   const [section, setSection] = useState<SectionId>("appearance");
+  const [savingDefaultMic, setSavingDefaultMic] = useState(false);
+  const [defaultMicError, setDefaultMicError] = useState("");
 
   const { data: settings, refetch: refetchSettings } = useQuery({
     queryKey: ["user-settings"],
@@ -563,6 +566,13 @@ function SettingsWindow() {
     queryFn: () => typedInvoke("list_installed_applications"),
     enabled: OS === "macos",
     staleTime: Infinity,
+  });
+
+  const { data: microphones = [], refetch: refetchMicrophones } = useQuery({
+    queryKey: ["list_microphones"],
+    queryFn: () => typedInvoke("list_microphones"),
+    enabled: section === "call",
+    select: (devices) => devices.filter((device) => device.name !== "").sort((a, b) => a.name.localeCompare(b.name)),
   });
 
   useEffect(() => {
@@ -677,6 +687,63 @@ function SettingsWindow() {
               </SettingsGroup>
 
               <SettingsGroup title="Audio">
+                <div className="flex min-h-[56px] items-center justify-between gap-6 px-3.5 py-2.5">
+                  <div className="flex min-w-0 flex-col">
+                    <label htmlFor="default-microphone" className={settingTitleClass}>
+                      Default microphone
+                    </label>
+                    <span id="default-microphone-description" className={settingDescriptionClass}>
+                      Used at the start of each call when available. Changes apply to your next call.
+                    </span>
+                    {defaultMicError && (
+                      <span role="alert" className="text-xs text-red-600 dark:text-red-400">
+                        {defaultMicError}
+                      </span>
+                    )}
+                  </div>
+                  <Select
+                    value={settings.default_mic == null ? "last-used" : `mic:${settings.default_mic}`}
+                    disabled={savingDefaultMic}
+                    onOpenChange={(open) => {
+                      if (open) refetchMicrophones();
+                    }}
+                    onValueChange={async (value) => {
+                      setSavingDefaultMic(true);
+                      setDefaultMicError("");
+                      try {
+                        await typedInvoke("set_default_mic", {
+                          deviceName: value === "last-used" ? null : value.slice(4),
+                        });
+                        await refetchSettings();
+                      } catch (error) {
+                        setDefaultMicError(String(error));
+                      } finally {
+                        setSavingDefaultMic(false);
+                      }
+                    }}
+                  >
+                    <SelectTrigger
+                      id="default-microphone"
+                      aria-describedby="default-microphone-description"
+                      className="w-[220px] shrink-0"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="last-used">Use last-used microphone</SelectItem>
+                      {settings.default_mic && !microphones.some((device) => device.name === settings.default_mic) && (
+                        <SelectItem value={`mic:${settings.default_mic}`} disabled>
+                          {settings.default_mic} (Unavailable)
+                        </SelectItem>
+                      )}
+                      {microphones.map((device) => (
+                        <SelectItem key={device.name} value={`mic:${device.name}`}>
+                          {device.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
                 <SwitchRow
                   title="Noise cancellation"
                   description="Suppress background noise on your microphone"
