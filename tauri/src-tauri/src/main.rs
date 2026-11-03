@@ -598,6 +598,19 @@ fn set_tray_notification(app: tauri::AppHandle, enabled: bool) {
     }
 }
 
+/// Shows or hides the red missed call badge on the tray icon.
+///
+/// NOTE: must NOT be `async`, for the same reason as `set_tray_notification`.
+#[tauri::command]
+fn set_tray_missed_calls(app: tauri::AppHandle, enabled: bool) {
+    log::info!("set_tray_missed_calls: enabled={}", enabled);
+    let data = app.state::<std::sync::Mutex<hopp::AppData>>();
+    let mut data = data.lock().unwrap();
+    if let Some(ref mut tray) = data.tray_state {
+        tray.set_missed_calls_enabled(enabled);
+    }
+}
+
 #[tauri::command(async)]
 fn get_hopp_server_url(app: tauri::AppHandle) -> Option<String> {
     log::info!("get_hopp_server_url");
@@ -1729,6 +1742,7 @@ fn main() {
             set_sentry_metadata,
             call_started,
             set_tray_notification,
+            set_tray_missed_calls,
             get_hopp_server_url,
             set_hopp_server_url,
             create_feedback_window,

@@ -4,9 +4,18 @@ import { TIncomingCallMessage, TIncomingInviteMessage, TRejectCallMessage, TWebS
 import { socketService } from "@/services/socket";
 import useStore, { CallState, ParticipantRole } from "@/store/store";
 import { tauriUtils } from "@/windows/window-utils";
-import { closeCallAlert, getActiveCallAlertKind, showCallAlert, showCallNotice, updateCallAlert } from "./call-alert";
-import { CallAlertAction, CallAlertPerson } from "./call-alert-types";
+import {
+  closeCallAlert,
+  getActiveCallAlertKind,
+  getShownMissedCallerId,
+  setNextCallAlertHandler,
+  showCallAlert,
+  showCallNotice,
+  updateCallAlert,
+} from "./call-alert";
+import { CallAlertPerson } from "./call-alert-types";
 import { abandonCall } from "./call-recovery";
+import { addMissedCall, loadMissedCalls, MissedCall } from "./missed-calls";
 
 const MAX_RING_AGE_S = 60;
 // Callers give up after 65 seconds and say so. This covers that message getting lost.
@@ -78,12 +87,50 @@ export const requestCallback = (userId: string) => {
   }, CALLBACK_HANDOFF_MS);
 };
 
-const handleMissedCallAction = (caller: CallAlertPerson) => (action: CallAlertAction) => {
-  closeCallAlert();
-  if (action === "call-back") requestCallback(caller.id);
+export const clearMissedCall = (callerId: string) => {
+  const { missedCalls, setMissedCalls } = useStore.getState();
+  setMissedCalls(missedCalls.filter((call) => call.callerId !== callerId));
+  if (getShownMissedCallerId() === callerId) closeCallAlert();
 };
 
-/** The caller gave up. The card stays, so the call isn't lost if nobody was at the screen. */
+/**
+ * Puts the latest missed call on the card. Someone ringing or a call being placed comes first. So does a call
+ * in progress, unless this miss has just happened, as the card is then the only way to find out in time.
+ */
+const showLatestMissedCall = (isNewMiss = false) => {
+  const { missedCalls, teammates, callTokens, calling, callbackUserId, incomingCallCallerId, incomingInviteInviterId } =
+    useStore.getState();
+  const latest = missedCalls[0];
+  if (!latest || incomingCallCallerId || incomingInviteInviterId || calling || callbackUserId) return;
+
+  const activeKind = getActiveCallAlertKind();
+  // Connecting with tokens means the call is starting. Without them, the caller has just hung up.
+  if (activeKind === "notice" || (activeKind === "connecting" && callTokens)) return;
+  if (!isNewMiss && (!teammates || (callTokens && !getShownMissedCallerId()))) return;
+
+  const { callerId } = latest;
+  const caller = personFromUserId(callerId);
+  if (latest.kind === "invite") {
+    updateCallAlert({ kind: "missed-invite", caller, missedCall: latest }, (action) => {
+      clearMissedCall(callerId);
+      if (action === "answer") joinInvitedCall(callerId, null);
+    });
+  } else {
+    updateCallAlert({ kind: "missed", caller, missedCall: latest, canCallBack: !callTokens }, (action) => {
+      if (action === "call-back") requestCallback(callerId);
+      clearMissedCall(callerId);
+    });
+  }
+};
+
+/** Everything that should have rung but couldn't comes through here, so no attempt goes unnoticed. */
+const recordMissedCall = (callerId: string, kind: MissedCall["kind"], at = Date.now()) => {
+  const { missedCalls, setMissedCalls } = useStore.getState();
+  setMissedCalls(addMissedCall(missedCalls, callerId, kind, at));
+  showLatestMissedCall(true);
+};
+
+/** The caller gave up. It stays on the card, so the call isn't lost if nobody was at the screen. */
 const markCallMissed = (callerId: string) => {
   const { incomingCallCallerId, setIncomingCallCallerId } = useStore.getState();
   if (incomingCallCallerId !== callerId) return;
@@ -91,8 +138,7 @@ const markCallMissed = (callerId: string) => {
   stopRinging();
   cancelPendingAnswer?.();
   setIncomingCallCallerId(null);
-  const caller = personFromUserId(callerId);
-  updateCallAlert({ kind: "missed", caller }, handleMissedCallAction(caller));
+  recordMissedCall(callerId, "call");
 };
 
 const startCallFromTokens = async (
@@ -196,14 +242,7 @@ const joinInvitedCall = async (inviterId: string, inviteId: string | null) => {
 
 const markInviteMissed = (inviterId: string) => {
   endActiveInvite();
-  const caller = personFromUserId(inviterId);
-  updateCallAlert({ kind: "missed-invite", caller }, (action) => {
-    if (action === "answer") {
-      joinInvitedCall(inviterId, null);
-    } else {
-      closeCallAlert();
-    }
-  });
+  recordMissedCall(inviterId, "invite");
 };
 
 const ringForInvite = (inviterId: string, inviteId: string) => {
@@ -229,16 +268,19 @@ const ringForCall = (callerId: string) => {
   const { incomingCallCallerId, incomingInviteInviterId, setIncomingCallCallerId } = useStore.getState();
 
   if (incomingCallCallerId === callerId) return;
+  // Set first, so whoever this displaces is only recorded and doesn't flash up on the card
+  setIncomingCallCallerId(callerId);
   if (incomingCallCallerId) {
     cancelPendingAnswer?.();
     rejectCall(incomingCallCallerId, "in-call");
+    recordMissedCall(incomingCallCallerId, "call");
   }
   if (incomingInviteInviterId && activeInviteId) {
     rejectInvite(incomingInviteInviterId, activeInviteId);
     endActiveInvite();
+    recordMissedCall(incomingInviteInviterId, "invite");
   }
 
-  setIncomingCallCallerId(callerId);
   sounds.incomingCall.play();
   clearTimeout(ringTimeout);
   ringTimeout = setTimeout(() => markCallMissed(callerId), RING_TIMEOUT_MS);
@@ -264,12 +306,14 @@ const handleIncomingCall = (data: TWebSocketMessage) => {
   if (callTokens) ringersDuringCall.add(callerId);
 
   if (isTooOld(initiatedAt)) {
-    console.warn("Dropping stale incoming call");
+    console.warn("Not ringing for a stale incoming call");
+    recordMissedCall(callerId, "call", initiatedAt! * 1000);
     return;
   }
 
   if (updateInProgress) {
     rejectCall(callerId, "rejected");
+    recordMissedCall(callerId, "call");
     return;
   }
 
@@ -278,6 +322,7 @@ const handleIncomingCall = (data: TWebSocketMessage) => {
     // lost the call without us getting a termination signal.
     if (callTokens.participant !== callerId) {
       rejectCall(callerId, "in-call");
+      if (!isCallPeer(callTokens, callerId)) recordMissedCall(callerId, "call");
       return;
     }
     console.log("Received call from current participant - closing current call and accepting new one");
@@ -334,17 +379,20 @@ const handleIncomingInvite = (data: TWebSocketMessage) => {
   if (useStore.getState().callTokens) ringersDuringCall.add(inviterId);
 
   if (isTooOld(initiatedAt)) {
-    console.warn("Dropping stale incoming invite");
+    console.warn("Not ringing for a stale incoming invite");
+    recordMissedCall(inviterId, "invite", initiatedAt! * 1000);
     return;
   }
 
   const { incomingCallCallerId, incomingInviteInviterId, updateInProgress } = useStore.getState();
   if (incomingCallCallerId || updateInProgress) {
     rejectInvite(inviterId, inviteId);
+    recordMissedCall(inviterId, "invite");
     return;
   }
   if (incomingInviteInviterId && activeInviteId && activeInviteId !== inviteId) {
     rejectInvite(incomingInviteInviterId, activeInviteId);
+    if (incomingInviteInviterId !== inviterId) recordMissedCall(incomingInviteInviterId, "invite");
   }
 
   ringForInvite(inviterId, inviteId);
@@ -361,28 +409,41 @@ export const setupIncomingCallHandling = () => {
   socketService.on("call_end", handleCallEnd);
   socketService.on("incoming_invite", handleIncomingInvite);
   socketService.on("invite_cancel", handleInviteCancel);
+  setNextCallAlertHandler(showLatestMissedCall);
 
   const unsubscribeFromStore = useStore.subscribe((state, previousState) => {
+    if (previousState.authToken && !state.authToken) {
+      state.setMissedCalls([]);
+      if (getShownMissedCallerId()) closeCallAlert();
+    }
+    // This is what gives missed calls a name, so saved ones wait for it
+    if (state.teammates && !previousState.teammates) showLatestMissedCall();
+
     if (!state.callTokens) {
       ringersDuringCall.clear();
+      if (previousState.callTokens) showLatestMissedCall();
       return;
     }
     // Once they've joined, their call_end can be the room emptying out.
     for (const ringer of ringersDuringCall) {
       if (isCallPeer(state.callTokens, ringer)) ringersDuringCall.delete(ringer);
     }
+    for (const { callerId } of state.missedCalls) {
+      if (isCallPeer(state.callTokens, callerId)) clearMissedCall(callerId);
+    }
 
-    // A missed call card has done its job once the user is in a call.
-    if (previousState.callTokens) return;
-    const activeKind = getActiveCallAlertKind();
-    if (activeKind === "missed" || activeKind === "missed-invite") closeCallAlert();
+    // The card makes way for the call and comes back after it. The missed call itself stays listed.
+    if (!previousState.callTokens && getShownMissedCallerId()) closeCallAlert();
   });
+  useStore.getState().setMissedCalls(loadMissedCalls());
+  showLatestMissedCall();
 
   return () => {
     socketService.removeHandler("incoming_call");
     socketService.removeHandler("call_end");
     socketService.removeHandler("incoming_invite");
     socketService.removeHandler("invite_cancel");
+    setNextCallAlertHandler(() => {});
     unsubscribeFromStore();
   };
 };

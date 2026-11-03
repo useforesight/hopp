@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, KeyboardEvent as ReactKeyboardEvent } from
 import Fuse from "fuse.js";
 import { Input } from "./input";
 import { Button } from "./button";
+import { MissedCallsSection } from "./missed-calls-section";
 import { EmptyState, PageHeader, SectionLabel } from "./page-header";
 import { HiMagnifyingGlass, HiOutlineUserPlus } from "react-icons/hi2";
 import { useAPI } from "@/services/query";
@@ -177,6 +178,7 @@ export const Participants = ({ teammates }: ParticipantsProps) => {
             description="Check the spelling, or invite them to your team."
           />
         : <>
+            {!searchQuery && <MissedCallsSection teammates={teammates} />}
             {onlineTeammates.length > 0 && (
               <section>
                 <SectionLabel>Online · {onlineTeammates.length}</SectionLabel>

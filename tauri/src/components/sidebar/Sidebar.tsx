@@ -334,7 +334,7 @@ const ThemeSwitch = () => {
 };
 
 export const Sidebar = () => {
-  const { tab, setTab, user, reset } = useStore();
+  const { tab, setTab, user, reset, missedCalls } = useStore();
   const queryClient = useQueryClient();
 
   useEffect(() => {
@@ -365,11 +365,22 @@ export const Sidebar = () => {
             />
 
             <nav className="flex flex-col items-center gap-1">
-              {getAvailableTabs(!!user).map((t) => (
-                <SidebarButton key={t.key} active={t.key === tab} label={t.label} onClick={() => setTab(t.key)}>
-                  {t.icon}
-                </SidebarButton>
-              ))}
+              {getAvailableTabs(!!user).map((t) => {
+                const missedCount = t.key === "user-list" ? missedCalls.length : 0;
+                return (
+                  <SidebarButton
+                    key={t.key}
+                    active={t.key === tab}
+                    label={missedCount > 0 ? `${t.label} · ${missedCount} missed` : t.label}
+                    onClick={() => setTab(t.key)}
+                  >
+                    {t.icon}
+                    {missedCount > 0 && t.key !== tab && (
+                      <span className="absolute -right-0.5 -top-0.5 size-2 rounded-full bg-destructive ring-2 ring-rail" />
+                    )}
+                  </SidebarButton>
+                );
+              })}
               {OS === "windows" && (
                 <SidebarButton label="Minimize" onClick={() => tauriUtils.minimizeMainWindow()}>
                   <HiOutlineMinus className="size-[18px]" />

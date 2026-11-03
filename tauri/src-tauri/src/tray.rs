@@ -1,7 +1,7 @@
 // Tray icon management with platform-specific implementations.
 //
 // macOS: Uses template images for automatic light/dark adaptation per display,
-// with a CALayer overlay for the colored notification dot during calls.
+// with CALayer overlays for the colored dots: during calls, and for missed calls.
 //
 // Other platforms: No-op implementation (tray features not yet implemented).
 
@@ -34,6 +34,10 @@ impl TrayState {
 
     pub fn is_notification_enabled(&self) -> bool {
         self.inner.is_notification_enabled()
+    }
+
+    pub fn set_missed_calls_enabled(&mut self, enabled: bool) {
+        self.inner.set_missed_calls_enabled(enabled);
     }
 
     pub fn rect(&self) -> Option<tauri::Rect> {
@@ -72,6 +76,10 @@ mod default {
             self.notification_enabled
         }
 
+        pub fn set_missed_calls_enabled(&mut self, _enabled: bool) {
+            // No-op: platform-specific tray features not implemented
+        }
+
         pub fn rect(&self) -> Option<tauri::Rect> {
             self.tray_icon.rect().ok().flatten()
         }
@@ -89,7 +97,7 @@ mod macos {
     use objc2::runtime::AnyObject;
     use objc2::{msg_send, MainThreadMarker};
     use objc2_app_kit::NSStatusBar;
-    use objc2_foundation::{NSPoint, NSRect, NSSize};
+    use objc2_foundation::{ns_string, NSPoint, NSRect, NSSize, NSString};
     use objc2_quartz_core::CALayer;
 
     pub struct MacOSTrayState {
@@ -108,11 +116,39 @@ mod macos {
 
         pub fn set_notification_enabled(&mut self, enabled: bool) {
             self.notification_enabled = enabled;
-            update_notification_dot(enabled);
+            update_dot(
+                &TrayDot {
+                    layer_name: ns_string!("notificationDot"),
+                    size: 4.0,
+                    position: |bounds| NSPoint::new(10.5, bounds.size.height - 4.0 - 13.5),
+                    // Green color: #05df72
+                    color: (0.02, 0.875, 0.447),
+                },
+                enabled,
+            );
         }
 
         pub fn is_notification_enabled(&self) -> bool {
             self.notification_enabled
+        }
+
+        pub fn set_missed_calls_enabled(&mut self, enabled: bool) {
+            update_dot(
+                &TrayDot {
+                    layer_name: ns_string!("missedCallDot"),
+                    size: 7.0,
+                    // The top-right corner of the 18pt icon, which is centered in the button
+                    position: |bounds| {
+                        NSPoint::new(
+                            bounds.size.width / 2.0 + 2.5,
+                            bounds.size.height / 2.0 - 9.5,
+                        )
+                    },
+                    // Red color: #f03333
+                    color: (0.94, 0.2, 0.2),
+                },
+                enabled,
+            );
         }
 
         pub fn rect(&self) -> Option<tauri::Rect> {
@@ -120,12 +156,20 @@ mod macos {
         }
     }
 
+    struct TrayDot {
+        layer_name: &'static NSString,
+        size: f64,
+        /// Coordinates from top-left of button
+        position: fn(NSRect) -> NSPoint,
+        color: (f64, f64, f64),
+    }
+
     /// Add or remove a colored dot overlay on the tray icon button using CALayer.
     /// This preserves the template behavior of the base icon while adding color.
-    fn update_notification_dot(show: bool) {
+    fn update_dot(dot_style: &TrayDot, show: bool) {
         unsafe {
             let Some(_mtm) = MainThreadMarker::new() else {
-                log::warn!("[TRAY] update_notification_dot: not on main thread");
+                log::warn!("[TRAY] update_dot: not on main thread");
                 return;
             };
 
@@ -173,7 +217,7 @@ mod macos {
                 let bounds: NSRect = msg_send![button, bounds];
 
                 // Look for existing dot layer by name
-                let dot_layer_name = objc2_foundation::ns_string!("notificationDot");
+                let dot_layer_name = dot_style.layer_name;
                 let sublayers: *const AnyObject = msg_send![layer, sublayers];
 
                 let mut existing_dot: *const AnyObject = std::ptr::null();
@@ -197,27 +241,23 @@ mod macos {
                         let dot = CALayer::new();
                         let _: () = msg_send![&*dot, setName: dot_layer_name];
 
-                        // Dot size and position (coordinates from top-left of button)
-                        let dot_size: f64 = 4.0;
-                        let dot_x: f64 = 10.5;
-                        let dot_y: f64 = bounds.size.height - dot_size - 13.5;
-
+                        let dot_size = dot_style.size;
                         let dot_frame = NSRect::new(
-                            NSPoint::new(dot_x, dot_y),
+                            (dot_style.position)(bounds),
                             NSSize::new(dot_size, dot_size),
                         );
                         dot.setFrame(dot_frame);
 
-                        // Green color: #05df72
+                        let (red, green, blue) = dot_style.color;
                         let ns_color_class = objc2::runtime::AnyClass::get(c"NSColor").unwrap();
-                        let green_color: Retained<AnyObject> = msg_send![
+                        let color: Retained<AnyObject> = msg_send![
                             ns_color_class,
-                            colorWithSRGBRed: 0.02_f64,
-                            green: 0.875_f64,
-                            blue: 0.447_f64,
+                            colorWithSRGBRed: red,
+                            green: green,
+                            blue: blue,
                             alpha: 1.0_f64
                         ];
-                        let cg_color: *const AnyObject = msg_send![&*green_color, CGColor];
+                        let cg_color: *const AnyObject = msg_send![&*color, CGColor];
 
                         let _: () = msg_send![&*dot, setBackgroundColor: cg_color];
                         dot.setCornerRadius(dot_size / 2.0);
