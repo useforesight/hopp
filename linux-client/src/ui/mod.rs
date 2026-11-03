@@ -305,7 +305,9 @@ impl Shell {
         let sharing = sharing && Self::allowed(cx, "sharing");
         let sharing_open = cx.global::<Shell>().sharing.is_some();
         if sharing && !sharing_open {
-            let handle = sharing::open(session.clone(), cx);
+            // On the monitor you share, so the draw pad's hole lines up with it.
+            let target = session.read(cx).share_target.clone();
+            let handle = sharing::open(session.clone(), target.as_ref(), cx);
             cx.global_mut::<Shell>().sharing = handle;
         } else if !sharing && sharing_open {
             Self::close(cx, |shell| shell.sharing.take().map(|handle| handle.into()));

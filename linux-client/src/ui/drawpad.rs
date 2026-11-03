@@ -8,23 +8,24 @@
 //! right-click or C clears your ink, Ctrl+Z undoes your last stroke and K keeps your ink
 //! instead of letting it fade (the Mac app's drawing rules). Closing it gives focus back
 //! to your app.
-//! The sharing pill stays clickable through a hole in the pad's input region. Like the
-//! overlay it is left out of the screen share: viewers paint your ink themselves.
+//!
+//! The pad shows nothing itself: the sharing pill turns into the drawing bar, so there's
+//! one overlay to look at. The pill stays clickable through a hole in the pad's input
+//! region, placed where layer-shell puts the pill: under the bar, which the pad (drawn
+//! over the bar, as the share sees it) has to allow for. Like the overlay it is left out
+//! of the screen share: viewers paint your ink themselves.
 
 use gpui_kit::{
     AppContext, Bounds, Context, Entity, FocusHandle, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, Pixels, Render, Styled, Window, WindowHandle, div,
+    Pixels, Render, Styled, Window, WindowHandle, div,
     layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions},
     point, px, size,
 };
-use gpui_omarchy::{ActiveTheme, IconName, icon};
 
-use super::{session::Session, sharing, style};
+use super::{session::Session, sharing};
 use crate::protocol::Point;
 
 pub const NAMESPACE: &str = "hopp-draw";
-/// From the top of the monitor: the sharing pill's margin.
-const PILL_TOP: f32 = 38.;
 
 pub struct DrawPad {
     session: Entity<Session>,
@@ -44,21 +45,35 @@ fn normalised(position: gpui_kit::Point<Pixels>, window: &Window) -> Point {
     }
 }
 
-/// The pad takes input everywhere except over the sharing pill, so Draw and Stop on
-/// it still work while you draw: four bands around the pill's box.
-fn input_region(width: f32, height: f32) -> Vec<Bounds<Pixels>> {
-    let pill_left = ((width - sharing::WIDTH) / 2.).max(0.);
-    let pill_right = (pill_left + sharing::WIDTH).min(width);
-    let pill_bottom = PILL_TOP + sharing::HEIGHT;
+/// Where the sharing pill is on a monitor `width` wide, with `reserved` space (left,
+/// top, right, bottom) taken by bars: centred in the usable width, [`sharing::MARGIN`]
+/// under the top of the usable area, as layer-shell places it.
+fn pill_box(width: f32, [left, top, right, _]: [f32; 4]) -> Bounds<Pixels> {
+    let usable = (width - left - right).max(0.);
+    let x = left + ((usable - sharing::WIDTH) / 2.).max(0.);
+    Bounds {
+        origin: point(px(x), px(top + sharing::MARGIN)),
+        size: size(px(sharing::WIDTH.min(usable)), px(sharing::HEIGHT)),
+    }
+}
+
+/// The pad takes input everywhere except over the sharing pill (`pill`), so the
+/// drawing bar on it still works while you draw: four bands around the pill's box.
+fn input_region(width: f32, height: f32, pill: Bounds<Pixels>) -> Vec<Bounds<Pixels>> {
+    let (left, top) = (f32::from(pill.origin.x), f32::from(pill.origin.y));
+    let (right, bottom) = (
+        left + f32::from(pill.size.width),
+        top + f32::from(pill.size.height),
+    );
     let band = |x: f32, y: f32, w: f32, h: f32| Bounds {
         origin: point(px(x), px(y)),
         size: size(px(w.max(0.)), px(h.max(0.))),
     };
     vec![
-        band(0., 0., width, PILL_TOP),
-        band(0., PILL_TOP, pill_left, sharing::HEIGHT),
-        band(pill_right, PILL_TOP, width - pill_right, sharing::HEIGHT),
-        band(0., pill_bottom, width, height - pill_bottom),
+        band(0., 0., width, top),
+        band(0., top, left, bottom - top),
+        band(right, top, width - right, bottom - top),
+        band(0., bottom, width, height - bottom),
     ]
 }
 
@@ -82,35 +97,6 @@ impl DrawPad {
 
 impl Render for DrawPad {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.omarchy().clone();
-        let hint = div()
-            .absolute()
-            .top(px(PILL_TOP + sharing::HEIGHT + 10.))
-            .left_0()
-            .right_0()
-            .flex()
-            .justify_center()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .px(px(12.))
-                    .py(px(6.))
-                    .rounded(px(14.))
-                    .bg(theme.background.opacity(0.92))
-                    .border_1()
-                    .border_color(theme.accent)
-                    .text_size(px(12.))
-                    .text_color(theme.foreground)
-                    .font_family(theme.font.clone())
-                    .child(icon(IconName::Pencil).size(px(13.)))
-                    .child("Drawing on your screen")
-                    .child(style::muted_text(
-                        "Esc stops · right-click clears · Ctrl+Z undoes · K keeps ink",
-                        cx,
-                    )),
-            );
         div()
             .id("drawpad")
             .track_focus(&self.focus)
@@ -180,7 +166,6 @@ impl Render for DrawPad {
                     _ => {}
                 }
             }))
-            .child(hint)
     }
 }
 
@@ -235,7 +220,12 @@ pub fn open(
             )
             .ok()?,
     };
-    let region = input_region(width, height);
+    let reserved = target
+        .output_name
+        .as_deref()
+        .map(super::hypr::reserved)
+        .unwrap_or_default();
+    let region = input_region(width, height, pill_box(width, reserved));
     let _ = handle.update(cx, |_, window, _| window.set_input_region(Some(&region)));
     Some(handle)
 }
@@ -245,8 +235,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_input_region_leaves_a_hole_for_the_sharing_pill() {
-        let region = input_region(2_000., 1_000.);
+    fn the_input_region_leaves_a_hole_exactly_over_the_sharing_pill() {
+        // A 1728-wide laptop with a 37-pixel bar along the top.
+        let pill = pill_box(1_728., [0., 37., 0., 0.]);
+        assert_eq!(f32::from(pill.origin.y), 37. + sharing::MARGIN);
+        assert_eq!(f32::from(pill.origin.x), (1_728. - sharing::WIDTH) / 2.);
+        let region = input_region(1_728., 1_117., pill);
         let inside = |x: f32, y: f32| {
             region.iter().any(|band| {
                 let (left, top) = (f32::from(band.origin.x), f32::from(band.origin.y));
@@ -256,16 +250,16 @@ mod tests {
                     && y < top + f32::from(band.size.height)
             })
         };
-        assert!(
-            !inside(1_000., PILL_TOP + 5.),
-            "the pill takes its own clicks"
-        );
+        let middle = 1_728. / 2.;
+        assert!(!inside(middle, 80.), "the pill takes its own clicks");
+        assert!(!inside(middle, 110.), "all the way down the pill");
         for (x, y) in [
             (5., 5.),
-            (1_000., 10.),
-            (5., 60.),
-            (1_995., 60.),
-            (1_000., 500.),
+            (middle, 20.),
+            (middle, 60.),
+            (5., 90.),
+            (1_720., 90.),
+            (middle, 120.),
         ] {
             assert!(inside(x, y), "({x}, {y}) is drawable");
         }
@@ -273,6 +267,17 @@ mod tests {
             .iter()
             .map(|band| f32::from(band.size.width) * f32::from(band.size.height))
             .sum();
-        assert_eq!(total, 2_000. * 1_000. - sharing::WIDTH * sharing::HEIGHT);
+        assert_eq!(total, 1_728. * 1_117. - sharing::WIDTH * sharing::HEIGHT);
+    }
+
+    #[test]
+    fn the_pill_is_centred_in_the_usable_width() {
+        // A side panel on the left moves the pill's centre right.
+        let pill = pill_box(2_000., [200., 0., 0., 0.]);
+        assert_eq!(
+            f32::from(pill.origin.x),
+            200. + (1_800. - sharing::WIDTH) / 2.
+        );
+        assert_eq!(f32::from(pill.origin.y), sharing::MARGIN);
     }
 }

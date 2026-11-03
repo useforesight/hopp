@@ -89,6 +89,24 @@ fn number(value: &Value, index: usize) -> f64 {
     value[index].as_f64().unwrap_or_default()
 }
 
+/// The space bars and other panels take at each edge of monitor `output` (left, top,
+/// right, bottom, in logical pixels): where a layer surface that respects them, such as
+/// the sharing pill, ends up. Zero when Hyprland can't say.
+pub fn reserved(output: &str) -> [f32; 4] {
+    hyprctl_json("monitors")
+        .and_then(|monitors| reserved_in(&monitors, output))
+        .unwrap_or_default()
+}
+
+fn reserved_in(monitors: &Value, output: &str) -> Option<[f32; 4]> {
+    let monitor = monitors
+        .as_array()?
+        .iter()
+        .find(|monitor| monitor["name"].as_str() == Some(output))?;
+    let reserved = &monitor["reserved"];
+    Some([0, 1, 2, 3].map(|edge| number(reserved, edge) as f32))
+}
+
 /// Resize this process's window with `class` to `width`×`height` logical pixels.
 /// Runs in the background and retries briefly while the window is being mapped.
 pub fn fit(class: &'static str, width: f32, height: f32) {
@@ -271,6 +289,17 @@ fn dispatch(lua: &str) -> Option<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reserved_space_is_read_for_the_named_monitor() {
+        let monitors = serde_json::json!([
+            {"name": "DP-2", "reserved": [0, 0, 0, 0]},
+            {"name": "eDP-1", "reserved": [0, 37, 0, 0]}
+        ]);
+        assert_eq!(reserved_in(&monitors, "eDP-1"), Some([0., 37., 0., 0.]));
+        assert_eq!(reserved_in(&monitors, "DP-2"), Some([0.; 4]));
+        assert_eq!(reserved_in(&monitors, "HDMI-A-1"), None);
+    }
 
     #[test]
     fn the_share_plugin_is_found_by_name_in_the_plugin_list() {
