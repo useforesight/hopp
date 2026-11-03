@@ -1,0 +1,1432 @@
+<title>Hopp Mac Port Guide</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a reference manual. Sticky contents rail on wide screens, one reading column, and full-width
+   "bench" panels where each prototype runs. Tokens follow the Mac app's own App.css (Jonny's redesign). */
+:root{
+  --bg:#fbfbfc; --fg:#14151a; --surface:#ffffff; --rail:#f0f0f3; --muted:#5f616c;
+  --border:rgb(16 17 24 / .09); --border-strong:rgb(16 17 24 / .16); --subtle:rgb(16 17 24 / .05);
+  --accent:#5b5bf0; --accent-soft:rgb(91 91 240 / .1); --accent-fg:#ffffff;
+  --ok:#17804a; --ok-soft:rgb(23 128 74 / .1); --warn:#9a5b00; --warn-soft:rgb(176 106 0 / .12);
+  --bad:#c2263f; --bad-soft:rgb(194 38 63 / .1);
+  --screen:#16181f; --screen-2:#1d2029; --screen-line:#2b2f3b; --screen-fg:#aab2c2; --screen-dim:#5d6577;
+  --code-bg:#f3f3f6;
+  --font:"Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono:"Geist Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --shadow:0 1px 2px rgb(16 17 24 / .05), 0 8px 24px rgb(16 17 24 / .06);
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --bg:#0f1013; --fg:#f2f2f5; --surface:#17181c; --rail:#0b0c0e; --muted:#9b9da8;
+  --border:rgb(255 255 255 / .08); --border-strong:rgb(255 255 255 / .14); --subtle:rgb(255 255 255 / .06);
+  --accent:#8b8cff; --accent-soft:rgb(139 140 255 / .16); --accent-fg:#101114;
+  --ok:#4fd38a; --ok-soft:rgb(79 211 138 / .14); --warn:#f2b552; --warn-soft:rgb(242 181 82 / .14);
+  --bad:#ff7d92; --bad-soft:rgb(255 125 146 / .14);
+  --screen:#0c0d12; --screen-2:#13151c; --screen-line:#252935; --screen-fg:#9aa3b5; --screen-dim:#4b5263;
+  --code-bg:#1c1d22; --shadow:0 1px 2px rgb(0 0 0 / .3), 0 8px 24px rgb(0 0 0 / .25); color-scheme:dark }}
+:root[data-theme="dark"]{
+  --bg:#0f1013; --fg:#f2f2f5; --surface:#17181c; --rail:#0b0c0e; --muted:#9b9da8;
+  --border:rgb(255 255 255 / .08); --border-strong:rgb(255 255 255 / .14); --subtle:rgb(255 255 255 / .06);
+  --accent:#8b8cff; --accent-soft:rgb(139 140 255 / .16); --accent-fg:#101114;
+  --ok:#4fd38a; --ok-soft:rgb(79 211 138 / .14); --warn:#f2b552; --warn-soft:rgb(242 181 82 / .14);
+  --bad:#ff7d92; --bad-soft:rgb(255 125 146 / .14);
+  --screen:#0c0d12; --screen-2:#13151c; --screen-line:#252935; --screen-fg:#9aa3b5; --screen-dim:#4b5263;
+  --code-bg:#1c1d22; --shadow:0 1px 2px rgb(0 0 0 / .3), 0 8px 24px rgb(0 0 0 / .25); color-scheme:dark }
+
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:var(--font);font-size:15px;line-height:1.6;margin:0;
+  -webkit-font-smoothing:antialiased}
+a{color:var(--accent);text-underline-offset:2px}
+code,kbd,.mono{font-family:var(--mono);font-size:.86em}
+code{background:var(--code-bg);padding:.1em .35em;border-radius:5px;overflow-wrap:anywhere}
+kbd{border:1px solid var(--border-strong);border-bottom-width:2px;border-radius:5px;padding:0 .35em;background:var(--surface)}
+pre{background:var(--code-bg);border-radius:10px;padding:14px 16px;overflow-x:auto;font-size:13px;line-height:1.55;margin:0}
+pre code{background:none;padding:0;font-size:inherit}
+h1,h2,h3,h4{text-wrap:balance;line-height:1.2;margin:0}
+h1{font-size:clamp(30px,4.4vw,44px);font-weight:700;letter-spacing:-.025em}
+h2{font-size:26px;font-weight:650;letter-spacing:-.015em}
+h3{font-size:18px;font-weight:600;letter-spacing:-.005em}
+h4{font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+p{margin:0}
+ul,ol{margin:0;padding-left:1.25em;display:grid;gap:.35em}
+strong{font-weight:600}
+.muted{color:var(--muted)}
+.small{font-size:13px}
+
+.page{display:grid;grid-template-columns:240px minmax(0,1fr);gap:48px;max-width:1240px;margin:0 auto;
+  padding-left:max(16px, env(safe-area-inset-left, 0px));padding-right:max(16px, env(safe-area-inset-right, 0px));padding-block:40px 96px}
+nav.toc{position:sticky;top:calc(env(safe-area-inset-top, 0px) + 24px);align-self:start;max-height:calc(100vh - 48px);overflow:auto;font-size:13.5px}
+nav.toc h4{margin-bottom:10px}
+nav.toc ol{list-style:none;padding:0;gap:1px}
+nav.toc a{display:block;padding:4px 10px;border-radius:7px;color:var(--muted);text-decoration:none}
+nav.toc a:hover{background:var(--subtle);color:var(--fg)}
+nav.toc a.on{background:var(--accent-soft);color:var(--accent);font-weight:500}
+nav.toc .grp{margin:14px 0 4px 10px;font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);font-weight:600}
+main{min-width:0;display:grid;gap:72px}
+section{display:grid;gap:20px;scroll-margin-top:24px;min-width:0}
+.prose{max-width:70ch;display:grid;gap:14px}
+.lede{font-size:18px;line-height:1.55;color:var(--muted);max-width:62ch}
+.eyebrow{font-family:var(--mono);font-size:12px;color:var(--accent);letter-spacing:.02em}
+header.top{display:grid;gap:16px}
+.meta{display:flex;flex-wrap:wrap;gap:8px 18px;font-size:13px;color:var(--muted)}
+
+.tbl{overflow-x:auto;border:1px solid var(--border);border-radius:12px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--border);vertical-align:top}
+th{font-size:12px;font-weight:600;color:var(--muted);background:var(--subtle);white-space:nowrap}
+tr:last-child td{border-bottom:0}
+td.num,th.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+
+.chip{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:500;padding:1px 8px;border-radius:999px;white-space:nowrap;line-height:1.6}
+.chip::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.missing{background:var(--bad-soft);color:var(--bad)}
+.partial{background:var(--warn-soft);color:var(--warn)}
+.has{background:var(--ok-soft);color:var(--ok)}
+.na{background:var(--subtle);color:var(--muted)}
+
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:16px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:18px 20px;display:grid;gap:10px;align-content:start;min-width:0}
+.card h3{font-size:16px}
+.tag-l,.tag-m{font-family:var(--mono);font-size:11px;font-weight:500;padding:2px 7px;border-radius:5px;justify-self:start}
+.tag-l{background:var(--subtle);color:var(--muted)}
+.tag-m{background:var(--accent-soft);color:var(--accent)}
+.note{border-left:3px solid var(--accent);background:var(--accent-soft);padding:12px 16px;border-radius:0 10px 10px 0;max-width:75ch}
+.note.warn{border-color:var(--warn);background:var(--warn-soft)}
+
+/* Bench: where prototypes run */
+.bench{background:var(--surface);border:1px solid var(--border);border-radius:16px;overflow:hidden;box-shadow:var(--shadow);min-width:0}
+.bench-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;padding:12px 16px;border-bottom:1px solid var(--border)}
+.bench-head .t{font-weight:600;font-size:14px}
+.bench-foot{padding:10px 16px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)}
+.seg{display:inline-flex;background:var(--subtle);border-radius:9px;padding:2px;gap:2px}
+.seg button{font:inherit;font-size:13px;border:0;background:none;color:var(--muted);padding:4px 11px;border-radius:7px;cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--surface);color:var(--fg);box-shadow:0 1px 2px rgb(0 0 0 / .12)}
+button.btn{font:inherit;font-size:13px;font-weight:500;border:1px solid var(--border-strong);background:var(--surface);color:var(--fg);padding:5px 12px;border-radius:8px;cursor:pointer}
+button.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-fg)}
+button:focus-visible,a:focus-visible,[tabindex]:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* Fake shared screen */
+.screen{position:relative;background:var(--screen);overflow:hidden;user-select:none;-webkit-user-select:none;touch-action:none}
+.screen.tall{height:380px}.screen.mid{height:320px}
+.code{position:absolute;inset:0;padding:18px 22px;font-family:var(--mono);font-size:12.5px;line-height:21px;color:var(--screen-fg);white-space:pre;pointer-events:none}
+.code .k{color:#c792ea}.code .s{color:#c3e88d}.code .n{color:#f78c6c}.code .c{color:var(--screen-dim)}.code .f{color:#82aaff}
+.code .hl{background:rgb(255 255 255 / .05);display:inline-block;width:100%}
+.price{position:absolute;right:24px;top:22px;width:210px;background:var(--screen-2);border:1px solid var(--screen-line);border-radius:10px;padding:12px 14px;font-family:var(--font);font-size:12.5px;color:var(--screen-fg);display:grid;gap:5px;pointer-events:none}
+.price b{color:#fff;font-weight:600}
+.price .row{display:flex;justify-content:space-between}
+.layer{position:absolute;inset:0;pointer-events:none}
+.layer > svg{position:absolute;inset:0;width:100%;height:100%}
+.spr{display:block;filter:drop-shadow(0 1.5px 1.4px rgb(0 0 0 / .32)) drop-shadow(0 4px 4px rgb(0 0 0 / .14))}
+.cur{position:absolute;left:0;top:0;will-change:transform;transition:opacity .4s}
+.cur .sp{position:absolute}
+.cur .nm{position:absolute;height:20px;line-height:20px;padding:0 7px;border-radius:5px;font:600 11px/20px Inter, var(--font);white-space:nowrap;max-width:180px;overflow:hidden;text-overflow:ellipsis;
+  filter:drop-shadow(0 1.5px 1.4px rgb(0 0 0 / .32)) drop-shadow(0 4px 4px rgb(0 0 0 / .14));transition:opacity .35s ease-in-out, transform .35s ease-in-out}
+.cur .nm.hid{opacity:0;transform:translateY(3px)}
+.hint{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);background:rgb(20 21 26 / .86);color:#fff;font-size:12.5px;padding:6px 12px;border-radius:999px;white-space:nowrap;pointer-events:none;max-width:calc(100% - 24px);overflow:hidden;text-overflow:ellipsis}
+canvas.ink{position:absolute;inset:0;width:100%;height:100%;cursor:crosshair}
+
+/* stamps */
+.stamp{position:absolute;left:0;top:0;pointer-events:none}
+.stamp .pin{position:absolute;left:-20px;top:-40px;animation:drop .46s cubic-bezier(.34,1.7,.64,1) both;transform-origin:20px 40px}
+@keyframes drop{0%{transform:translateY(-22px) scale(.62);opacity:0}33%{opacity:1}100%{transform:none;opacity:1}}
+.stamp .ground{position:absolute;left:-6px;top:-1.5px;width:12px;height:3px;border-radius:50%;background:rgb(0 0 0 / .45);animation:ground .46s ease-out both}
+@keyframes ground{from{transform:scaleX(.3);opacity:.3}to{transform:none;opacity:1}}
+.stamp .ring{position:absolute;left:-11px;top:-28.8px;width:22px;height:22px;border-radius:50%;border:1.8px solid var(--c);opacity:0}
+.stamp.listening .ring{animation:breathe 1.6s ease-out infinite}
+.stamp.listening .ring.b{animation-delay:.8s}
+@keyframes breathe{0%{transform:scale(1.27);opacity:.55}100%{transform:scale(2.64);opacity:0}}
+.bubble{position:absolute;top:-39.8px;min-width:64px;max-width:290px;background:rgb(255 255 255 / .98);border:1px solid rgb(0 0 0 / .06);border-radius:8px;padding:8px 11px;
+  box-shadow:0 4px 10px rgb(0 0 0 / .14),0 1px 2.5px rgb(0 0 0 / .3);pointer-events:auto;animation:bub .28s .18s ease-out both}
+@keyframes bub{from{opacity:0;transform:translateX(var(--slide,-8px))}to{opacity:1;transform:none}}
+.bubble .who{font:600 11px/1.3 var(--font)}
+.bubble input{all:unset;display:block;width:240px;max-width:100%;font:13.5px/19px var(--font);color:#1c1d26}
+.bubble input::placeholder{color:rgb(28 29 38 / .5);font-style:italic}
+.bubble .txt{font:13.5px/19px var(--font);color:#1c1d26;white-space:pre-wrap;max-width:268px}
+.stamp.gone{transition:opacity .26s;opacity:0}
+
+/* flow diagrams */
+.flow{display:flex;flex-wrap:wrap;align-items:stretch;gap:8px}
+.flow .box{flex:1 1 150px;min-width:0;background:var(--surface);border:1px solid var(--border);border-radius:11px;padding:10px 12px;display:grid;gap:3px;align-content:start}
+.flow .box b{font-size:13.5px}
+.flow .box span{font-size:12.5px;color:var(--muted)}
+.flow .box.mac{border-color:var(--accent);background:var(--accent-soft)}
+.flow .arr{align-self:center;color:var(--muted);font-size:18px;flex:0 0 auto}
+@media (max-width:700px){.flow{flex-direction:column}.flow .arr{transform:rotate(90deg);align-self:center}}
+
+/* window-control mocks */
+.mock-row{display:flex;flex-wrap:wrap;gap:28px;align-items:flex-start;padding:24px;background:linear-gradient(180deg,var(--subtle),transparent)}
+.mock-cap{font-size:12px;color:var(--muted);margin-top:8px;max-width:340px}
+.faces{background:#15161b;border-radius:16px;padding:8px;display:inline-grid;gap:8px;box-shadow:0 10px 30px rgb(0 0 0 / .28),0 0 0 1px rgb(255 255 255 / .06) inset}
+.faces .tiles{display:flex;gap:8px}
+.tile{width:112px;height:112px;border-radius:12px;position:relative;display:grid;place-items:center;font:600 30px/1 var(--font);color:#fff}
+.tile .badge{position:absolute;top:6px;right:6px;display:flex;gap:4px}
+.tile .badge i{width:20px;height:20px;border-radius:6px;background:rgb(0 0 0 / .55);display:grid;place-items:center;font-style:normal;font-size:11px}
+.tile .nmf{position:absolute;left:7px;bottom:6px;font:500 11px/1 var(--font);background:rgb(0 0 0 / .45);padding:3px 6px;border-radius:5px}
+.ctl{display:flex;gap:6px;justify-content:center}
+.ctl b{width:36px;height:36px;border-radius:10px;background:#272930;display:grid;place-items:center;color:#e8e9ee}
+.ctl b.on{background:#5b5bf0}.ctl b.rec{background:#3a1d24;color:#ff7d92}.ctl b.leave{background:#e5484d;color:#fff}
+.ctl svg{width:18px;height:18px}
+.pill{display:inline-flex;align-items:center;gap:4px;background:rgb(22 23 28 / .94);color:#e8e9ee;border-radius:12px;padding:5px;font-size:13px;box-shadow:0 8px 24px rgb(0 0 0 / .3),0 0 0 1px rgb(255 255 255 / .07) inset;max-width:100%;flex-wrap:wrap}
+.pill .lab{display:flex;align-items:center;gap:7px;padding:0 10px 0 8px;font-weight:500}
+.pill .dot{width:8px;height:8px;border-radius:50%;background:#ff5a66;box-shadow:0 0 0 3px rgb(255 90 102 / .25)}
+.pill .b{padding:5px 11px;border-radius:8px;background:#2a2c33}
+.pill .b.on{background:#5b5bf0;color:#fff}.pill .b.stop{background:#e5484d;color:#fff}
+.agentcard{width:340px;max-width:100%;background:#1b1c22;color:#e9eaee;border-radius:14px;padding:14px 16px;display:grid;gap:8px;box-shadow:0 10px 30px rgb(0 0 0 / .3),0 0 0 1px rgb(255 255 255 / .07) inset;font-size:13px}
+.agentcard .h{display:flex;justify-content:space-between;color:#a2a5b2;font-size:12px}
+.agentcard .tt{font-weight:600;font-size:14px}
+.agentcard .bt{display:flex;gap:6px;justify-content:flex-end}
+.agentcard .bt span{padding:5px 12px;border-radius:8px;background:#2a2c33}
+.agentcard .bt span.y{background:#5b5bf0;color:#fff}
+.macwin{background:#1e1f25;border-radius:12px;box-shadow:0 18px 40px rgb(0 0 0 / .35),0 0 0 1px rgb(255 255 255 / .08) inset;overflow:hidden;color:#e8e9ee;font-size:13px;max-width:100%}
+.macbar{height:30px;display:flex;align-items:center;gap:7px;padding:0 11px;background:#26272e}
+.macbar i{width:11px;height:11px;border-radius:50%;background:#ff5f57}.macbar i:nth-child(2){background:#febc2e}.macbar i:nth-child(3){background:#28c840}
+.macbar span{margin-left:auto;margin-right:auto;font-size:12px;color:#a2a5b2;transform:translateX(-20px)}
+
+/* live text */
+.lt{padding:18px 20px;display:grid;gap:14px}
+.lt-track{position:relative;height:34px;background:var(--subtle);border-radius:8px;overflow:hidden}
+.lt-fill{position:absolute;inset:0 auto 0 0;width:0;background:var(--accent-soft)}
+.lt-edge{position:absolute;top:0;bottom:0;width:2px;background:var(--accent);left:0}
+.lt-w{position:absolute;top:8px;font:500 11px/1 var(--mono);color:var(--muted);white-space:nowrap}
+.lt-row{display:grid;grid-template-columns:120px minmax(0,1fr);gap:12px;align-items:baseline}
+.lt-row .k{font-size:12px;color:var(--muted)}
+.lt-line{font-size:16px}
+.lt-line .who{font-weight:600;color:#0a84ff;margin-right:6px}
+.lt-line.draft .txt{opacity:.55}
+.lt-line .new{background:var(--accent-soft);border-radius:4px}
+.lt-guess{font-family:var(--mono);font-size:13px;color:var(--muted);min-height:1.5em}
+@media (max-width:560px){.lt-row{grid-template-columns:1fr;gap:2px}}
+
+/* frames timeline */
+.ftl{padding:12px 8px 4px;overflow-x:auto}
+.ftl svg{display:block;min-width:720px;width:100%;height:auto}
+.ftl text{font-family:var(--font);font-size:11px;fill:var(--muted)}
+.ftl .lbl{font-size:12px;font-weight:600;fill:var(--fg)}
+
+/* captures window mock */
+.capwin{display:grid;grid-template-columns:230px minmax(0,1fr);height:640px;background:var(--bg);color:var(--fg)}
+.capside{border-right:1px solid var(--border);background:var(--rail);padding:14px 10px;display:grid;align-content:start;gap:8px;overflow:hidden}
+.capside .s{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:6px 9px;font-size:12.5px;color:var(--muted)}
+.callitem{padding:8px 9px;border-radius:9px;display:grid;gap:2px;font-size:12.5px}
+.callitem.on{background:var(--surface);box-shadow:0 1px 2px rgb(0 0 0 / .08)}
+.callitem b{font-size:13px;font-weight:600}
+.faces-s{display:flex;margin-top:3px}
+.faces-s i{width:18px;height:18px;border-radius:50%;border:2px solid var(--rail);margin-right:-5px;font:600 8px/14px var(--font);color:#fff;text-align:center;font-style:normal}
+.capmain{display:grid;grid-template-rows:auto auto auto minmax(0,1fr);min-width:0}
+.caphead{padding:14px 18px 10px;display:flex;flex-wrap:wrap;gap:10px;justify-content:space-between;align-items:flex-start;border-bottom:1px solid var(--border)}
+.caphead h3{font-size:17px}
+.live{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:500;color:var(--bad);background:var(--bad-soft);padding:1px 8px;border-radius:999px;margin-left:8px;vertical-align:2px}
+.live::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;animation:blink 1.4s infinite}
+@keyframes blink{50%{opacity:.25}}
+.scrub{padding:8px 18px;border-bottom:1px solid var(--border)}
+.scrub svg{display:block;width:100%;height:46px}
+.capfilters{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;padding:8px 18px;border-bottom:1px solid var(--border)}
+.capfilters .srch{border:1px solid var(--border);border-radius:8px;padding:4px 9px;font-size:12.5px;color:var(--muted);width:200px;max-width:100%}
+.caprows{overflow-y:auto;padding:12px 18px 24px;display:grid;gap:12px;align-content:start}
+.r-ev{font-size:12.5px;color:var(--muted);display:flex;gap:10px}
+.r-t{font-family:var(--mono);font-size:11.5px;color:var(--muted);flex:0 0 42px;padding-top:2px}
+.r-said{display:flex;gap:10px;font-size:14px}
+.r-said .who{font-weight:600;margin-right:6px}
+.r-said .also{display:block;font-size:12px;color:var(--muted)}
+.r-said.draft .body{opacity:.55}
+.r-card{display:flex;gap:10px}
+.r-card .box{flex:1;min-width:0;border:1px solid var(--border);border-radius:12px;background:var(--surface);overflow:hidden}
+.r-card .bh{display:flex;flex-wrap:wrap;gap:8px;justify-content:space-between;align-items:center;padding:8px 12px;font-size:13px}
+.r-card .bh b{font-weight:600}
+.markchips{display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px;border-top:1px solid var(--border)}
+.markchip{font-size:12px;padding:2px 8px;border-radius:999px;background:var(--subtle);display:inline-flex;gap:5px;align-items:center;cursor:default}
+.markchip::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--c)}
+.thumbwrap{position:relative;aspect-ratio:16/9;overflow:hidden;background:var(--screen)}
+.thumbwrap .inner{position:absolute;inset:0;transition:transform .35s ease}
+.thumbwrap.zoomed .inner{transform:scale(1.9) translate(-12%,12%)}
+.strip{display:flex;gap:6px;padding:10px 12px;overflow-x:auto}
+.strip .mini{flex:0 0 140px;height:60px;border-radius:6px;position:relative;overflow:hidden;background:var(--screen)}
+.mini .ln,.thumbwrap .ln{position:absolute;height:5px;border-radius:3px;background:var(--screen-line)}
+.capwin .seg button{font-size:12.5px}
+@media (max-width:760px){.capwin{grid-template-columns:1fr;height:720px}.capside{display:none}}
+
+.check{list-style:none;padding:0}
+.check li{padding-left:28px;position:relative}
+.check li::before{content:"";position:absolute;left:2px;top:4px;width:14px;height:14px;border:1.5px solid var(--border-strong);border-radius:4px}
+.copyable{position:relative}
+.copyable button{position:absolute;top:8px;right:8px;font:500 11px var(--font);border:1px solid var(--border-strong);background:var(--surface);color:var(--muted);border-radius:6px;padding:2px 8px;cursor:pointer}
+.kv{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:4px 16px;font-size:14px}
+.kv dt{color:var(--muted)}
+.kv dd{margin:0}
+.swatches{display:flex;flex-wrap:wrap;gap:8px}
+.sw{display:flex;align-items:center;gap:8px;font-size:12.5px;padding:4px 10px 4px 4px;border:1px solid var(--border);border-radius:999px;background:var(--surface)}
+.sw i{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font:700 10px var(--font);font-style:normal}
+input.field{font:inherit;font-size:14px;border:1px solid var(--border-strong);border-radius:8px;padding:6px 10px;background:var(--surface);color:var(--fg);width:220px;max-width:100%}
+
+@media (max-width:980px){
+  .page{grid-template-columns:minmax(0,1fr);gap:28px}
+  nav.toc{position:static;max-height:none;border:1px solid var(--border);border-radius:12px;padding:12px;background:var(--surface)}
+  nav.toc ol{grid-template-columns:repeat(auto-fill,minmax(170px,1fr));display:grid}
+  nav.toc .grp{grid-column:1/-1}
+}
+@media (prefers-reduced-motion: reduce){*,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important}}
+</style>
+
+<div class="page">
+<nav class="toc" aria-label="Contents">
+  <h4>Contents</h4>
+  <ol>
+    <li><a href="#start">Overview</a></li>
+    <li><a href="#order">Order of work</a></li>
+    <li class="grp">Marks</li>
+    <li><a href="#cursors">Cursors and colours</a></li>
+    <li><a href="#ink">Ink</a></li>
+    <li><a href="#stamps">Stamps</a></li>
+    <li><a href="#share">Keeping marks out of the share</a></li>
+    <li><a href="#controls">Window controls</a></li>
+    <li class="grp">Capture</li>
+    <li><a href="#capture">How Capture works</a></li>
+    <li><a href="#parakeet">Parakeet and the helper</a></li>
+    <li><a href="#transcript">Transcript rules</a></li>
+    <li><a href="#livetext">Live text</a></li>
+    <li><a href="#store">Storage and reliability</a></li>
+    <li><a href="#frames">Screen frames (Scrawl)</a></li>
+    <li><a href="#window">Captures window</a></li>
+    <li><a href="#agents">Agents, CLI and cards</a></li>
+    <li><a href="#capture-settings">Settings</a></li>
+    <li class="grp">Reference</li>
+    <li><a href="#protocol">Wire protocol</a></li>
+    <li><a href="#verify">Verifying on macOS</a></li>
+    <li><a href="#performance">Performance checks</a></li>
+    <li><a href="#lessons">Lessons that carry over</a></li>
+    <li><a href="#skip">What not to port</a></li>
+    <li><a href="#open">Open issues</a></li>
+    <li><a href="#files">File map</a></li>
+  </ol>
+</nav>
+
+<main>
+<!-- ============================================================ OVERVIEW -->
+<section id="start">
+  <header class="top">
+    <span class="eyebrow">linux-client → tauri + core</span>
+    <h1>Hopp Mac Port Guide</h1>
+    <p class="lede">Everything built in the Linux client, explained so the Mac app can have it too: what each feature does, how it looks, the exact rules and numbers, where the Mac code should change, and how an agent proves it works.</p>
+    <div class="meta"><span>Written from the code at <code>fce1cb1</code> on <code>useforesight/hopp</code> main</span><span>3 November 2026</span><span>All names in examples are made up</span></div>
+  </header>
+
+  <div class="prose">
+    <p><strong>Read the code, not the older Linux docs.</strong> Parts of <code>linux-client/README.md</code>, <code>HANDOVER.md</code> and <code>docs/capture-transcripts.html</code> still describe whisper.cpp, <code>hopp-whisper</code> and schema 2. The code now uses Parakeet, <code>hopp-transcribe</code> and schema 3. Every number in this guide was checked against the source.</p>
+    <p><strong>Most of it is portable Rust.</strong> Capture, frames, the timeline, colours, sprites and cursor smoothing have no Linux dependency. They can move into a shared crate that both <code>linux-client</code> and <code>core</code> use. The Linux-only parts are the compositor plumbing, and the Mac app already has its own versions of most of those.</p>
+    <p><strong>Tiling-desktop features are left out.</strong> Viewport tiles, Peek's special workspace, the bar plugin and the Hyprland rules don't apply to macOS. <a href="#skip">What not to port</a> lists them.</p>
+  </div>
+
+  <div class="tbl"><table>
+    <thead><tr><th>Feature</th><th>Mac today</th><th>Mac work</th><th>New protocol</th></tr></thead>
+    <tbody>
+      <tr><td><a href="#cursors">Crisp cursors, name tags, smoothing</a></td><td><span class="chip partial">Different design</span></td><td>Swap the SVG templates, add playback smoothing and idle timing</td><td>No</td></tr>
+      <tr><td><a href="#cursors">Same colour for a person everywhere</a></td><td><span class="chip partial">Per machine</span></td><td>Hash the user id instead of join order</td><td>No</td></tr>
+      <tr><td><a href="#ink">Ink, Shift for straight lines</a></td><td><span class="chip has">Has it</span></td><td>Little. Mac is ahead on undo and persist</td><td>No</td></tr>
+      <tr><td><a href="#stamps">Numbered stamps with words</a></td><td><span class="chip missing">Missing</span></td><td>New tool, topic handler and painter</td><td><code>hopp_stamp</code> (exists on Linux)</td></tr>
+      <tr><td><a href="#share">Marks hidden from the share</a></td><td><span class="chip has">Has it</span></td><td>None. <code>sharingType = .none</code> already does it</td><td>No</td></tr>
+      <tr><td><a href="#controls">Call window, sharing pill, cards</a></td><td><span class="chip partial">Partial</span></td><td>Add capture control and badge, a sharing pill, agent cards</td><td><code>hopp.capture</code> attribute</td></tr>
+      <tr><td><a href="#capture">Capture: per-person transcript</a></td><td><span class="chip missing">Missing</span></td><td>Audio taps in core, port the recorder and store</td><td>No</td></tr>
+      <tr><td><a href="#parakeet">Parakeet on the GPU</a></td><td><span class="chip missing">Missing</span></td><td>Build <code>hopp-transcribe</code> with Metal, bundle it</td><td>No</td></tr>
+      <tr><td><a href="#livetext">Live text while people speak</a></td><td><span class="chip missing">Missing</span></td><td>Comes with the recorder port</td><td>No</td></tr>
+      <tr><td><a href="#frames">Screen frames with ink</a></td><td><span class="chip missing">Missing</span></td><td>Tap sent and received video frames</td><td>No</td></tr>
+      <tr><td><a href="#window">Captures window</a></td><td><span class="chip missing">Missing</span></td><td>New Tauri window over the store</td><td>No</td></tr>
+      <tr><td><a href="#agents">MCP, CLI, cards, hooks, wake phrases</a></td><td><span class="chip missing">Missing</span></td><td>A bundled <code>hopp</code> CLI with an app socket</td><td>No</td></tr>
+    </tbody>
+  </table></div>
+  <p class="small muted"><strong>No server change is needed for any of it.</strong> Marks and stamps are LiveKit data packets, the backend's tokens don't restrict data publishing, and Capture runs on the client. The <code>hopp.capture</code> flag is a participant attribute, which the audio token is already allowed to set.</p>
+</section>
+
+<!-- ============================================================ ORDER -->
+<section id="order">
+  <h2>Order of work</h2>
+  <div class="prose"><p><strong>Each phase ships something usable and can be checked on its own.</strong> The order puts the cheapest visible wins first, and the phases that depend on the capture crate after it exists.</p></div>
+  <div class="tbl"><table>
+    <thead><tr><th>Phase</th><th>What ships</th><th>Proves it works</th></tr></thead>
+    <tbody>
+      <tr><td class="num">1</td><td>Colours from the user id, Crisp cursors and tags, cursor playback smoothing</td><td>A Linux and a Mac client show the same colour for each person; the smoothness test passes</td></tr>
+      <tr><td class="num">2</td><td>Stamps on the viewer and on your own screen</td><td>Stamps round-trip between a Linux and a Mac client</td></tr>
+      <tr><td class="num">3</td><td>Shared capture crate: taps, helper with Metal, recorder, store, Markdown</td><td><code>hopp capture transcribe Alex=a.wav Sam=b.wav</code> attributes every line correctly</td></tr>
+      <tr><td class="num">4</td><td>Live text, reactions, echo merging</td><td>Live-text latency measured against the Linux figures</td></tr>
+      <tr><td class="num">5</td><td>Screen frames and the captures window</td><td>The scripted two-person call passes all four assertions</td></tr>
+      <tr><td class="num">6</td><td>CLI, MCP, cards, hooks, wake phrases, Capture settings</td><td>An agent follows a call and answers "hey Claude" through a card</td></tr>
+      <tr><td class="num">7</td><td>Window controls: capture button and badge, sharing pill</td><td>Screenshots of every window in both themes; the share stays clean</td></tr>
+    </tbody>
+  </table></div>
+  <div class="note"><strong>Extract before you copy.</strong> Move <code>linux-client/src/capture/</code>, <code>ink.rs</code> (colours) and <code>badge.rs</code> (sprites) into one workspace crate, for example <code>hopp-capture</code>. Both clients then share one set of rules and tests. Two copies would drift, as <code>tauri/src/payloads.ts</code> already has from the Rust types.</div>
+</section>
+
+<!-- ============================================================ CURSORS -->
+<section id="cursors">
+  <span class="eyebrow">Marks · phase 1</span>
+  <h2>Cursors and colours</h2>
+  <div class="prose">
+    <p><strong>Each remote person gets a compact arrow in their colour, with a white edge and a small name tag tucked under it.</strong> While they draw it becomes a slim pencil, sitting exactly on the tip of their ink. This "Crisp" design was chosen from six prototypes on 3 November.</p>
+    <p>The demo below runs the real geometry and timing. Watch Lee: <strong>the name hides after 2.5 s at rest, and the cursor fades after 8 s.</strong> Sam switches to the pencil while drawing.</p>
+  </div>
+
+  <div class="bench">
+    <div class="bench-head"><span class="t">Prototype: remote cursors on a shared screen</span><button class="btn" id="cur-restart" type="button">Replay</button></div>
+    <div class="screen tall" id="cur-screen">
+      <div class="code" aria-hidden="true"><span class="c">// cart.ts</span>
+<span class="k">export function</span> <span class="f">total</span>(cart: Cart) {
+  <span class="k">const</span> sub = cart.items.<span class="f">reduce</span>((s, i) =&gt; s + i.price, <span class="n">0</span>);
+  <span class="k">const</span> off = <span class="f">discount</span>(cart.coupon, sub);
+<span class="hl">  <span class="k">return</span> sub;  <span class="c">// should be sub - off</span></span>
+}
+
+<span class="k">export function</span> <span class="f">discount</span>(code: <span class="k">string</span>, sub: <span class="k">number</span>) {
+  <span class="k">return</span> code === <span class="s">"SAVE10"</span> ? sub * <span class="n">0.1</span> : <span class="n">0</span>;
+}</div>
+      <div class="price" aria-hidden="true"><div class="row"><span>Subtotal</span><span>£120.00</span></div><div class="row"><span>SAVE10</span><span>−£12.00</span></div><div class="row"><b>Total</b><b>£120.00</b></div></div>
+      <div class="layer"><svg id="cur-ink" aria-hidden="true"></svg></div>
+      <div class="layer" id="cur-layer"></div>
+    </div>
+    <div class="bench-foot">Sprites are the SVG from <code>linux-client/src/badge.rs</code>, drawn here with the same paths, offsets and shadow.</div>
+  </div>
+
+  <div class="cols">
+    <div class="card"><span class="tag-l">Linux · badge.rs, marks.rs</span><h3>The rules</h3>
+      <ul>
+        <li><strong>Arrow:</strong> 20×24 units, path <code>M3 2.5 L3 20.5 L8 15.6 L15.6 14.8 Z</code>, white 1.6 stroke. The tip (3, 2.5) is the pointer.</li>
+        <li><strong>Pencil:</strong> 22×22 units; the lead (2.6, 19.4) is the pointer.</li>
+        <li><strong>Tag:</strong> height 20, radius 5, 11 px semibold, 7 px side padding, at most 180 px with "…". Offset (+10, +14.5) from the arrow tip, (+12.4, −17.4) from the pencil.</li>
+        <li><strong>Shadow:</strong> two layers, (0, 1.5, σ 1.4, 32%) and (0, 4, σ 4, 14%).</li>
+        <li><strong>Text colour:</strong> WCAG luminance above 0.5 gives <code>#14151a</code>; anything else gives white.</li>
+        <li><strong>Timing:</strong> name hides after 2.5 s over 350 ms, sliding 3 px. Cursor fades after 8 s over 400 ms. The name never hides while the pencil shows.</li>
+      </ul>
+    </div>
+    <div class="card"><span class="tag-m">macOS · core/src/utils/svg_renderer.rs</span><h3>How to build it</h3>
+      <ul>
+        <li><strong>The Mac already renders cursor SVGs with resvg,</strong> the same crate. Replace the three templates in <code>svg_renderer.rs:129-330</code> with the Crisp arrow, pencil and tag. Keep the hand for remote control.</li>
+        <li><strong>Hide timings differ:</strong> Mac hides the whole cursor after 5 s (<code>participant.rs:14</code>). Use 2.5 s for the name and 8 s for the cursor.</li>
+        <li><strong>Draw the tag as its own sprite.</strong> It has to fade and slide separately from the arrow.</li>
+        <li><strong>The sharer's own overlay</strong> (<code>window_manager.rs</code>) and the viewer canvas (<code>drawing_helpers::ParticipantOverlay</code>) both need the change.</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>Cursor playback smoothing</h3>
+  <div class="prose">
+    <p><strong>Cursors surged when every network update started a new glide.</strong> Linux now plays each cursor back slightly behind the network, at an even speed (<code>marks.rs:112-262</code>). Port this into <code>core/src/graphics/cursor.rs</code>.</p>
+    <ul>
+      <li><strong>Lag:</strong> starts at 35 ms. Its target is <code>max(gap × 2.2, slow × 1.3)</code>, clamped to 16–90 ms.</li>
+      <li><strong>Lag changes slowly:</strong> playback runs at most 10% slow while the lag grows, and 3% fast while it shrinks.</li>
+      <li><strong>Gap estimate:</strong> an exponential moving average (factor 0.05) of arrival gaps, clamped to 4–50 ms.</li>
+      <li><strong>Reset:</strong> after 250 ms with no update, playback restarts from where the cursor rests.</li>
+      <li><strong>Follows the pen:</strong> drawing sends ink points, not cursor moves, so the cursor follows the ink tip.</li>
+      <li><strong>Test to port:</strong> <code>a_pointer_moves_evenly_through_uneven_updates</code>. Updates every 14–18 ms arrive 0–20 ms late, painted at 120 Hz. The mean step must be within 10% of expected, and the worst step within 30%.</li>
+    </ul>
+  </div>
+
+  <h3>One colour per person, on every machine</h3>
+  <div class="prose">
+    <p><strong>The Mac gives colours in join order, so one person can be blue on your Mac and pink on mine.</strong> Linux takes the colour from a hash of the Hopp user id. Everyone in the call then agrees, and the colour matches the captured frames and transcript.</p>
+    <ul>
+      <li><strong>Palette</strong> (<code>ink.rs:10-19</code>): eight colours, shown below.</li>
+      <li><strong>Preferred colour:</strong> FNV-1a 64-bit of the user id, modulo 8. The user id is the third part of <code>room:&lt;room&gt;:&lt;user&gt;:audio</code>.</li>
+      <li><strong>Clashes:</strong> if the colour is taken, take the next free one that isn't a look-alike. Look-alikes are blue and cyan, red and pink, and orange and yellow.</li>
+      <li><strong>Order:</strong> you first, then everyone else in the order they first appear.</li>
+    </ul>
+  </div>
+  <div class="bench">
+    <div class="bench-head"><span class="t">Try it: the preferred colour for a user id</span><label class="small muted" style="display:flex;gap:8px;align-items:center">User id <input class="field" id="fnv-in" value="7f3c2a91-alex" aria-label="User id"></label></div>
+    <div style="padding:16px;display:grid;gap:12px">
+      <div class="swatches" id="swatches"></div>
+      <p class="small" id="fnv-out"></p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ INK -->
+<section id="ink">
+  <span class="eyebrow">Marks · mostly done on Mac</span>
+  <h2>Ink</h2>
+  <div class="prose">
+    <p><strong>The Mac's drawing is already as good as Linux's, and ahead in places.</strong> Jonny's commit <code>4a952e6</code> added smoothing, Shift for straight lines, Cmd+Z undo and right-click clearing. Linux has no undo and no "persist" mode. Keep the Mac's ink, and borrow only what's listed under "worth borrowing".</p>
+    <p>Draw below. <strong>Hold <kbd>Shift</kbd> for a straight line</strong>, and switch rules to compare how each client fades ink.</p>
+  </div>
+  <div class="bench">
+    <div class="bench-head"><span class="t">Prototype: ink rules side by side</span>
+      <div style="display:flex;gap:8px;flex-wrap:wrap"><div class="seg" role="group" aria-label="Ink rules"><button type="button" data-ink="linux" aria-pressed="true">Linux rules</button><button type="button" data-ink="mac" aria-pressed="false">Mac rules</button></div><button class="btn" type="button" id="ink-clear">Clear</button></div></div>
+    <div class="screen mid" id="ink-screen">
+      <div class="code" aria-hidden="true"><span class="c">// Drag to draw. Shift for a straight line.</span>
+<span class="k">const</span> off = <span class="f">discount</span>(cart.coupon, sub);
+<span class="k">return</span> sub;</div>
+      <canvas class="ink" id="ink-canvas" aria-label="Drawing area"></canvas>
+      <div class="hint" id="ink-hint">Linux: ink holds 2.4 s, then thins and fades over 0.6 s</div>
+    </div>
+  </div>
+  <div class="tbl"><table>
+    <thead><tr><th>Rule</th><th>Linux (<code>session.rs</code>, <code>ink_raster.rs</code>)</th><th>Mac (<code>core/src/graphics/draw.rs</code>)</th></tr></thead>
+    <tbody>
+      <tr><td>Width</td><td>Shown width ÷ 760, clamped 2.6–5 px</td><td>3.5 px, with a 5 px halo at 28%</td></tr>
+      <tr><td>Fading</td><td>Each stroke holds 2.4 s, then fades over 0.6 s and thins to 45%</td><td>All your strokes fade together 3 s after your last change, over 450 ms</td></tr>
+      <tr><td>Shift</td><td>Sends nothing while held; sends the end point on release</td><td>Resends clear, start and end every 33 ms</td></tr>
+      <tr><td>Undo</td><td>None</td><td><kbd>Cmd</kbd>+<kbd>Z</kbd></td></tr>
+      <tr><td>Clear</td><td><strong>Clear</strong> button, or <kbd>C</kbd> on the draw pad</td><td>Right-click</td></tr>
+      <tr><td>Persist</td><td>None</td><td>"Persist until right click"</td></tr>
+      <tr><td>Smoothing</td><td>Quadratic through midpoints; skip points under 0.75 device px</td><td>Same idea; drops points under 3 px, keeps sharp turns as corners</td></tr>
+      <tr><td>Rendering</td><td>tiny-skia in 256 px tiles; only tiles at the tip redraw</td><td>iced canvas on wgpu</td></tr>
+    </tbody>
+  </table></div>
+  <div class="card"><span class="tag-m">Worth borrowing</span>
+    <ul>
+      <li><strong>Width that scales with the screen.</strong> A fixed 3.5 px reads thin on a 5K display.</li>
+      <li><strong>Tile rendering, if ink frames get slow.</strong> On a 1,500-point stroke across a 5K screen, the worst Linux frame took 0.4 ms. Measure first: <code>cargo test --release --bin hopp ink_raster::timing -- --ignored --nocapture</code>.</li>
+      <li><strong>Both Shift methods work with every client.</strong> Neither needs a protocol change.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ============================================================ STAMPS -->
+<section id="stamps">
+  <span class="eyebrow">Marks · phase 2</span>
+  <h2>Stamps</h2>
+  <div class="prose">
+    <p><strong>A stamp is a numbered pin with words attached.</strong> You press <strong>Stamp</strong>, click a spot on the screen and type. Everyone in the call sees the marker drop in with a small bounce, pulse while it takes words, and show a light card with your name and text. It came from Scrawl's numbered pins.</p>
+    <p><strong>Click the screen below to place one, type, then press <kbd>Enter</kbd>.</strong> <kbd>Esc</kbd> removes it. Placing another finishes the last one, and an empty stamp disappears when finished.</p>
+  </div>
+  <div class="bench">
+    <div class="bench-head"><span class="t">Prototype: placing stamps as Sam Taylor</span><button class="btn" type="button" id="stamp-reset">Reset</button></div>
+    <div class="screen tall" id="stamp-screen" tabindex="0" aria-label="Shared screen. Click to place a stamp.">
+      <div class="code" aria-hidden="true"><span class="c">// checkout.tsx</span>
+&lt;<span class="f">Row</span> label=<span class="s">"Coupon"</span>&gt;
+  &lt;<span class="f">Input</span> name=<span class="s">"coupon"</span> placeholder=<span class="s">"SAVE10"</span> /&gt;
+&lt;/<span class="f">Row</span>&gt;
+&lt;<span class="f">Row</span> label=<span class="s">"Total"</span>&gt;{<span class="f">format</span>(<span class="f">total</span>(cart))}&lt;/<span class="f">Row</span>&gt;</div>
+      <div class="price" aria-hidden="true"><div class="row"><span>Subtotal</span><span>£120.00</span></div><div class="row"><span>SAVE10</span><span>−£12.00</span></div><div class="row"><b>Total</b><b>£120.00</b></div></div>
+      <div class="layer" id="stamp-layer"></div>
+      <div class="hint" id="stamp-hint">Click anywhere to stamp</div>
+    </div>
+    <div class="bench-foot">Marker path, rise, bubble placement and timing come from <code>badge.rs</code> and <code>marks.rs:727-974</code>.</div>
+  </div>
+  <div class="cols">
+    <div class="card"><span class="tag-l">Linux · session.rs, marks.rs</span><h3>The rules</h3>
+      <ul>
+        <li><strong>Marker:</strong> path <code>M0 0 L-5 -8 A 11 11 0 1 1 5 -8 Z</code> from the foot. The head centre is 17.8 above the foot, radius 11. Number bold 11.5 px (9 px for three digits).</li>
+        <li><strong>Drop:</strong> 460 ms, ease-out-back, from 22 px above and 62% size. A ground shadow widens as it lands.</li>
+        <li><strong>Listening:</strong> two rings breathe out from the head every 1.6 s, half a period apart.</li>
+        <li><strong>Card:</strong> white at 98%, radius 8, padding 11×8, at most 290 px wide and 6 lines. The name is the placer's colour mixed 22% towards <code>#1c1d26</code>. Words still being recognised show at 45%.</li>
+        <li><strong>Placement:</strong> right of the head if there's room, otherwise left; top edge 22 px above the head; kept 6 px inside the screen.</li>
+        <li><strong>Removal:</strong> fades over 260 ms. Text is capped at 2,000 bytes.</li>
+      </ul>
+    </div>
+    <div class="card"><span class="tag-m">macOS · core</span><h3>How to build it</h3>
+      <ul>
+        <li><strong>Viewer:</strong> add <strong>Stamp</strong> to the segmented control in <code>screensharing_window.rs:323-339</code> (Remote control, Draw, Point). Stamp and Draw turn each other off.</li>
+        <li><strong>Keys:</strong> while a stamp is active, typed keys go into it, not to the remote screen. <kbd>Enter</kbd> finishes it and <kbd>Esc</kbd> removes it.</li>
+        <li><strong>Receiving:</strong> <code>room_service.rs</code> routes only <code>app_veil</code> and <code>participant_in_control</code> by topic, and parses the rest as <code>ClientEvent</code>. Add a branch for <code>hopp_stamp</code> before that.</li>
+        <li><strong>Drawing:</strong> paint markers and cards in <code>ParticipantOverlay</code> (viewer) and the overlay window (sharer).</li>
+        <li><strong>Ripple:</strong> with each <code>StampPlace</code>, also send a <code>ClickAnimation</code> on <code>draw</code>, so older apps show a ripple.</li>
+        <li><strong>Improve on Linux:</strong> give the sharer's <code>DrawingWindow</code> a Stamp mode too. On Linux you can't stamp your own screen, and the user couldn't find the tool during a call.</li>
+      </ul>
+    </div>
+  </div>
+  <p class="small muted"><a href="#protocol">Wire protocol</a> has the message types and JSON.</p>
+</section>
+
+<!-- ============================================================ SHARE -->
+<section id="share">
+  <span class="eyebrow">Marks · nothing to build</span>
+  <h2>Keeping marks out of the share</h2>
+  <div class="prose">
+    <p><strong>Viewers draw every cursor and stroke themselves, from data messages.</strong> If the sharer's overlay also went into the video, viewers would see every mark twice. So the overlay must be on the sharer's screen and absent from what they share.</p>
+    <p><strong>On Linux this took a Hyprland plugin.</strong> Hyprland can't leave a surface out of a share; it paints a black box in its place. The marks overlay covers the whole monitor, so the first real call showed viewers a black screen. <strong>On macOS the window server does it for you.</strong></p>
+  </div>
+  <div class="cols">
+    <div class="card"><span class="tag-l">Linux · hyprland-plugin/main.cpp</span>
+      <div class="flow">
+        <div class="box"><b>Frame starts</b><span>Plugin lifts hidden overlay layers out</span></div><span class="arr">→</span>
+        <div class="box"><b>Last moment</b><span>Copies the frame into the share buffer</span></div><span class="arr">→</span>
+        <div class="box"><b>Then draws</b><span>The overlay, for the screen only</span></div>
+      </div>
+      <p class="small muted">It costs about 200 µs per shared frame and falls back to black boxes for zoom, lock screen and HDR. It must be rebuilt after every Hyprland update.</p>
+    </div>
+    <div class="card"><span class="tag-m">macOS · already in core</span>
+      <div class="flow">
+        <div class="box mac"><b>Overlay window</b><span><code>with_content_protected(true)</code></span></div><span class="arr">→</span>
+        <div class="box mac"><b>ScreenCaptureKit</b><span>Leaves the window out of the stream</span></div><span class="arr">→</span>
+        <div class="box mac"><b>Viewers</b><span>Draw marks from data</span></div>
+      </div>
+      <p class="small muted">Winit's content protection sets <code>NSWindow.sharingType = .none</code>. The overlay (<code>window_manager.rs:119</code>) and drawing window (<code>drawing_window.rs:36</code>) already use it.</p>
+    </div>
+  </div>
+  <div class="note warn"><strong>One gap: the Tauri windows aren't protected.</strong> The popover, settings and feedback windows have <code>content_protected: false</code> (<code>main.rs:643, 666</code>), so they appear in a display share. Linux hides its call card, sharing pill, toasts and agent cards from shares. Protect every new Mac window this guide adds: the sharing pill, cards, the captures window and the stamp UI.</div>
+</section>
+
+<!-- ============================================================ CONTROLS -->
+<section id="controls">
+  <span class="eyebrow">Window controls · phase 7</span>
+  <h2>Window controls</h2>
+  <div class="prose">
+    <p><strong>On Linux each part of a call got a small surface shaped for what it does,</strong> instead of one big window. Three of them make sense on the Mac: the call window with its controls, a sharing pill, and agent cards.</p>
+  </div>
+  <div class="bench">
+    <div class="bench-head"><span class="t">Linux today</span><span class="tag-l">faces.rs · sharing.rs · cards.rs</span></div>
+    <div class="mock-row">
+      <div>
+        <div class="faces" aria-label="Call window mock">
+          <div class="tiles">
+            <div class="tile" style="background:#0a84ff">AM<span class="badge"><i title="Sharing">▣</i><i title="Capturing" style="color:#ff7d92">●</i></span><span class="nmf">Alex</span></div>
+            <div class="tile" style="background:#b8960a">ST<span class="nmf">Sam</span></div>
+            <div class="tile" style="background:#bf5af2">LP<span class="badge"><i title="Muted" style="color:#ffb340">🔇︎</i></span><span class="nmf">Lee</span></div>
+          </div>
+          <div class="ctl">
+            <b title="Mic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></b>
+            <b title="Camera"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6" width="13" height="12" rx="2"/><path d="m16 10 5-3v10l-5-3"/></svg></b>
+            <b class="on" title="Share"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg></b>
+            <b class="rec" title="Capture"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="6"/></svg></b>
+            <b class="leave" title="Leave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M4 14c4-4 12-4 16 0l-2 3-3-1v-2a10 10 0 0 0-6 0v2l-3 1z"/></svg></b>
+          </div>
+        </div>
+        <p class="mock-cap"><strong>Call window.</strong> Square tiles at 112, 200 or 320 px, in a column, row or 64 px bubbles. Five controls: mic, camera, share, capture, leave. Badges for sharing, control, capturing and muted. Right-click Capture to open the captures window.</p>
+      </div>
+      <div style="display:grid;gap:24px">
+        <div>
+          <div class="pill" aria-label="Sharing pill mock"><span class="lab"><span class="dot"></span>Sharing Display 1</span><span class="b on">Draw</span><span class="b">Revoke</span><span class="b stop">Stop</span></div>
+          <p class="mock-cap"><strong>Sharing pill.</strong> 520×40 at the top of the shared monitor, hidden from the share. Draw turns on the draw pad; Revoke takes back control.</p>
+        </div>
+        <div>
+          <div class="agentcard" aria-label="Agent card mock"><div class="h"><span>Claude</span><span>now</span></div><div class="tt">Open a PR with the discount fix?</div><div>The total ignores <code style="background:#2a2c33;color:#e9eaee">off</code> on line 5. The fix is one line.</div><div class="bt"><span>No</span><span class="y">Yes</span></div></div>
+          <p class="mock-cap"><strong>Agent card.</strong> Near the top right, where notifications appear. 360 wide, at most 3 shown; title up to 120 characters and body up to 600.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="bench">
+    <div class="bench-head"><span class="t">Proposed for macOS</span><span class="tag-m">core camera_window.rs · call_controls.rs</span></div>
+    <div class="mock-row">
+      <div>
+        <div class="macwin" style="width:384px">
+          <div class="macbar"><i></i><i></i><i></i><span>Hopp</span></div>
+          <div style="padding:8px;display:grid;gap:8px;background:#15161b">
+            <div class="tiles" style="display:flex;gap:8px">
+              <div class="tile" style="background:#0a84ff">AM<span class="badge"><i title="Capturing" style="color:#ff7d92">●</i></span><span class="nmf">Alex</span></div>
+              <div class="tile" style="background:#b8960a">ST<span class="nmf">Sam</span></div>
+              <div class="tile" style="background:#bf5af2">LP<span class="nmf">Lee</span></div>
+            </div>
+            <div class="ctl">
+              <b title="Mic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></b>
+              <b title="Camera"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6" width="13" height="12" rx="2"/><path d="m16 10 5-3v10l-5-3"/></svg></b>
+              <b title="Share"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg></b>
+              <b class="rec" title="Capture (new)"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="6"/></svg></b>
+              <b class="leave" title="Leave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M4 14c4-4 12-4 16 0l-2 3-3-1v-2a10 10 0 0 0-6 0v2l-3 1z"/></svg></b>
+            </div>
+          </div>
+        </div>
+        <p class="mock-cap"><strong>Camera window with a Capture control and a capturing badge,</strong> read from each participant's <code>hopp.capture</code> attribute. The badge also belongs in the call center's participant list (<code>call-center.tsx:416</code>).</p>
+      </div>
+      <div style="display:grid;gap:24px">
+        <div>
+          <div class="pill"><span class="lab"><span class="dot"></span>Sharing Built-in Display</span><span class="b on">Draw</span><span class="b">Stamp</span><span class="b">Revoke</span><span class="b stop">Stop</span></div>
+          <p class="mock-cap"><strong>Sharing pill as a content-protected panel</strong> at the top of the shared display. Today the sharer turns drawing on in the popover. Add Stamp here, which Linux lacks.</p>
+        </div>
+        <div>
+          <div class="agentcard"><div class="h"><span>Claude</span><span>now</span></div><div class="tt">Open a PR with the discount fix?</div><div>The total ignores <code style="background:#2a2c33;color:#e9eaee">off</code> on line 5.</div><div class="bt"><span>No</span><span class="y">Yes</span></div></div>
+          <p class="mock-cap"><strong>Agent card as a non-activating panel</strong> under the menu bar at the top right, protected from shares. It must not steal focus from the app you're working in.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ CAPTURE -->
+<section id="capture">
+  <span class="eyebrow">Capture · phase 3</span>
+  <h2>How Capture works</h2>
+  <div class="prose">
+    <p><strong>Capture writes a transcript of every call, on your own machine, with the right speaker on every line.</strong> Nothing is uploaded. Each person's audio is transcribed separately, so there's no speaker guessing. Joins, shares, control changes, bookmarks and screen frames are noted between the lines.</p>
+    <p><strong>Every call is captured from the moment it connects.</strong> A capture stopped by hand stays stopped for the rest of that call. <code>"auto": false</code> in <code>capture.json</code> turns this off.</p>
+  </div>
+  <div class="flow">
+    <div class="box"><b>Per-person taps</b><span>Each remote track before mixing; your mic after echo cancellation</span></div><span class="arr">→</span>
+    <div class="box"><b>Utterances</b><span>Level-based voice detection cuts speech at pauses</span></div><span class="arr">→</span>
+    <div class="box"><b>Helper</b><span><code>hopp-transcribe</code>: Parakeet on the GPU</span></div><span class="arr">→</span>
+    <div class="box"><b>Store</b><span>SQLite lines with revisions, plus Markdown</span></div><span class="arr">→</span>
+    <div class="box"><b>Readers</b><span>Captures window, <code>follow</code>, MCP, hooks</span></div>
+  </div>
+  <div class="cols">
+    <div class="card"><span class="tag-l">Linux · media.rs, capture/mod.rs</span><h3>Where audio is tapped</h3>
+      <ul>
+        <li><strong>Remote people:</strong> in each track's own decode task, before mixing (<code>media.rs:1060-1078</code>), keyed by participant identity.</li>
+        <li><strong>You:</strong> after WebRTC echo cancellation, which is fed the real speaker output (<code>media.rs:536</code>). Speaker bleed is therefore never put on your line.</li>
+        <li><strong>Never blocks the call:</strong> one atomic load per 10 ms frame when idle; <code>try_lock</code> and <code>try_send</code> when capturing.</li>
+        <li><strong>Queue:</strong> 600 frames, about 2 s for three people. Overflow is counted and written as a gap line if 100 ms or more was lost.</li>
+      </ul>
+    </div>
+    <div class="card"><span class="tag-m">macOS · core/src/livekit/audio.rs</span><h3>Where to tap on the Mac</h3>
+      <ul>
+        <li><strong>Remote people:</strong> every remote track already has its own <code>NativeAudioStream</code>. Tap in <code>play_remote_audio_track</code>, before <code>push_samples</code> (<code>audio.rs:205-206</code>).</li>
+        <li><strong>You:</strong> in <code>audio/capturer.rs</code>, after echo cancellation. The mixer already feeds echo cancellation's reverse stream (<code>mixer.rs:188-200</code>).</li>
+        <li><strong>Sample rate:</strong> the Mac streams are 16 kHz mono; Linux taps 48 kHz. Voice detection counts 10 ms frames, so it works at 16 kHz with 160-sample frames. Skip the resampler.</li>
+        <li><strong>The recorder belongs in <code>hopp_core</code>,</strong> where LiveKit lives. The Tauri app only reads the store.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ PARAKEET -->
+<section id="parakeet">
+  <span class="eyebrow">Capture · phase 3</span>
+  <h2>Parakeet and the helper</h2>
+  <div class="prose">
+    <p><strong>Capture moved from whisper.cpp to Parakeet on 2 November.</strong> It makes fewer errors and runs several times faster. The model runs in a separate process, <code>hopp-transcribe</code>, so a crash or a stuck GPU never takes the call down.</p>
+  </div>
+  <div class="tbl"><table>
+    <thead><tr><th>Engine and model</th><th class="num">Word errors</th><th class="num">Speed</th><th>Note</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Parakeet Unified English</strong>, batched (default)</td><td class="num">1.91%</td><td class="num">27× real time</td><td><code>parakeet-en</code>, 731 MB, Q8_0</td></tr>
+      <tr><td>Parakeet, one utterance at a time</td><td class="num">2.35%</td><td class="num">15×</td><td>What live calls mostly do</td></tr>
+      <tr><td>whisper.cpp large-v3 (before)</td><td class="num">2.78%</td><td class="num">4.1×</td><td>3.1 GB</td></tr>
+      <tr><td>whisper.cpp large-v3-turbo (before)</td><td class="num">3.30%</td><td class="num">7.5×</td><td>1.6 GB</td></tr>
+    </tbody>
+  </table></div>
+  <p class="small muted">Measured on 73 LibriSpeech clips on an M2 Max running Linux, through Vulkan. Mac figures will differ; rerun the benchmark in <a href="#performance">Performance checks</a>.</p>
+  <div class="cols">
+    <div class="card"><span class="tag-l">Linux · transcribe/, capture/helper.rs, models.rs</span><h3>The helper</h3>
+      <ul>
+        <li><strong>Engine:</strong> <code>transcribe-cpp = "=0.2.4"</code> with the <code>vulkan</code> feature, the same version as the Hex voice app.</li>
+        <li><strong>Protocol:</strong> stdin takes a big-endian u32 header length, a JSON header <code>{"id","samples"}</code>, then f32 16 kHz samples. stdout sends one <code>ready</code> line, then one JSON line per request with word segments.</li>
+        <li><strong>Limits:</strong> at most 30 s per request. Audio under 1.1 s is padded with silence, because Parakeet mishears very short clips.</li>
+        <li><strong>One session for every request:</strong> creating one costs about 220 ms on the GPU.</li>
+        <li><strong>Models:</strong> <code>parakeet-en</code> (default), <code>parakeet-v3</code> (25 European languages), and Whisper GGUFs from tiny to large-v3. All are pinned to a revision and a SHA-256.</li>
+        <li><strong>Reuses Hex's copy</strong> when Hex's receipt matches the pinned hash, size and modified time, so there's no second download.</li>
+      </ul>
+    </div>
+    <div class="card"><span class="tag-m">macOS</span><h3>How to build it</h3>
+      <ul>
+        <li><strong>Build with Metal.</strong> <code>metal</code> is transcribe-cpp's default feature, so drop the <code>vulkan</code> feature for macOS builds.</li>
+        <li><strong>Bundle the helper</strong> in <code>Hopp.app/Contents/MacOS/</code> beside <code>hopp_core</code>. Sign and notarise it with the app.</li>
+        <li><strong>No cgroups on macOS.</strong> Linux caps memory and gives the helper idle CPU through a systemd scope. On the Mac, start it with background QoS (<code>taskpolicy -b</code> or <code>setpriority</code>), and watch its footprint instead of capping it.</li>
+        <li><strong>Models:</strong> store them in <code>~/Library/Application Support/com.hopp.app/models/</code> (suggested path).</li>
+        <li><strong>Check the desktop stays smooth.</strong> On Apple silicon under Linux, GPU inference stalled the compositor until a kernel fix. macOS schedules the GPU differently, but measure frame pacing anyway.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ TRANSCRIPT -->
+<section id="transcript">
+  <span class="eyebrow">Capture · phases 3 and 4</span>
+  <h2>Transcript rules</h2>
+  <div class="prose"><p><strong>Each rule below fixed something seen on a real call.</strong> Port them with their tests; most are small and easy to lose.</p></div>
+
+  <h3>Cutting speech into utterances</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>Rule (<code>vad.rs:10-36</code>)</th><th>Value</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td>Speech</td><td>Level above max(noise floor + 12 dB, −50 dBFS); floor is the quietest of the last 2 s</td><td>Adapts to each person's room</td></tr>
+      <tr><td>Kept before speech</td><td class="num">200 ms</td><td>Keeps first consonants</td></tr>
+      <tr><td>Silence that ends an utterance</td><td class="num">700 ms</td><td>Within the usual 300–800 ms</td></tr>
+      <tr><td>Shortest utterance</td><td class="num">250 ms</td><td>Drops clicks and coughs</td></tr>
+      <tr><td>After 8 s</td><td>A 200 ms pause ends it</td><td>15 of 185 lines on one call ended mid-sentence at the hard cut</td></tr>
+      <tr><td>Hard cut</td><td class="num">20 s, at the quietest moment of the last 2 s</td><td>The rest carries on as the next utterance</td></tr>
+      <tr><td>Speaker goes idle</td><td class="num">1.5 s</td><td>Flushes their last words</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Sending, splitting and cleaning</h3>
+  <ul class="prose">
+    <li><strong>Parakeet sends each utterance as soon as the helper is free,</strong> about 0.7 s after the speaker pauses. Whisper waits for a fuller request (24 s, or 12 s of waiting), one person per request, because it only gives segment times.</li>
+    <li><strong>Utterances share a request:</strong> 1 s of silence between one person's utterances, 3 s between people, at most 29 s.</li>
+    <li><strong>Words go back to their utterance by start time.</strong> Parakeet stretches the last word before a pause across the silence after it. Placing words by their middle gave them to the next utterance. Each word goes to the utterance whose span, widened by 500 ms, contains it.</li>
+    <li><strong>Finished speech always goes before live drafts</strong> in the helper's queue.</li>
+    <li><strong>Cleaning</strong> (<code>text.rs</code>): strip <code>[...]</code>, <code>(...)</code>, <code>*...*</code> and ♪. Drop stock phrases such as "thank you" and "bye" only when the utterance is under 1.5 s, since models invent them from noise.</li>
+  </ul>
+
+  <h3>How lines are shown</h3>
+  <ul class="prose">
+    <li><strong>One person's lines join into a message</strong> when nothing comes between them and the pause is at most 5 s.</li>
+    <li><strong>Reactions don't split someone else's turn.</strong> A reaction is at most 3 words and 1.5 s, such as "Yeah" or "Hmm". It's shown after the message it interrupted. On one 17-minute call this took 113 messages down to 85. The stored lines are unchanged.</li>
+    <li><strong>One voice on two mics shows once.</strong> Lines from two people within 3 s, with Dice-bigram similarity of 0.6 or more and a length ratio of 0.55 or more, are merged. The first speaker is kept, with "also on Alex's mic, shown once".</li>
+    <li><strong>Wake phrases match known mishearings.</strong> Parakeet heard "hey Claude" as "Heckord" and "Hey Cord". "hey claude" also wakes on heckord, hey cord, hey clod, hey cloud, hey claud and hey clawed. Wake phrases match final text only.</li>
+  </ul>
+</section>
+
+<!-- ============================================================ LIVE TEXT -->
+<section id="livetext">
+  <span class="eyebrow">Capture · phase 4</span>
+  <h2>Live text</h2>
+  <div class="prose">
+    <p><strong>A line appears as a dimmed draft when someone starts speaking, grows as words settle, and turns final under the same line id when they pause.</strong> Studies of live captions found that flicker tires people more than errors do. So <strong>a word, once shown, is never taken back.</strong></p>
+    <p>Press Play. The demo runs the real agreement rule from <code>draft.rs</code> on made-up guesses. It shows a word only when two guesses in a row agree on it, or when it's more than 1 s behind the live edge.</p>
+  </div>
+  <div class="bench">
+    <div class="bench-head"><span class="t">Prototype: draft words settling</span><button class="btn primary" type="button" id="lt-play">Play</button></div>
+    <div class="lt">
+      <div class="lt-track" id="lt-track" aria-hidden="true"><div class="lt-fill" id="lt-fill"></div><div class="lt-edge" id="lt-edge"></div></div>
+      <div class="lt-row"><span class="k">Model's guess</span><span class="lt-guess" id="lt-guess">Press Play</span></div>
+      <div class="lt-row"><span class="k">Shown in Hopp</span><div class="lt-line draft" id="lt-line"><span class="who">Sam</span><span class="txt"></span></div></div>
+      <div class="lt-row"><span class="k">Clock</span><span class="small muted mono" id="lt-clock">0.0 s</span></div>
+    </div>
+  </div>
+  <div class="cols">
+    <div class="card"><span class="tag-l">Linux · draft.rs, recorder.rs</span><h3>The rules</h3>
+      <ul>
+        <li><strong>Guesses:</strong> the utterance so far is re-transcribed at 1.0 s, then every 600 ms until 2 s, then every 1.5 s.</li>
+        <li><strong>A guess only extends what's shown</strong> if its start matches the shown text.</li>
+        <li><strong>Final text</strong> replaces the draft in place, or the line becomes <code>retracted</code> if nothing was said.</li>
+        <li><strong>Needs</strong> a word-timed model (Parakeet) on the GPU, with "Live text" on.</li>
+        <li><strong>Measured on Linux:</strong> first words a median 2.1 s after speech began; final text 0.56 s after the pause; transcriber busy for 26% of the audio. Each pass costs about 0.23 s of GPU time whatever its length.</li>
+      </ul>
+    </div>
+    <div class="card"><span class="tag-m">macOS</span><h3>Notes for the port</h3>
+      <ul>
+        <li><strong>It comes with the recorder;</strong> there's nothing Mac-specific in it.</li>
+        <li><strong>Why not streaming:</strong> transcribe.cpp allows one stream per loaded model, with no other runs while it's open.</li>
+        <li><strong>Measure on the Mac</strong> before trusting the Linux figures. No script for them is committed yet; <a href="#performance">Performance checks</a> describes one.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ STORE -->
+<section id="store">
+  <span class="eyebrow">Capture · phase 3</span>
+  <h2>Storage and reliability</h2>
+  <div class="cols">
+    <div class="card"><h3>Layout</h3>
+      <dl class="kv">
+        <dt>Database</dt><dd><code>capture/index.db</code>, SQLite, WAL, mode 0600, schema 3</dd>
+        <dt>Tables</dt><dd><code>calls</code>, <code>lines</code>, FTS5 <code>lines_fts</code></dd>
+        <dt>Line kinds</dt><dd>speech, event, bookmark, frame, gap, draft, retracted</dd>
+        <dt>Revisions</dt><dd>Every write bumps <code>rev</code>; readers follow <code>changes(call, after_rev)</code></dd>
+        <dt>Markdown</dt><dd><code>capture/&lt;id&gt;.md</code>, <code>[mm:ss] Name: text</code></dd>
+        <dt>Frames</dt><dd><code>capture/frames/&lt;id&gt;/frame-NNN.*</code></dd>
+        <dt>Call ids</dt><dd><code>c_YYYYMMDD-HHMMSS-xxxx</code></dd>
+        <dt>Mac root</dt><dd><code>~/Library/Application Support/com.hopp.app/capture/</code> (suggested)</dd>
+      </dl>
+    </div>
+    <div class="card"><h3>Safeguards, each from a real failure</h3>
+      <ul>
+        <li><strong>Never reopen the database to set permissions.</strong> Closing any descriptor of a file drops all the process's POSIX locks on it, SQLite's included. A reader then deleted the live WAL and two calls lost their lines. <strong>macOS has the same lock rules.</strong> Create the file only when it doesn't exist.</li>
+        <li><strong>A lock on <code>&lt;id&gt;.live</code></strong> marks a recorder as alive. A "capturing" call nobody holds for 30 s is closed with "ended unexpectedly".</li>
+        <li><strong>A stuck request restarts the helper:</strong> after 60 s plus 4× its audio on the GPU, or 120 s plus 10× on the CPU.</li>
+        <li><strong>Failure ladder:</strong> restart once, then fall back from GPU to CPU. Retry after 30 s, doubling to 2 minutes. A capture never gives up while running.</li>
+        <li><strong>Backlog over 10 minutes</strong> is skipped with a gap line, so the transcript catches up.</li>
+        <li><strong>Leaving the call never waits</strong> for the transcript to finish.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ FRAMES -->
+<section id="frames">
+  <span class="eyebrow">Capture · phase 5 · from Scrawl</span>
+  <h2>Screen frames</h2>
+  <div class="prose">
+    <p><strong>The moments that matter become numbered stills of the shared screen, with everyone's ink painted in.</strong> They appear in the transcript as lines such as <code>[00:32] Frame #6 Sam circled something at middle left (12%, 53%)</code>. Agents see them as images. The idea comes from Kit Langton's Scrawl, a tool for showing a coding agent a problem.</p>
+    <p><strong>Stills were chosen over video.</strong> Video would be smaller, but needs a decoder in the window and stills for agents anyway. Tuple also keeps stills taken when the screen changes.</p>
+  </div>
+  <div class="bench">
+    <div class="bench-head"><span class="t">When frames are taken, on an example minute of a call</span><span class="tag-l">Illustration</span></div>
+    <div class="ftl">
+      <svg viewBox="0 0 760 210" role="img" aria-label="Timeline of screen changes, marks and the frames they produce">
+        <g id="ftl-grid"></g>
+        <text class="lbl" x="0" y="50">Screen</text>
+        <text class="lbl" x="0" y="100">Marks</text>
+        <text class="lbl" x="0" y="150">Frames</text>
+        <g id="ftl-body"></g>
+      </svg>
+    </div>
+    <div class="bench-foot" id="ftl-legend"></div>
+  </div>
+  <div class="tbl"><table>
+    <thead><tr><th>Trigger (<code>moments.rs</code>)</th><th>Rule</th></tr></thead>
+    <tbody>
+      <tr><td>A stroke, pin or finished stamp</td><td>Frame 250 ms after it ends. Marks within 3 s of the first share one frame.</td></tr>
+      <tr><td>Bookmark, or first view of a new share</td><td>Frame at once</td></tr>
+      <tr><td>Screen changes</td><td>Sampled every 0.5 s. Saved once nothing bigger than a cursor has changed for 2 s.</td></tr>
+      <tr><td>An ordinary change (scroll, typing)</td><td>Waits until 10 s after the last frame</td></tr>
+      <tr><td>A new scene (30% of cells changed)</td><td>Waits only 3 s</td></tr>
+      <tr><td>A screen that never settles</td><td>One frame every 30 s</td></tr>
+      <tr><td>A still screen</td><td>Nothing</td></tr>
+    </tbody>
+  </table></div>
+  <div class="cols">
+    <div class="card"><span class="tag-l">Linux</span><h3>Detection and files</h3>
+      <ul>
+        <li><strong>Scrawl's measure:</strong> a 64×36 luma thumbnail. The difference is the larger of the mean change and 1.4× the fourth most changed block of an 8×6 grid, against 0.08. A moving pointer doesn't count.</li>
+        <li><strong>Plus a cell count:</strong> 6 or more cells changed by over 0.025 also count. Scrawl's measure alone missed one-line code edits, often the change that matters in pairing.</li>
+        <li><strong>Why so strict:</strong> one sample used to be enough. A 5-minute call took 68 frames, mostly while scrolling; under these rules it takes about 11.</li>
+        <li><strong>Files:</strong> <code>.full.webp</code> at full size, <code>.webp</code> at most 1440 px for agents, and <code>.json</code> with each mark. WebP quality 85, about 0.3 MB a frame, roughly 0.1 GB an hour.</li>
+        <li><strong>Captions</strong> name the shape: circled, underlined, drew a line, dropped pin 3, stamped pin 4 with its words, bookmarked. Shapes are worked out from the stroke, not sent.</li>
+      </ul>
+    </div>
+    <div class="card"><span class="tag-m">macOS</span><h3>Where frames come from</h3>
+      <ul>
+        <li><strong>Your own share:</strong> the ScreenCaptureKit frames in <code>core/src/capture/macos_stream.rs</code>, before they go to the <code>NativeVideoSource</code>. Downscale to a short side of 1440 first, as Linux does.</li>
+        <li><strong>Someone else's share:</strong> the decoded frames the viewer window gets, before <code>yuv_renderer.rs</code>.</li>
+        <li><strong>Ink is painted in software</strong> (<code>ink_raster.rs</code>, tiny-skia), so frames look the same whatever the GPU.</li>
+        <li><strong>Capture hides your cursor</strong> (<code>with_shows_cursor(false)</code>), so frames show only the marks.</li>
+        <li><strong>All of the frame logic is portable,</strong> using the <code>image</code> and <code>webp</code> crates.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ WINDOW -->
+<section id="window">
+  <span class="eyebrow">Capture · phase 5</span>
+  <h2>Captures window</h2>
+  <div class="prose">
+    <p><strong>One call is shown as a timeline you can read, scrub and search.</strong> Speech, drawings zoomed to where they were drawn, and screen changes as filmstrips are interleaved in time. A person's words use the colour their cursor and ink had. The user asked for no "Ask Claude" button.</p>
+    <p><strong>On the Mac this can be a Tauri window,</strong> since the mock below is already HTML. It reads the store through Tauri commands. Try the filters and the Drawing / Whole screen switch.</p>
+  </div>
+  <div class="bench">
+    <div class="bench-head"><span class="t">Prototype: the captures window during a live call</span><span class="tag-l">captures.rs, timeline.rs</span></div>
+    <div class="capwin">
+      <aside class="capside" aria-label="Calls">
+        <b style="font-size:14px;padding:2px 4px">Calls</b>
+        <div class="s">Search every call</div>
+        <div class="callitem on"><b>Checkout discount bug</b><span class="muted">Today 14:02 · 9 min</span><span class="muted small">The total ignores SAVE10…</span><div class="faces-s"><i style="background:#0a84ff">AM</i><i style="background:#b8960a">ST</i><i style="background:#bf5af2">LP</i></div></div>
+        <div class="callitem"><b>Release planning</b><span class="muted">Today 10:30 · 31 min</span><div class="faces-s"><i style="background:#0a84ff">AM</i><i style="background:#30d158">JW</i></div></div>
+        <div class="callitem"><b>Cache warm-up review</b><span class="muted">Yesterday 16:45 · 18 min</span><div class="faces-s"><i style="background:#bf5af2">LP</i><i style="background:#b8960a">ST</i></div></div>
+      </aside>
+      <div class="capmain">
+        <div class="caphead">
+          <div><h3 style="display:inline">Checkout discount bug</h3><span class="live">Capturing · 08:52</span>
+            <div class="small muted" style="margin-top:4px">Today · 2 drawings · 3 screen changes · Parakeet on the GPU</div></div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn" type="button">Bookmark</button><button class="btn" type="button">Copy agent prompt</button><button class="btn" type="button">Stop</button></div>
+        </div>
+        <div class="scrub" aria-label="Scrubber"><svg id="scrub" viewBox="0 0 600 46" preserveAspectRatio="none"></svg></div>
+        <div class="capfilters">
+          <div class="seg" role="group" aria-label="Show"><button type="button" data-f="all" aria-pressed="true">Everything</button><button type="button" data-f="said" aria-pressed="false">Said</button><button type="button" data-f="drawing" aria-pressed="false">Drawings</button><button type="button" data-f="screen" aria-pressed="false">Screen</button></div>
+          <span class="srch">Search this call</span>
+        </div>
+        <div class="caprows" id="caprows"></div>
+      </div>
+    </div>
+  </div>
+  <div class="cols">
+    <div class="card"><span class="tag-l">Linux · timeline.rs</span><h3>Grouping rules</h3>
+      <ul>
+        <li><strong>Drawings:</strong> frames within 3 s of each other and 10 s in total form one card, shown as its last frame with each mark listed once.</li>
+        <li><strong>Crop:</strong> around the marks with 5% padding, at least 34% wide and 30% tall, grown towards 16:9 and kept inside the frame.</li>
+        <li><strong>Screen bursts:</strong> frames within 8 s of each other and 40 s in total, with up to 6 evenly spaced thumbnails, always including the last.</li>
+        <li><strong>Same second:</strong> events, then bookmarks, then screens, then drawings, then speech.</li>
+        <li><strong>Chips</strong> per person and kind of mark ("Lee · pins 1, 2") outline those marks on hover.</li>
+      </ul>
+    </div>
+    <div class="card"><span class="tag-l">Linux · captures.rs</span><h3>Window behaviour</h3>
+      <ul>
+        <li><strong>Size:</strong> 1180×820, minimum 360×320. Below 760 px the call list folds behind a button.</li>
+        <li><strong>Scrubber:</strong> one lane per speaker, screen changes as bars, drawings as dots; click to jump.</li>
+        <li><strong>Live:</strong> polls every 600 ms by <code>rev</code>, follows the tail, and updates drafts in place. A new capture is selected unless you're reading another live call.</li>
+        <li><strong>Long calls:</strong> a virtual list draws only visible rows, and at most 36 decoded frames are held.</li>
+        <li><strong>Viewer:</strong> any picture opens full size; arrow keys step and <kbd>Esc</kbd> closes.</li>
+        <li><strong>Header actions:</strong> Bookmark and Stop while live; copy an agent prompt; Open Markdown and Delete (click twice) once ended.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ AGENTS -->
+<section id="agents">
+  <span class="eyebrow">Capture · phase 6</span>
+  <h2>Agents, CLI and cards</h2>
+  <div class="prose">
+    <p><strong>An agent can follow a call as it happens, see the frames, and ask you something through a card in Hopp.</strong> All of it goes through a <code>hopp</code> command that talks to the running app. Tuple offers the same kind of integration with its Capture.</p>
+  </div>
+  <div class="tbl"><table>
+    <thead><tr><th>MCP tool (<code>hopp mcp</code>)</th><th>What it returns</th></tr></thead>
+    <tbody>
+      <tr><td><code>call_status</code></td><td>Who's online, the call, capture state</td></tr>
+      <tr><td><code>capture_list</code>, <code>capture_search</code>, <code>capture_transcript</code></td><td>Calls, search hits, a call as Markdown</td></tr>
+      <tr><td><code>capture_follow</code></td><td>Waits for new lines (45 s default, 600 s max). Options: <code>wake_phrase</code>, <code>context_lines</code>, <code>include_drafts</code>. The newest 3 frames come as images.</td></tr>
+      <tr><td><code>capture_frame</code></td><td>One frame with each mark's bounds and colour; <code>zoom</code> crops to the marks</td></tr>
+      <tr><td><code>capture_annotate</code></td><td>Sets a call's title or summary</td></tr>
+      <tr><td><code>notify_user</code>, <code>request_user_decision</code>, <code>wait_for_decision</code>, <code>cancel_card</code></td><td>Cards in Hopp; decisions come back as accepted, rejected, dismissed or showing</td></tr>
+    </tbody>
+  </table></div>
+  <div class="cols">
+    <div class="card"><span class="tag-l">Linux · cli.rs, capture/commands.rs</span><h3>Commands</h3>
+      <ul>
+        <li><strong>Calls:</strong> <code>status [--json]</code>, <code>call WHO</code>, <code>join</code>, <code>accept</code>, <code>decline</code>, <code>leave</code>, <code>mute</code>, <code>camera</code>, <code>share</code>, <code>draw</code>.</li>
+        <li><strong>Captures:</strong> <code>capture start | stop | window [id|last|live] | bookmark | list | show | search | follow | annotate | delete | model …</code></li>
+        <li><strong>Following:</strong> <code>capture follow --on-wake "hey claude" --drafts --json</code>, or <code>--wake-if PROGRAM</code>.</li>
+        <li><strong>Cards:</strong> <code>hopp notify</code>, and <code>hopp ask</code>, which exits 0 on accept, 1 on reject and 2 on timeout.</li>
+        <li><strong>Hooks:</strong> executables in <code>~/.config/hopp/hooks/</code> for <code>capture-started</code> and <code>capture-complete</code>, given JSON on stdin and killed after 10 minutes.</li>
+      </ul>
+    </div>
+    <div class="card"><span class="tag-m">macOS</span><h3>How to build it</h3>
+      <ul>
+        <li><strong>Ship the CLI in the bundle,</strong> for example <code>Hopp.app/Contents/MacOS/hopp</code>, and offer to link it into <code>/usr/local/bin</code>.</li>
+        <li><strong>Add an app socket for it.</strong> Core and Tauri already talk over a socket with length-prefixed JSON (<code>core/socket_lib</code>). The CLI needs its own endpoint, for example in <code>~/Library/Application Support/com.hopp.app/</code>.</li>
+        <li><strong>Read-only commands open the store directly,</strong> as Linux does. Respect the lock lesson in <a href="#store">Storage</a>.</li>
+        <li><strong>MCP setup:</strong> Settings gets copy buttons for <code>claude mcp add hopp -- /Applications/Hopp.app/Contents/MacOS/hopp mcp</code> and the Codex equivalent.</li>
+        <li><strong>Agents can't start a capture,</strong> by design. Keep that.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ SETTINGS -->
+<section id="capture-settings">
+  <span class="eyebrow">Capture · phase 6</span>
+  <h2>Settings</h2>
+  <div class="prose">
+    <p><strong>Add a Capture section to <code>tauri/src/windows/settings/main.tsx</code>.</strong> A new setting needs a field in <code>UserSettings</code> (<code>app_state.rs</code> and <code>core_payloads.ts</code>), a <code>set_*</code> command in <code>main.rs</code>, and an entry in <code>CommandMap</code>. The Default microphone picker merged from upstream on 3 November is a recent example.</p>
+  </div>
+  <div class="tbl"><table>
+    <thead><tr><th>Control</th><th>Linux</th><th>Key in <code>capture.json</code></th></tr></thead>
+    <tbody>
+      <tr><td>Transcription model, with download progress</td><td>Yes</td><td><code>model</code>, default <code>parakeet-en</code></td></tr>
+      <tr><td>Runs on: GPU or CPU</td><td>Yes</td><td><code>gpu</code>, default true</td></tr>
+      <tr><td>Live text</td><td>Yes</td><td><code>drafts</code>, default true</td></tr>
+      <tr><td>Delete after: never, 90 days, 30 days</td><td>Yes</td><td><code>keep_days</code>, default never</td></tr>
+      <tr><td>Capture every call</td><td><strong>Missing on Linux;</strong> add it on the Mac</td><td><code>auto</code>, default true</td></tr>
+      <tr><td>Storage used, open captures, open folder</td><td>Yes</td><td>None</td></tr>
+      <tr><td>Copy MCP setup for Claude Code and Codex; open hooks folder</td><td>Yes</td><td>None</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ============================================================ PROTOCOL -->
+<section id="protocol">
+  <span class="eyebrow">Reference</span>
+  <h2>Wire protocol</h2>
+  <div class="prose">
+    <p><strong>Linux speaks Hopp's existing protocol unchanged,</strong> and adds one topic and one attribute. Coordinates everywhere are fractions of the shared display, 0 to 1, from the top left. <strong>Older apps ignore what they don't understand:</strong> core logs a parse error and drops the packet.</p>
+  </div>
+  <div class="tbl"><table>
+    <thead><tr><th>Message</th><th>Topic</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr><td><code>MouseMove</code></td><td><code>participant_location</code></td><td><span class="chip has">Same on both</span></td></tr>
+      <tr><td><code>DrawStart</code>, <code>DrawAddPoint</code>, <code>DrawEnd</code>, <code>DrawClearPath</code>, <code>DrawClearAllPaths</code>, <code>DrawingMode</code>, <code>ClickAnimation</code></td><td><code>draw</code></td><td><span class="chip has">Same on both</span></td></tr>
+      <tr><td><code>RemoteControlEnabled</code>, clicks, keys, wheel, clipboard</td><td>various</td><td><span class="chip has">Same on both</span></td></tr>
+      <tr><td><code>Tick</code>, <code>TickResponse</code>, <code>app_veil</code></td><td>various</td><td><span class="chip na">Mac only</span></td></tr>
+      <tr><td><code>StampPlace</code>, <code>StampText</code>, <code>StampRemove</code></td><td><code>hopp_stamp</code></td><td><span class="chip missing">Linux only, port it</span></td></tr>
+      <tr><td><code>hopp.capture = "1"</code> participant attribute</td><td>audio connection</td><td><span class="chip missing">Linux only, port it</span></td></tr>
+    </tbody>
+  </table></div>
+  <div class="copyable"><pre><code>// linux-client/src/protocol.rs:175-201 — topic "hopp_stamp", reliable
+#[serde(tag = "type", content = "payload")]
+pub enum StampMessage {
+    StampPlace { id: u64, x: f64, y: f64 },
+    StampText  { id: u64, text: String, draft: String, done: bool },
+    StampRemove { id: u64 },
+}
+
+{"type":"StampPlace","payload":{"id":3,"x":0.62,"y":0.41}}
+{"type":"StampText","payload":{"id":3,"text":"SAVE10 goes in here","draft":"","done":false}}
+{"type":"StampText","payload":{"id":3,"text":"SAVE10 goes in here","draft":"","done":true}}
+{"type":"StampRemove","payload":{"id":3}}</code></pre><button type="button" data-copy>Copy</button></div>
+  <ul class="prose">
+    <li><strong>A stamp is identified by (sender, id).</strong> Ids count up per sender.</li>
+    <li><strong>Every keystroke resends the whole text</strong> with <code>done: false</code>. <code>draft</code> is for words still being recognised, reserved for spoken stamps; Linux always sends it empty today.</li>
+    <li><strong>Validation:</strong> the point must be within 0–1, and text plus draft at most 2,000 bytes. Packets over 512 KiB, or from someone not in the call, are dropped.</li>
+    <li><strong>Numbers aren't sent.</strong> Each client numbers stamps in the order it saw them, so two machines can disagree. Decide whether to fix this before both clients ship stamps widely.</li>
+    <li><strong>Linux sends <code>participant_location</code> unreliably</strong> and the rest reliably. The Mac sends everything reliably. Both work.</li>
+  </ul>
+</section>
+
+<!-- ============================================================ VERIFY -->
+<section id="verify">
+  <span class="eyebrow">Reference · for the agent doing the port</span>
+  <h2>Verifying on macOS</h2>
+  <div class="prose">
+    <p><strong>On Linux nearly every feature was checked by an agent before the user saw it.</strong> It used a private local server, scripted two-person calls with synthetic voices, headless screenshots, and throwaway compositors. The table maps each check to its Mac equivalent. The Linux versions are under <code>linux-client/dev/</code> and <code>linux-client/tasks/</code>.</p>
+  </div>
+  <div class="note warn"><strong>Before any build, benchmark or test call, check that no real call is running.</strong> On 2 November, agents' test builds and GPU helpers took the GPU from a live call's capture. It stopped transcribing, and the rest of the speech was lost. Installing a build restarts Hopp, which drops the call. Check the app's status first, and wait if a call is live.</div>
+  <div class="tbl"><table>
+    <thead><tr><th>Check</th><th>Linux</th><th>macOS equivalent</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Private Hopp server</strong></td><td><code>dev/local-stack.py start|seed</code>: upstream backend, Postgres, Redis and LiveKit in rootless Docker, two seeded accounts</td><td>The same images and ports in Docker Desktop or colima. The rootless setup is Linux-only. Untried on a Mac.</td></tr>
+      <tr><td><strong>Two clients, one machine</strong></td><td><code>dev/run-client.py</code>, <code>dev/run-both.sh</code>; <code>bridge-call-check.py</code> drives call, accept and leave, then prints PASS</td><td>Run two app instances with separate data folders, or one app and one bare core session as the other caller</td></tr>
+      <tr><td><strong>Scripted two-person call</strong></td><td><code>dev/scrawl-e2e/run.sh</code>: Piper voices on a 68 s timeline, slides, marks, stamps and a bookmark; an agent follows with only the <code>hopp</code> MCP tools</td><td>Needs a file-backed microphone and a silent speaker in core, as Linux has with <code>hopp-test:wav:</code> devices. The rest of the script carries over.</td></tr>
+      <tr><td><strong>Transcription by file</strong></td><td><code>hopp capture transcribe [--realtime] Alex=a.wav Sam=b.wav</code> runs the whole recorder, one track per person</td><td>Same command once the CLI exists. Always use a throwaway data folder.</td></tr>
+      <tr><td><strong>Screenshots of every window</strong></td><td><code>tasks/visual-check/run.sh</code>: real UI code against a stub engine, in headless Weston, one PNG per scene</td><td>Tauri windows: render the React pages in headless Chromium. Core windows: render iced to an offscreen wgpu texture, or capture one window with <code>screencapture -l &lt;window id&gt;</code>.</td></tr>
+      <tr><td><strong>Fake teammates on screen</strong></td><td><code>hopp --marks-demo [seconds]</code></td><td>Add the same flag to core: made-up cursors, ink and stamps over the main display</td></tr>
+      <tr><td><strong>Share stays clean</strong></td><td>A nested Hyprland plus <code>grim</code>: 15 captures with no black and no mark pixels</td><td>Start the marks demo, take <code>screencapture -x</code> or an <code>SCScreenshotManager</code> capture, and check no mark pixels appear</td></tr>
+      <tr><td><strong>Unit tests</strong></td><td>182 in <code>linux-client</code>, including timeline, frames, store locking, voice detection, batching, drafts, badges and cursor smoothness</td><td>Move them with the shared crate; they need no platform</td></tr>
+    </tbody>
+  </table></div>
+  <h3>What the scripted call asserts</h3>
+  <ol class="prose">
+    <li><strong>Speech lines come from exactly two speakers.</strong></li>
+    <li><strong>Every mark is on a frame,</strong> within 0.01 of where it was drawn.</li>
+    <li><strong>A frame exists for the bookmark.</strong></li>
+    <li><strong>Every stamp is on a frame</strong> with its exact text and position.</li>
+  </ol>
+  <p class="prose"><strong>Four runs on Linux found real bugs:</strong> two people given the same colour, a slide change dropped soon after a frame, an MCP error once the call ended, and one-line code edits that didn't count as screen changes. In every run the agent's summary of the bug and fix was right.</p>
+  <h3>Checklist for each phase</h3>
+  <ul class="check prose">
+    <li>Unit tests pass, and <code>cargo clippy -- -D warnings</code> is clean</li>
+    <li>Screenshots of every changed window, light and dark, at two sizes</li>
+    <li>A mark-demo capture of the display shows no marks</li>
+    <li>A Linux and a Mac client in one call: cursors, colours, ink, ripples and stamps both ways</li>
+    <li>The scripted call passes, and its transcript and frames read correctly</li>
+    <li>Performance numbers recorded against the Linux figures</li>
+    <li>Label each result as synthetic, harness or real call; a harness failure isn't a product bug</li>
+  </ul>
+  <div class="note"><strong>Some steps need a person once.</strong> macOS asks for Screen Recording and Accessibility permission for the app, and for the terminal that runs screenshots. An agent can't grant these itself.</div>
+</section>
+
+<!-- ============================================================ PERFORMANCE -->
+<section id="performance">
+  <span class="eyebrow">Reference</span>
+  <h2>Performance checks</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>What</th><th>Linux method and result</th><th>On macOS</th></tr></thead>
+    <tbody>
+      <tr><td>Transcription accuracy and speed</td><td><code>tasks/capture-bench/fetch.sh</code> downloads 73 LibriSpeech clips; <code>bench.py</code> reports word errors, speed, p50/p95 latency and peak memory</td><td><code>bench.py</code> speaks the helper protocol and carries over. Replace its <code>/proc</code> reads with <code>ps</code> or <code>rusage</code>.</td></tr>
+      <tr><td>Memory, including GPU</td><td><code>peak.py</code> reads the cgroup's <code>memory.peak</code>; RSS misses GPU memory</td><td><code>footprint -p &lt;pid&gt;</code> and <code>vmmap -summary</code>; the Instruments Allocations and Leaks templates</td></tr>
+      <tr><td>Desktop smoothness while transcribing</td><td><code>frame_probe.py</code>: dropped frames and worst frame while idle, loading and transcribing. Before the kernel fix 12–17% dropped; after, none</td><td>A small window logging display-link intervals while the helper works; or <code>xcrun xctrace record --template 'Animation Hitches'</code></td></tr>
+      <tr><td>GPU cost of a feature</td><td><code>make -C hyprland-plugin bench</code>: GL timer queries per segment, every 300 frames</td><td><code>xcrun xctrace record --template 'Metal System Trace'</code></td></tr>
+      <tr><td>CPU hot spots</td><td><code>perf</code></td><td><code>xcrun xctrace record --template 'Time Profiler' --attach hopp_core</code></td></tr>
+      <tr><td>Ink drawing cost</td><td><code>ink_raster::timing</code>: worst frame 0.4 ms on a 1,500-point 5K stroke</td><td>Same test in the shared crate; for the iced path, time frames in Instruments</td></tr>
+      <tr><td>Cursor smoothness</td><td>Unit test with jittery updates painted at 120 Hz</td><td>Same test</td></tr>
+      <tr><td>Video latency</td><td>A frame counter drawn into a synthetic share: zero playout delay took p50 from 127 to 19 ms</td><td>Same method</td></tr>
+      <tr><td>Live-text latency</td><td>First words 2.1 s, final 0.56 s, busy 26%; <strong>no script committed</strong></td><td>Write one: play a two-track WAV with known speech onsets through <code>capture transcribe --realtime</code> and time <code>follow --drafts --json</code></td></tr>
+    </tbody>
+  </table></div>
+  <div class="note"><strong>Benchmark the engineering, not the model.</strong> Measure accuracy only to check that a speed-up doesn't cost quality. On Linux a shorter encoder window and a style prompt both made results worse, and were dropped.</div>
+</section>
+
+<!-- ============================================================ LESSONS -->
+<section id="lessons">
+  <span class="eyebrow">Reference</span>
+  <h2>Lessons that carry over</h2>
+  <div class="cols">
+    <div class="card"><h3>Closing a file drops its locks</h3><p>Any close of any descriptor drops the process's POSIX locks on that file. It cost two calls their lines. Same on macOS.</p></div>
+    <div class="card"><h3>Place words by start time</h3><p>Parakeet stretches the last word over the pause after it. Placing by the middle moved words to the wrong person.</p></div>
+    <div class="card"><h3>Test two tracks on one timeline</h3><p>Batched words can move to the wrong person. <code>capture transcribe Alex=a.wav Sam=b.wav</code> catches it.</p></div>
+    <div class="card"><h3>Separate harness from product failures</h3><p>A failed harness run doesn't prove a product bug. Label evidence as synthetic, harness or real.</p></div>
+    <div class="card"><h3>Measure latency end to end</h3><p>The video lag was the receiver's jitter buffer, not the encoder. Tuning the wrong end would have wasted the work.</p></div>
+    <div class="card"><h3>GPU memory belongs to whoever allocates it</h3><p>Set memory limits from what the system charges the process, not from RSS.</p></div>
+    <div class="card"><h3>Don't put marks in the video</h3><p>An earlier fix painted marks into the share for Mac viewers. Their apps already draw marks, so they saw everything twice. It was reverted within the hour.</p></div>
+    <div class="card"><h3>Check before heavy work</h3><p>Builds and benchmarks during a live call starved its capture, and the rest of that call's speech was lost.</p></div>
+  </div>
+</section>
+
+<!-- ============================================================ SKIP -->
+<section id="skip">
+  <span class="eyebrow">Reference</span>
+  <h2>What not to port</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>Linux piece</th><th>Why it exists</th><th>On macOS</th></tr></thead>
+    <tbody>
+      <tr><td>Hyprland plugin <code>hopp-share-clean</code></td><td>Hyprland paints hidden surfaces black in shares</td><td>Not needed; <code>sharingType = .none</code></td></tr>
+      <tr><td>Viewport tiles, Follow / 1:1 / Fit, Peek in <code>special:hopp</code></td><td>Tiling windows have the compositor's shape, not the screen's</td><td>Not needed; Mac windows are freely sized</td></tr>
+      <tr><td>Bar plugin <code>local.hopp</code></td><td>Omarchy's bar instead of a tray</td><td>The menu bar popover already does this</td></tr>
+      <tr><td>Hyprland rules, layer-shell surfaces</td><td>Placement on a tiling desktop</td><td>NSPanel levels and positions</td></tr>
+      <tr><td>Patched <code>webrtc-sys</code></td><td>WebRTC's weak PipeWire stubs crashed capture</td><td>Not needed</td></tr>
+      <tr><td>systemd scopes with memory caps</td><td>An out-of-memory kill once ended the whole desktop session</td><td>Watch the helper's footprint; run it at background priority</td></tr>
+      <tr><td>Virtual input through Hyprland protocols</td><td>No input daemon on Wayland</td><td>The Mac's existing remote control</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ============================================================ OPEN -->
+<section id="open">
+  <span class="eyebrow">Reference · as of 3 November 2026</span>
+  <h2>Open issues on Linux</h2>
+  <div class="prose"><p><strong>Don't copy these gaps.</strong> Some features were checked in harnesses but not yet on a real call.</p></div>
+  <ul class="prose">
+    <li><strong>Not yet seen on a real call:</strong> marks over your own share through the plugin, drawing on your own screen, stamps between two real clients, and WebP frames.</li>
+    <li><strong>Stamps are hard to find.</strong> They're only in the viewer, so they don't exist while you share. The Mac pill can fix this.</li>
+    <li><strong>Stamp numbers can differ between machines and frames.</strong> Captured frames number stamps when finished, and count the stamp's ripple as a pin. This is a reading of the code, not yet seen.</li>
+    <li><strong>Possible bug:</strong> <code>end_call</code> doesn't clear stamps or the active stamp (<code>session.rs:1410-1435</code>).</li>
+    <li><strong>No auto-capture switch in Settings;</strong> only the JSON file.</li>
+    <li><strong>Interoperability with Mac and Windows,</strong> long calls and poor networks are untested.</li>
+    <li><strong>Not built yet:</strong> spoken stamps from the placer's live text, spoken cues such as "look here" as frame triggers, a screen-at-a-time command for agents, and app and window names saved with each frame, as Tuple does.</li>
+  </ul>
+</section>
+
+<!-- ============================================================ FILES -->
+<section id="files">
+  <span class="eyebrow">Reference</span>
+  <h2>File map</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>Feature</th><th>Linux source (<code>linux-client/</code>)</th><th>Mac code to change</th></tr></thead>
+    <tbody>
+      <tr><td>Cursors, tags</td><td><code>src/badge.rs</code>, <code>src/ui/marks.rs</code></td><td><code>core/src/utils/svg_renderer.rs</code>, <code>core/src/graphics/cursor.rs</code>, <code>core/src/input/mouse.rs</code></td></tr>
+      <tr><td>Colours</td><td><code>src/ink.rs</code></td><td><code>core/src/livekit/participant.rs:152-221</code></td></tr>
+      <tr><td>Ink</td><td><code>src/ui/session.rs</code>, <code>src/ink_raster.rs</code></td><td><code>core/src/graphics/draw.rs</code>, <code>drawing_helpers.rs</code></td></tr>
+      <tr><td>Stamps</td><td><code>src/protocol.rs:175-201</code>, <code>src/ui/session.rs:653-817</code>, <code>src/ui/marks.rs:727-974</code></td><td><code>core/src/room_service.rs</code>, <code>screensharing_window.rs</code>, <code>drawing_window.rs</code></td></tr>
+      <tr><td>Window controls</td><td><code>src/ui/faces.rs</code>, <code>sharing.rs</code>, <code>cards.rs</code></td><td><code>core/src/window/camera_window.rs</code>, <code>core/src/components/call_controls.rs</code>, <code>tauri/src/components/ui/call-center.tsx</code></td></tr>
+      <tr><td>Capture</td><td><code>src/capture/*</code>, <code>transcribe/</code>, <code>src/engine.rs:2399-2514</code></td><td>New crate; taps in <code>core/src/livekit/audio.rs</code> and <code>core/src/audio/capturer.rs</code></td></tr>
+      <tr><td>Frames</td><td><code>src/capture/moments.rs</code>, <code>frame_files.rs</code></td><td><code>core/src/capture/macos_stream.rs</code>, the viewer's frame path</td></tr>
+      <tr><td>Captures window</td><td><code>src/ui/captures.rs</code>, <code>src/capture/timeline.rs</code></td><td>New Tauri window and commands</td></tr>
+      <tr><td>Agents</td><td><code>src/mcp.rs</code>, <code>src/cli.rs</code>, <code>src/capture/follow.rs</code>, <code>hooks.rs</code></td><td>New bundled CLI and app socket</td></tr>
+      <tr><td>Settings</td><td><code>src/ui/settings.rs:696-897</code>, <code>src/capture/config.rs</code></td><td><code>tauri/src/windows/settings/main.tsx</code>, <code>app_state.rs</code></td></tr>
+      <tr><td>Test harnesses</td><td><code>dev/</code>, <code>dev/scrawl-e2e/</code>, <code>tasks/</code>, <code>src/scrawl_e2e.rs</code></td><td>New</td></tr>
+    </tbody>
+  </table></div>
+</section>
+</main>
+</div>
+
+<script>
+(() => {
+const PALETTE = ['#ff3b30','#0a84ff','#30d158','#ff9f0a','#bf5af2','#ff375f','#64d2ff','#ffd60a'];
+const NAMES = ['red','blue','green','orange','purple','pink','cyan','yellow'];
+function lum(hex){const n=parseInt(hex.slice(1),16);return [n>>16&255,n>>8&255,n&255].map(v=>{v/=255;return v<=0.04045?v/12.92:Math.pow((v+0.055)/1.055,2.4)}).reduce((a,c,i)=>a+c*[.2126,.7152,.0722][i],0)}
+const textOn = h => lum(h) > 0.5 ? '#14151a' : '#ffffff';
+const ARROW = c => `<svg class="spr" width="36" height="40" viewBox="0 0 36 40" aria-hidden="true"><path transform="translate(8 8)" d="M3 2.5 L3 20.5 L8 15.6 L15.6 14.8 Z" fill="${c}" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg>`;
+const PENCIL = c => `<svg class="spr" width="38" height="38" viewBox="0 0 38 38" aria-hidden="true"><g transform="translate(8 8)"><path d="M14.5 3.6 18.4 7.5 7.5 18.4 2.6 19.4 3.6 14.5Z" fill="${c}" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/><path d="M12.6 5.5 16.5 9.4" stroke="#fff" stroke-width="1.5"/></g></svg>`;
+const MARKER = (c,n) => `<svg class="spr" width="40" height="48" viewBox="0 0 40 48" aria-hidden="true"><g transform="translate(20 40)"><path d="M0 0 L-5 -8 A 11 11 0 1 1 5 -8 Z" fill="${c}" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/><text x="0" y="-13.6" font-family="Inter, Geist, sans-serif" font-size="${String(n).length>2?9:11.5}" font-weight="700" fill="${textOn(c)}" text-anchor="middle">${n}</text></g></svg>`;
+const mix = (hex, to, t) => { const a=parseInt(hex.slice(1),16), b=parseInt(to.slice(1),16); const ch=s=>Math.round(((a>>s)&255)*(1-t)+((b>>s)&255)*t); return `rgb(${ch(16)} ${ch(8)} ${ch(0)})`; };
+const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const ease = t => t<.5 ? 2*t*t : 1-Math.pow(-2*t+2,2)/2;
+
+/* ---------- contents highlight ---------- */
+const links=[...document.querySelectorAll('nav.toc a')];
+const byId=Object.fromEntries(links.map(a=>[a.getAttribute('href').slice(1),a]));
+if('IntersectionObserver' in window){
+  const io=new IntersectionObserver(es=>{es.forEach(e=>{if(e.isIntersecting){links.forEach(l=>l.classList.remove('on'));byId[e.target.id]?.classList.add('on');}})},{rootMargin:'-20% 0px -70% 0px'});
+  document.querySelectorAll('main section[id]').forEach(s=>io.observe(s));
+}
+
+/* ---------- copy buttons ---------- */
+document.querySelectorAll('[data-copy]').forEach(b=>b.addEventListener('click',()=>{
+  const code=b.parentElement.querySelector('code');
+  const done=()=>{b.textContent='Copied';setTimeout(()=>b.textContent='Copy',1500)};
+  try{navigator.clipboard.writeText(code.innerText).then(done,()=>{const r=document.createRange();r.selectNodeContents(code);const s=getSelection();s.removeAllRanges();s.addRange(r);b.textContent='Selected'});}
+  catch(e){const r=document.createRange();r.selectNodeContents(code);const s=getSelection();s.removeAllRanges();s.addRange(r);}
+}));
+
+/* ---------- cursor demo ---------- */
+(() => {
+  const screen=document.getElementById('cur-screen'), layer=document.getElementById('cur-layer'), inkSvg=document.getElementById('cur-ink');
+  const people=[
+    {name:'Alex Morgan',c:'#0a84ff',script:[['move',.30,.42,0],['move',.52,.30,1600],['hold',1400],['move',.40,.58,1300],['hold',900],['move',.62,.44,1500],['hold',3200],['move',.28,.36,1700],['hold',1500]]},
+    {name:'Sam Taylor',c:'#ffd60a',script:[['move',.70,.70,0],['hold',800],['move',.86,.28,1500],['circle',.865,.33,.11,.07,1600],['hold',2600],['move',.36,.70,1500],['hold',2200],['move',.20,.25,1400],['hold',2500]]},
+    {name:'Lee Park',c:'#bf5af2',script:[['move',.12,.80,0],['move',.30,.66,1500],['hold',11000],['move',.45,.80,1500],['hold',1000]]}
+  ];
+  let els=[],strokes=[],t0=0,raf=0;
+  function build(){
+    layer.innerHTML='';inkSvg.innerHTML='';strokes=[];
+    els=people.map(p=>{const d=document.createElement('div');d.className='cur';d.innerHTML=`<div class="sp"></div><div class="nm" style="background:${p.c};color:${textOn(p.c)}">${p.name}</div>`;layer.appendChild(d);return {d,sp:d.firstChild,nm:d.lastChild,mode:'',lastMove:0,x:0,y:0};});
+  }
+  function scriptAt(p, t){
+    let x=p.script[0][1],y=p.script[0][2],elapsed=0,draw=null,moving=false;
+    const total=p.script.reduce((a,s)=>a+(s[0]==='hold'?s[1]:s[0]==='circle'?s[5]:s[3]),0);
+    t=t%total;
+    for(const s of p.script){
+      const dur=s[0]==='hold'?s[1]:s[0]==='circle'?s[5]:s[3];
+      if(t<=elapsed+dur && dur>0){
+        const f=(t-elapsed)/dur;
+        if(s[0]==='move'){x=x+(s[1]-x)*ease(f);y=y+(s[2]-y)*ease(f);moving=true;}
+        else if(s[0]==='circle'){const a=-Math.PI/2+f*Math.PI*2.08;x=s[1]+s[3]*Math.cos(a);y=s[2]+s[4]*Math.sin(a);draw={f,s};moving=true;}
+        return {x,y,draw,moving,loopT:t,total};
+      }
+      if(s[0]==='move'){x=s[1];y=s[2];}
+      if(s[0]==='circle'){const a=-Math.PI/2+Math.PI*2.08;x=s[1]+s[3]*Math.cos(a);y=s[2]+s[4]*Math.sin(a);}
+      elapsed+=dur;
+    }
+    return {x,y,draw:null,moving:false,loopT:t,total};
+  }
+  function frame(now){
+    const t=now-t0, W=screen.clientWidth, H=screen.clientHeight;
+    people.forEach((p,i)=>{
+      const e=els[i], s=scriptAt(p,t);
+      if(s.moving) e.lastMove=now;
+      const idle=now-e.lastMove;
+      const pencil=!!s.draw;
+      if(s.draw){
+        let st=strokes.find(k=>k.who===i&&!k.done);
+        if(!st){st={who:i,pts:[],done:false,end:0,el:document.createElementNS('http://www.w3.org/2000/svg','polyline')};st.el.setAttribute('fill','none');st.el.setAttribute('stroke',p.c);st.el.setAttribute('stroke-linecap','round');st.el.setAttribute('stroke-linejoin','round');inkSvg.appendChild(st.el);strokes.push(st);}
+        st.pts.push([s.x*W,s.y*H]);
+      } else strokes.filter(k=>k.who===i&&!k.done).forEach(k=>{k.done=true;k.end=now;});
+      const mode=pencil?'p':'a';
+      if(mode!==e.mode){e.mode=mode;e.sp.innerHTML=pencil?PENCIL(p.c):ARROW(p.c);
+        if(pencil){e.sp.style.left='-10.6px';e.sp.style.top='-27.4px';e.nm.style.left='12.4px';e.nm.style.top='-17.4px';}
+        else{e.sp.style.left='-11px';e.sp.style.top='-10.5px';e.nm.style.left='10px';e.nm.style.top='14.5px';}}
+      e.d.style.transform=`translate(${s.x*W}px,${s.y*H}px)`;
+      e.nm.classList.toggle('hid',!pencil && idle>2500);
+      e.d.style.opacity=idle>8000?0:1;
+    });
+    const w=Math.min(5,Math.max(2.6,W/760));
+    strokes=strokes.filter(k=>{
+      let a=1; if(k.done){const age=now-k.end; if(age>2400) a=1-ease(Math.min(1,(age-2400)/600)); if(a<=0){k.el.remove();return false;}}
+      k.el.setAttribute('points',k.pts.map(p=>p.join(',')).join(' '));k.el.setAttribute('stroke-width',w*(0.45+0.55*a));k.el.setAttribute('opacity',a);return true;});
+    raf=requestAnimationFrame(frame);
+  }
+  function start(){cancelAnimationFrame(raf);build();t0=performance.now();els.forEach(e=>e.lastMove=t0);raf=requestAnimationFrame(frame);}
+  document.getElementById('cur-restart').addEventListener('click',start);
+  start();
+})();
+
+/* ---------- colour from user id ---------- */
+(() => {
+  const sw=document.getElementById('swatches'), inp=document.getElementById('fnv-in'), out=document.getElementById('fnv-out');
+  sw.innerHTML=PALETTE.map((c,i)=>`<span class="sw" data-i="${i}"><i style="background:${c};color:${textOn(c)}">Aa</i>${NAMES[i]} <span class="mono muted">${c}</span></span>`).join('');
+  function fnv(s){let h=0xcbf29ce484222325n;for(const b of new TextEncoder().encode(s)){h^=BigInt(b);h=(h*0x100000001b3n)&0xffffffffffffffffn;}return h;}
+  function upd(){
+    const id=inp.value.trim()||'?'; const h=fnv(id); const i=Number(h%8n);
+    sw.querySelectorAll('.sw').forEach(e=>e.style.outline=+e.dataset.i===i?'2px solid var(--accent)':'none');
+    out.innerHTML=`FNV-1a of <code>${id.replace(/[<&>]/g,'')}</code> is <code>0x${h.toString(16).padStart(16,'0')}</code>. Modulo 8 that's <strong>${i}, ${NAMES[i]}</strong>, with ${textOn(PALETTE[i])==='#ffffff'?'white':'dark'} name text. Every client computes the same answer.`;
+  }
+  inp.addEventListener('input',upd);upd();
+})();
+
+/* ---------- ink lab ---------- */
+(() => {
+  const cv=document.getElementById('ink-canvas'), screen=document.getElementById('ink-screen'), hint=document.getElementById('ink-hint');
+  const ctx=cv.getContext('2d'); let mode='linux', strokes=[], cur=null, raf=0, lastChange=0, dpr=1;
+  const COLOR='#0a84ff';
+  function size(){dpr=devicePixelRatio||1;cv.width=screen.clientWidth*dpr;cv.height=screen.clientHeight*dpr;}
+  new ResizeObserver(size).observe(screen); size();
+  const pt=e=>{const r=cv.getBoundingClientRect();return [e.clientX-r.left,e.clientY-r.top];};
+  cv.addEventListener('pointerdown',e=>{if(e.button===2){if(mode==='mac'){strokes=[];}return;}cv.setPointerCapture(e.pointerId);const p=pt(e);cur={pts:[p],base:1,straight:e.shiftKey?0:-1,done:false,end:0};strokes.push(cur);lastChange=performance.now();});
+  cv.addEventListener('pointermove',e=>{if(!cur)return;const p=pt(e);
+    if(e.shiftKey){ if(cur.straight<0) cur.straight=cur.pts.length-1; cur.pts=cur.pts.slice(0,cur.straight+1).concat([p]); }
+    else { if(cur.straight>=0){cur.straight=-1;} const l=cur.pts[cur.pts.length-1]; if(Math.hypot(p[0]-l[0],p[1]-l[1])>=(mode==='mac'?3:0.75)) cur.pts.push(p); }
+    lastChange=performance.now();});
+  const up=()=>{if(cur){cur.done=true;cur.end=performance.now();lastChange=cur.end;cur=null;}};
+  cv.addEventListener('pointerup',up);cv.addEventListener('pointercancel',up);
+  cv.addEventListener('contextmenu',e=>e.preventDefault());
+  addEventListener('keydown',e=>{
+    if(!screen.matches(':hover'))return;
+    if((e.metaKey||e.ctrlKey)&&!e.shiftKey&&e.key.toLowerCase()==='z'&&mode==='mac'){const i=strokes.map(s=>s.done).lastIndexOf(true);if(i>=0){strokes.splice(i,1);e.preventDefault();}}
+    if(e.key.toLowerCase()==='c'&&mode==='linux'&&!e.metaKey&&!e.ctrlKey){strokes=[];}
+  });
+  function path(pts){ctx.beginPath();if(pts.length===1){ctx.moveTo(pts[0][0],pts[0][1]);ctx.lineTo(pts[0][0]+.01,pts[0][1]);return;}
+    ctx.moveTo(pts[0][0],pts[0][1]);if(pts.length===2){ctx.lineTo(pts[1][0],pts[1][1]);return;}
+    for(let i=1;i<pts.length-1;i++){const mx=(pts[i][0]+pts[i+1][0])/2,my=(pts[i][1]+pts[i+1][1])/2;ctx.quadraticCurveTo(pts[i][0],pts[i][1],mx,my);}
+    const l=pts[pts.length-1];ctx.lineTo(l[0],l[1]);}
+  function draw(now){
+    ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,cv.width,cv.height);ctx.lineCap='round';ctx.lineJoin='round';
+    const W=screen.clientWidth;
+    if(mode==='linux'){
+      const w=Math.min(5,Math.max(2.6,W/760));
+      strokes=strokes.filter(s=>{let a=1;if(s.done){const age=now-s.end;if(age>2400)a=1-ease(Math.min(1,(age-2400)/600));if(a<=0)return false;}
+        ctx.globalAlpha=a;ctx.strokeStyle=COLOR;ctx.lineWidth=w*(0.45+0.55*a);path(s.pts);ctx.stroke();return true;});
+    } else {
+      let a=1; const idle=now-lastChange; if(!cur && strokes.length && idle>3000){const t=Math.min(1,(idle-3000)/450);a=1-(t*t*(3-2*t));if(a<=0){strokes=[];}}
+      ctx.globalAlpha=a;ctx.strokeStyle='rgba(255,255,255,.28)';ctx.lineWidth=5;strokes.forEach(s=>{path(s.pts);ctx.stroke();});
+      ctx.strokeStyle=COLOR;ctx.lineWidth=3.5;strokes.forEach(s=>{path(s.pts);ctx.stroke();});
+    }
+    ctx.globalAlpha=1;raf=requestAnimationFrame(draw);
+  }
+  raf=requestAnimationFrame(draw);
+  document.querySelectorAll('[data-ink]').forEach(b=>b.addEventListener('click',()=>{mode=b.dataset.ink;strokes=[];
+    document.querySelectorAll('[data-ink]').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));
+    hint.textContent=mode==='linux'?'Linux: ink holds 2.4 s, then thins and fades over 0.6 s · C clears':'Mac: all ink fades together 3 s after your last change · ⌘Z undoes · right-click clears';}));
+  document.getElementById('ink-clear').addEventListener('click',()=>{strokes=[];});
+})();
+
+/* ---------- stamps ---------- */
+(() => {
+  const screen=document.getElementById('stamp-screen'), layer=document.getElementById('stamp-layer'), hint=document.getElementById('stamp-hint');
+  const C='#ffd60a', NAME='Sam Taylor'; let n=0, active=null;
+  function finish(s){ if(!s) return; const v=s.input.value.trim(); s.el.classList.remove('listening');
+    if(!v){remove(s);return;} const t=document.createElement('div');t.className='txt';t.textContent=v;s.input.replaceWith(t); if(active===s) active=null; hint.textContent='Click anywhere to stamp'; }
+  function remove(s){ s.el.classList.add('gone'); setTimeout(()=>s.el.remove(),270); if(active===s) active=null; hint.textContent='Click anywhere to stamp'; }
+  screen.addEventListener('pointerdown',e=>{
+    if(e.target.closest('.bubble')) return;
+    e.preventDefault();
+    finish(active);
+    const r=screen.getBoundingClientRect(), x=e.clientX-r.left, y=e.clientY-r.top;
+    n+=1; const el=document.createElement('div'); el.className='stamp listening'; el.style.setProperty('--c',C);
+    el.style.transform=`translate(${x}px,${y}px)`;
+    const right = x + 20 + 290 + 8 < r.width;
+    el.innerHTML=`<div class="ground"></div><div class="ring a"></div><div class="ring b"></div><div class="pin">${MARKER(C,n)}</div>
+      <div class="bubble" style="${right?'left:20px':'right:20px'};--slide:${right?'-8px':'8px'}"><div class="who" style="color:${mix(C,'#1c1d26',.22)}">${NAME}</div><input type="text" maxlength="2000" placeholder="Listening…" aria-label="Stamp words"></div>`;
+    layer.appendChild(el);
+    const bub=el.querySelector('.bubble'); const top=y-39.8; if(top<6) bub.style.top=(6-y)+'px';
+    const s={el,input:el.querySelector('input')}; active=s;
+    s.input.addEventListener('keydown',k=>{if(k.key==='Enter'){k.preventDefault();finish(s);screen.focus();}else if(k.key==='Escape'){k.preventDefault();remove(s);screen.focus();}});
+    setTimeout(()=>s.input.focus({preventScroll:true}),reduce?0:200);
+    hint.textContent='Type, then Enter to finish · Esc removes it';
+  });
+  document.getElementById('stamp-reset').addEventListener('click',()=>{layer.innerHTML='';n=0;active=null;hint.textContent='Click anywhere to stamp';});
+})();
+
+/* ---------- live text ---------- */
+(() => {
+  const words=['so','the','discount','line','is','right','but','the','total','still','says','one','twenty'];
+  const starts=[0,250,420,900,1200,1350,1800,2000,2150,2600,2900,3250,3500]; const END=3900, FINAL=END+700+560;
+  const guesses=[[1000,['so','the','discount','lie']],[1600,['so','the','discount','line','is','right']],[2200,['so','the','discount','line','is','right','but','the']],[3700,['so','the','discount','line','is','right','but','the','total','still','says','one','twin']]];
+  const track=document.getElementById('lt-track'), fill=document.getElementById('lt-fill'), edge=document.getElementById('lt-edge');
+  const gEl=document.getElementById('lt-guess'), line=document.getElementById('lt-line'), txt=line.querySelector('.txt'), clock=document.getElementById('lt-clock');
+  const span=FINAL+400;
+  track.insertAdjacentHTML('beforeend',words.map((w,i)=>`<span class="lt-w" style="left:calc(${starts[i]/span*100}% + 3px)">${i%2?'':w}</span>`).join(''));
+  let raf=0,t0=0,shown=[],prev=null,gi=0,newIdx=-1;
+  function hear(edgeMs,guess){
+    for(let i=0;i<shown.length;i++) if(guess[i]!==shown[i]) return; // must extend what's shown
+    for(let i=shown.length;i<guess.length;i++){
+      const agree=prev && prev[i]===guess[i]; const old=starts[i]<=edgeMs-1000;
+      if(agree||old){shown.push(guess[i]);} else break;
+    }
+    prev=guess;
+  }
+  function render(final){
+    txt.innerHTML=shown.map((w,i)=>i>=newIdx&&!final?`<span class="new">${w}</span>`:w).join(' ')+(final?'.':'');
+    line.classList.toggle('draft',!final);
+  }
+  function step(now){
+    const t=now-t0; const audio=Math.min(t,END);
+    fill.style.width=(audio/span*100)+'%'; edge.style.left=(audio/span*100)+'%';
+    clock.textContent=(t/1000).toFixed(1)+' s'+(t>=END&&t<FINAL?' · pause':'')+(t>=FINAL?' · final':'');
+    while(gi<guesses.length && t>=guesses[gi][0]){const before=shown.length;hear(guesses[gi][0],guesses[gi][1]);newIdx=before;gEl.textContent=`at ${(guesses[gi][0]/1000).toFixed(1)} s: "${guesses[gi][1].join(' ')}"`;render(false);gi++;}
+    if(t>=FINAL){shown=words.slice();newIdx=99;gEl.textContent='final pass: "'+words.join(' ')+'"';render(true);return;}
+    raf=requestAnimationFrame(step);
+  }
+  document.getElementById('lt-play').addEventListener('click',()=>{cancelAnimationFrame(raf);shown=[];prev=null;gi=0;newIdx=-1;txt.textContent='';line.classList.add('draft');gEl.textContent='speech started';t0=performance.now();raf=requestAnimationFrame(step);});
+})();
+
+/* ---------- frames timeline ---------- */
+(() => {
+  const g=document.getElementById('ftl-grid'), b=document.getElementById('ftl-body'), x0=70, x1=750, T=75, X=s=>x0+(x1-x0)*s/T;
+  let h='';
+  for(let s=0;s<=T;s+=15){h+=`<line x1="${X(s)}" x2="${X(s)}" y1="22" y2="175" stroke="var(--border)"/><text x="${X(s)}" y="196" text-anchor="middle">${s} s</text>`;}
+  g.innerHTML=h;
+  const bands=[[6,9,'Scroll'],[22,22.5,'App switch'],[27,27.5,'Edit'],[38,75,'Log streaming, never settles']];
+  const marks=[[13,14,'Circle'],[15,15.5,'Underline']];
+  const frames=[[0,'#1','first view of the share'],[11,'#2','still for 2 s, 10 s since #1'],[15.75,'#3','one frame for both marks'],[24.5,'#4','new scene, so a 3 s gap is enough'],[34.5,'#5','one-line edit waits for a 10 s gap'],[68,'#6','30 s after the log started changing']];
+  let o='';
+  bands.forEach(([a,z,l],i)=>{o+=`<rect x="${X(a)}" y="36" width="${Math.max(5,X(z)-X(a))}" height="20" rx="4" fill="var(--accent-soft)" stroke="var(--accent)"/><text x="${X(a)}" y="${70+(i%2)*12}">${l}</text>`;});
+  marks.forEach(([a,z,l],i)=>{o+=`<rect x="${X(a)}" y="88" width="${Math.max(6,X(z)-X(a))}" height="16" rx="4" fill="#ffd60a"/><text x="${X(a)+(i?18:0)}" y="${i?122:122}" ${i?'':'text-anchor="end"'} dx="${i?0:-4}">${l}</text>`;});
+  frames.forEach(([s,n,l],i)=>{o+=`<g><rect x="${X(s)-11}" y="136" width="22" height="18" rx="4" fill="var(--fg)"/><text x="${X(s)}" y="149" text-anchor="middle" style="fill:var(--bg);font-weight:600">${n}</text></g>`;});
+  b.innerHTML=o;
+  document.getElementById('ftl-legend').innerHTML=frames.map(([s,n,l])=>`<strong>${n}</strong> at ${s} s: ${l}`).join(' · ');
+})();
+
+/* ---------- captures window ---------- */
+(() => {
+  const P={Alex:'#0a84ff',Sam:'#b8960a',Lee:'#bf5af2'};
+  const lines=(n,seed)=>{let s='';for(let i=0;i<n;i++){const w=20+((i*37+seed*13)%55);s+=`<span class="ln" style="left:${6+(i%3)*4}%;top:${8+i*9}%;width:${w}%"></span>`;}return s;};
+  const ink=(kind)=>kind==='draw'?`<svg viewBox="0 0 160 90" style="position:absolute;inset:0;width:100%;height:100%"><ellipse cx="120" cy="22" rx="22" ry="9" fill="none" stroke="#ffd60a" stroke-width="1.6"/><path d="M98 40 H140" stroke="#0a84ff" stroke-width="1.6" stroke-linecap="round"/></svg>`
+    : kind==='pin'?`<svg viewBox="0 0 160 90" style="position:absolute;inset:0;width:100%;height:100%"><g transform="translate(46 44) scale(.55)"><path d="M0 0 L-5 -8 A 11 11 0 1 1 5 -8 Z" fill="#bf5af2" stroke="#fff" stroke-width="1.6"/><text x="0" y="-13.6" font-size="11.5" font-weight="700" fill="#fff" text-anchor="middle" font-family="Inter, sans-serif">1</text></g></svg>`:'';
+  const rows=[
+    ['event','00:00','Capture started'],
+    ['event','00:02','Alex Morgan started sharing their screen'],
+    ['said','00:05','Alex',"I'm sharing the checkout page. Something is off with the order total."],
+    ['said','00:11','Sam','Yeah, look here. The discount is applied, but the total is still 120.','also on Alex’s mic, shown once'],
+    ['drawing','00:14','Sam and Alex drew','00:13–00:16',[['Sam','1 circle'],['Alex','1 underline']],'draw'],
+    ['said','00:19','Lee',"Let me drop a pin on the coupon field. That's where SAVE10 goes in."],
+    ['drawing','00:21','Lee stamped','00:21',[['Lee','pin 1 · "SAVE10 goes in here"']],'pin'],
+    ['screen','00:34','The shared screen changed 3 times','00:30–00:41'],
+    ['said','00:41','Alex','Hey Claude, can you confirm that’s the bug?'],
+    ['event','00:45','Bookmark: "the bug"'],
+    ['said','00:52','Sam','Return sub on line five skips the discount. It should subtract off.'],
+    ['draft','08:51','Lee','So if we ship the one-line fix']
+  ];
+  const el=document.getElementById('caprows');
+  el.innerHTML=rows.map(r=>{
+    const [k,t]=r;
+    if(k==='event') return `<div class="r-ev" data-k="event"><span class="r-t">${t}</span><span>${r[2]}</span></div>`;
+    if(k==='said'||k==='draft') return `<div class="r-said ${k==='draft'?'draft':''}" data-k="said"><span class="r-t">${t}</span><div class="body"><span class="who" style="color:${P[r[2]]}">${r[2]}</span>${r[3]}${r[4]?`<span class="also">${r[4]}</span>`:''}${k==='draft'?'<span class="also">live, still settling</span>':''}</div></div>`;
+    if(k==='drawing') return `<div class="r-card" data-k="drawing"><span class="r-t">${t}</span><div class="box"><div class="bh"><span><b>${r[2]}</b> <span class="muted">${r[3]}</span></span><div class="seg" role="group" aria-label="Crop"><button type="button" aria-pressed="true" data-z="1">Drawing</button><button type="button" aria-pressed="false" data-z="0">Whole screen</button></div></div><div class="thumbwrap zoomed"><div class="inner">${lines(9,t.length)}${ink(r[5])}</div></div><div class="markchips">${r[4].map(([w,m])=>`<span class="markchip" style="--c:${P[w]}">${w} · ${m}</span>`).join('')}</div></div></div>`;
+    if(k==='screen') return `<div class="r-card" data-k="screen"><span class="r-t">${t}</span><div class="box"><div class="bh"><span><b>${r[2]}</b> <span class="muted">${r[3]}</span></span></div><div class="strip">${[1,2,3].map(i=>`<div class="mini">${lines(6,i*7)}</div>`).join('')}</div></div></div>`;
+  }).join('');
+  el.addEventListener('click',e=>{const b=e.target.closest('[data-z]');if(!b)return;const box=b.closest('.box');box.querySelectorAll('[data-z]').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));box.querySelector('.thumbwrap').classList.toggle('zoomed',b.dataset.z==='1');});
+  const counts={all:el.children.length,said:el.querySelectorAll('[data-k="said"]').length,drawing:el.querySelectorAll('[data-k="drawing"]').length,screen:el.querySelectorAll('[data-k="screen"]').length};
+  document.querySelectorAll('[data-f]').forEach(b=>{if(b.dataset.f!=='all')b.textContent+=` ${counts[b.dataset.f]}`;
+    b.addEventListener('click',()=>{document.querySelectorAll('[data-f]').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));
+      [...el.children].forEach(r=>r.hidden=!(b.dataset.f==='all'||r.dataset.k===b.dataset.f));});});
+  // scrubber
+  const sc=document.getElementById('scrub'); const total=532; const X=s=>s/total*600; let s='';
+  const lanes={Alex:[[5,10],[41,44],[120,160],[300,340],[410,450]],Sam:[[11,17],[52,60],[180,230],[350,380]],Lee:[[19,24],[240,290],[460,531]]};
+  Object.entries(lanes).forEach(([w,segs],i)=>segs.forEach(([a,z])=>{s+=`<rect x="${X(a)}" y="${4+i*8}" width="${Math.max(2,X(z)-X(a))}" height="6" rx="2" fill="${P[w]}"/>`;}));
+  [[30,41],[200,206]].forEach(([a,z])=>{s+=`<rect x="${X(a)}" y="30" width="${Math.max(3,X(z)-X(a))}" height="5" rx="1" fill="var(--muted)" opacity=".6"/>`;});
+  [14,21].forEach(a=>{s+=`<circle cx="${X(a)}" cy="41" r="3" fill="var(--accent)"/>`;});
+  sc.innerHTML=s;
+})();
+})();
+</script>
