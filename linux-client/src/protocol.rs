@@ -294,6 +294,23 @@ mod tests {
             checked += 1;
         }
         assert!(checked >= 10, "read {checked} requests from the bar");
+        // Requests that carry an id: `call`, `join` and `transcript`.
+        let with_id = backend
+            .split("WITH_ID = {")
+            .nth(1)
+            .and_then(|rest| rest.split('}').next())
+            .expect("the bar's WITH_ID table");
+        for pair in with_id.split(',') {
+            let Some((_, request)) = pair.split_once(':') else {
+                continue;
+            };
+            let request = request.trim().trim_matches('"');
+            let payload = serde_json::json!({ request: "c_20261103-230152-9e5e" });
+            assert!(
+                serde_json::from_value::<UiRequest>(payload.clone()).is_ok(),
+                "the bar sends {payload}, which Hopp doesn't accept"
+            );
+        }
         assert!(backend.contains(r#"payload = {"ui": {"captures": None}}"#));
     }
 

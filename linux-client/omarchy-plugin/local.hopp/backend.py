@@ -39,6 +39,7 @@ SIMPLE = {
     "share": "share",
     "capture": "capture",
     "captures": "captures",
+    "draw": "draw",
     "quit": "quit",
 }
 WITH_ID = {"call": "call", "join": "join_room"}
