@@ -3,7 +3,7 @@ import createFetchClient from "openapi-fetch";
 import createClient, { type OpenapiQueryClient } from "openapi-react-query";
 import type { paths } from "@/openapi";
 import useStore from "../store/store";
-import { Constants, restoreCustomServerUrl } from "@/constants";
+import { Constants } from "@/constants";
 import { tauriUtils } from "@/windows/window-utils";
 import { isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -23,11 +23,11 @@ export function QueryProvider({ children }: QueryProviderProps) {
   const [authToken, setAuthToken] = useState<string | null>(null);
   const customServerUrl = useStore((state) => state.customServerUrl);
 
-  // Load stored token on app start
+  // Load stored token on app start. It has to arrive before App enables its queries, because a
+  // request without it fails, and the retry waits for focus while the window is hidden.
   useEffect(() => {
     (async () => {
       if (!isTauri()) return;
-      await restoreCustomServerUrl();
       const token = await tauriUtils.getStoredToken();
       if (token) {
         setAuthToken(token);
