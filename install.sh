@@ -33,7 +33,10 @@ work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
 
 echo "Downloading Hopp..."
-curl -fsSL "$RELEASES/hopp_$arch.app.tar.gz" | tar -xz -C "$work_dir"
+if ! curl -fsSL "$RELEASES/hopp_$arch.app.tar.gz" | tar -xz -C "$work_dir"; then
+  echo "Couldn't download Hopp, and nothing was changed. Check your connection and try again."
+  exit 1
+fi
 codesign --verify --deep --strict -R="$SIGNED_BY" "$work_dir/hopp.app" || {
   echo "The download isn't signed by Foresight, so it wasn't installed."
   exit 1
