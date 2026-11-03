@@ -951,8 +951,19 @@ impl ScreensharingWindow {
     }
 
     pub fn set_cursor_position(&mut self, identity: &str, position: Option<Position>) {
+        let was_animating = self.participants_manager.is_cursor_animating();
         self.participants_manager
             .set_cursor_position(identity, position);
+        // Once one frame is drawn the rest follow, but on a still screen the next could be
+        // 100 ms away.
+        if !was_animating && self.participants_manager.is_cursor_animating() {
+            let _ = self.redraw_tx.send(RedrawCommand::ForceRedraw);
+        }
+    }
+
+    pub fn set_call_people(&mut self, local_identity: Option<&str>, people: &[String]) {
+        self.participants_manager
+            .set_call_people(local_identity, people);
     }
 
     /// Returns whether this redraws a path that was just cleared, so the pen hasn't moved here.
@@ -2356,7 +2367,10 @@ impl ScreensharingWindow {
         seg_ctrl_mod::tick_animation(&mut self.state.tab_anim);
 
         let cleared = self.participants_manager.update_auto_clear();
-        if self.participants_manager.is_ink_animating() || self.state.drawing_hint.is_visible() {
+        if self.participants_manager.is_ink_animating()
+            || self.participants_manager.is_cursor_animating()
+            || self.state.drawing_hint.is_visible()
+        {
             let _ = self.redraw_tx.send(RedrawCommand::Animate);
         }
 

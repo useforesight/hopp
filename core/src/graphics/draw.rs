@@ -190,6 +190,18 @@ impl Draw {
         self.mode.clone()
     }
 
+    pub fn set_color(&mut self, color: &str) {
+        self.color = color_from_hex(color);
+        self.completed_cache.clear();
+    }
+
+    /// Where the stroke being drawn has got to.
+    pub fn pen_tip(&self) -> Option<Position> {
+        self.in_progress_path
+            .as_ref()
+            .and_then(|path| path.points.last().copied())
+    }
+
     pub fn set_mode(&mut self, mode: DrawingMode) {
         self.mode = mode.clone();
         if mode == DrawingMode::Disabled {
@@ -646,6 +658,25 @@ mod tests {
         assert!(draw.in_progress_path.is_none());
         assert!(draw.completed_paths.is_empty());
         assert_eq!(draw.fading_paths.len(), 2);
+    }
+
+    #[test]
+    fn the_pen_tip_is_the_end_of_the_stroke_being_drawn() {
+        let mut draw = Draw::new("#FF0000", false, fading_mode(false));
+        assert!(draw.pen_tip().is_none());
+        draw.start_path(1, position(0.1, 0.1));
+        draw.add_point(position(0.2, 0.3));
+        assert_eq!(draw.pen_tip().map(|tip| (tip.x, tip.y)), Some((0.2, 0.3)));
+        draw.finish_path();
+        assert!(draw.pen_tip().is_none());
+    }
+
+    #[test]
+    fn a_new_colour_applies_to_ink_already_drawn() {
+        let mut draw = draw_with_finished_paths(false, false, &[1]);
+        draw.set_color("#0a84ff");
+        assert_eq!(draw.color, color_from_hex("#0a84ff"));
+        assert_eq!(draw.completed_paths.len(), 1);
     }
 
     #[test]

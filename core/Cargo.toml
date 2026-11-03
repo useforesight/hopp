@@ -79,6 +79,7 @@ tokio-stream = "0.1"
 dirs = "5.0.1"
 socket_lib = { path = "socket_lib" }
 sentry_utils = { path = "sentry_utils" }
+hopp-marks = { path = "../crates/hopp-marks" }
 thiserror = "2.0.12"
 sysinfo = "0.35.2"
 resvg = "0.45.1"
