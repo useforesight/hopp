@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use iced::widget::{canvas, container};
+use iced::widget::{canvas, container, stack};
 use iced::{Background, Color, Length, Rectangle, Theme};
 use iced_wgpu::core::mouse;
 use iced_wgpu::graphics::Viewport;
@@ -149,6 +149,19 @@ pub(crate) enum DrawingWindowInputEvent {
     Escape,
 }
 
+impl From<drawing_helpers::StrokeEvent> for DrawingWindowInputEvent {
+    fn from(event: drawing_helpers::StrokeEvent) -> Self {
+        match event {
+            drawing_helpers::StrokeEvent::Start { x, y, path_id } => {
+                Self::DrawStart { x, y, path_id }
+            }
+            drawing_helpers::StrokeEvent::AddPoint { x, y } => Self::DrawAddPoint { x, y },
+            drawing_helpers::StrokeEvent::End { x, y } => Self::DrawEnd { x, y },
+            drawing_helpers::StrokeEvent::ClearPaths(path_ids) => Self::DrawClearPaths(path_ids),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum DrawingMessage {}
 
@@ -196,8 +209,8 @@ pub struct DrawingWindow {
     clipboard: Clipboard,
     cursor: mouse::Cursor,
     modifiers: ModifiersState,
-    left_mouse_pressed: bool,
-    current_path_id: u64,
+    local_stroke: drawing_helpers::LocalStroke,
+    drawing_hint: drawing_helpers::DrawingHint,
     last_cursor_position: Option<(f64, f64)>,
     capture_frame: Option<Arc<Mutex<Frame>>>,
     draw_y_scale: f64,
@@ -338,8 +351,8 @@ impl DrawingWindow {
             clipboard,
             cursor: mouse::Cursor::Unavailable,
             modifiers: ModifiersState::default(),
-            left_mouse_pressed: false,
-            current_path_id: 0,
+            local_stroke: Default::default(),
+            drawing_hint: Default::default(),
             last_cursor_position: None,
             capture_frame,
             draw_y_scale: 1.0,
@@ -354,6 +367,7 @@ impl DrawingWindow {
             custom_cursor_pencil,
         };
         s.update_draw_y_transform();
+        s.drawing_hint.show_once();
         Ok(s)
     }
 
@@ -391,8 +405,7 @@ impl DrawingWindow {
         }
         self.window.set_maximized(true);
 
-        self.left_mouse_pressed = false;
-        self.current_path_id = 0;
+        self.local_stroke = Default::default();
         self.last_cursor_position = None;
 
         let mut participants_manager = ParticipantsManager::new();
@@ -542,15 +555,22 @@ impl DrawingWindow {
         })
     }
 
-    fn end_stroke(&mut self) -> Option<DrawingWindowInputEvent> {
-        self.left_mouse_pressed = false;
-        let (x, y) = self.last_cursor_position?;
-        self.participants_manager.draw_end(
-            drawing_helpers::LOCAL_PARTICIPANT_IDENTITY,
-            Position { x, y },
-        );
+    fn end_stroke(&mut self) -> Vec<DrawingWindowInputEvent> {
+        let Some((x, y)) = self.last_cursor_position else {
+            self.local_stroke.cancel();
+            return Vec::new();
+        };
         self.signal_activity();
-        Some(DrawingWindowInputEvent::DrawEnd { x, y })
+        self.window.request_redraw();
+        self.local_stroke
+            .end(
+                &mut self.participants_manager,
+                Position { x, y },
+                self.modifiers.shift_key(),
+            )
+            .into_iter()
+            .map(DrawingWindowInputEvent::from)
+            .collect()
     }
 
     fn view<'a>(
@@ -559,6 +579,7 @@ impl DrawingWindow {
         overlay_position: LogicalPosition<f64>,
         source_y_scale: f64,
         source_y_offset: f64,
+        drawing_hint: &drawing_helpers::DrawingHint,
     ) -> iced::Element<'a, DrawingMessage, Theme, iced::Renderer> {
         let canvas_overlay = canvas(DrawingOverlay {
             participants,
@@ -570,7 +591,7 @@ impl DrawingWindow {
         .width(Length::Fill)
         .height(Length::Fill);
 
-        container(canvas_overlay)
+        container(stack![canvas_overlay, drawing_hint.view(true)])
             .width(Length::Fill)
             .height(Length::Fill)
             .style(|_theme: &Theme| container::Style {
@@ -580,8 +601,8 @@ impl DrawingWindow {
             .into()
     }
 
-    pub fn handle_window_event(&mut self, event: WindowEvent) -> Option<DrawingWindowInputEvent> {
-        let mut input_event = None;
+    pub fn handle_window_event(&mut self, event: WindowEvent) -> Vec<DrawingWindowInputEvent> {
+        let mut input_events = Vec::new();
 
         match &event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -591,17 +612,19 @@ impl DrawingWindow {
                     y: local.y,
                 }) {
                     self.last_cursor_position = Some((source.x, source.y));
-                    if self.left_mouse_pressed {
-                        self.participants_manager
-                            .draw_add_point(drawing_helpers::LOCAL_PARTICIPANT_IDENTITY, source);
-                        input_event = Some(DrawingWindowInputEvent::DrawAddPoint {
-                            x: source.x,
-                            y: source.y,
-                        });
+                    if self.local_stroke.is_active() {
+                        let stroke_events = self.local_stroke.extend(
+                            &mut self.participants_manager,
+                            source,
+                            self.modifiers.shift_key(),
+                        );
+                        input_events
+                            .extend(stroke_events.into_iter().map(DrawingWindowInputEvent::from));
                         self.signal_activity();
+                        self.window.request_redraw();
                     }
-                } else if self.left_mouse_pressed {
-                    input_event = self.end_stroke();
+                } else if self.local_stroke.is_active() {
+                    input_events = self.end_stroke();
                 }
             }
             WindowEvent::CursorEntered { .. } => {
@@ -609,8 +632,8 @@ impl DrawingWindow {
                 self.set_pencil_cursor();
             }
             WindowEvent::CursorLeft { .. } => {
-                if self.left_mouse_pressed {
-                    input_event = self.end_stroke();
+                if self.local_stroke.is_active() {
+                    input_events = self.end_stroke();
                 }
                 self.set_default_cursor();
             }
@@ -618,8 +641,8 @@ impl DrawingWindow {
                 self.set_pencil_cursor();
             }
             WindowEvent::Focused(false) => {
-                if self.left_mouse_pressed {
-                    input_event = self.end_stroke();
+                if self.local_stroke.is_active() {
+                    input_events = self.end_stroke();
                 }
                 self.set_default_cursor();
             }
@@ -636,42 +659,40 @@ impl DrawingWindow {
                 if *button == winit::event::MouseButton::Left {
                     if state.is_pressed() {
                         let Some(source) = source else {
-                            return input_event;
+                            return input_events;
                         };
-                        self.current_path_id += 1;
-                        self.left_mouse_pressed = true;
                         self.last_cursor_position = Some((source.x, source.y));
-                        self.participants_manager.draw_start(
-                            drawing_helpers::LOCAL_PARTICIPANT_IDENTITY,
-                            source,
-                            self.current_path_id,
-                        );
-                        input_event = Some(DrawingWindowInputEvent::DrawStart {
-                            x: source.x,
-                            y: source.y,
-                            path_id: self.current_path_id,
-                        });
+                        let start = self
+                            .local_stroke
+                            .begin(&mut self.participants_manager, source);
+                        input_events.push(start.into());
                         self.signal_activity();
+                        self.window.request_redraw();
                     } else {
                         if let Some(source) = source {
                             self.last_cursor_position = Some((source.x, source.y));
                         }
-                        input_event = self.end_stroke();
+                        input_events = self.end_stroke();
                     }
-                } else if *button == winit::event::MouseButton::Right
-                    && state.is_pressed()
-                    && self.draw_persist
-                {
+                } else if *button == winit::event::MouseButton::Right && state.is_pressed() {
+                    self.local_stroke.cancel();
                     self.participants_manager
                         .draw_clear_all_paths(drawing_helpers::LOCAL_PARTICIPANT_IDENTITY);
-                    input_event = Some(DrawingWindowInputEvent::DrawClearAllPaths);
+                    input_events.push(DrawingWindowInputEvent::DrawClearAllPaths);
                     self.signal_activity();
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state.is_pressed() {
                     if let Key::Named(NamedKey::Escape) = event.logical_key {
-                        input_event = Some(DrawingWindowInputEvent::Escape);
+                        input_events.push(DrawingWindowInputEvent::Escape);
+                    } else if drawing_helpers::is_undo_shortcut(&event.logical_key, self.modifiers)
+                    {
+                        if let Some(undone) = self.local_stroke.undo(&mut self.participants_manager)
+                        {
+                            input_events.push(undone.into());
+                            self.signal_activity();
+                        }
                     }
                 }
             }
@@ -704,7 +725,7 @@ impl DrawingWindow {
             WindowEvent::RedrawRequested => {
                 let cleared = self.redraw();
                 if !cleared.is_empty() {
-                    input_event = Some(DrawingWindowInputEvent::DrawClearPaths(cleared));
+                    input_events.push(DrawingWindowInputEvent::DrawClearPaths(cleared));
                 }
             }
             WindowEvent::CloseRequested => {
@@ -740,6 +761,7 @@ impl DrawingWindow {
                             .unwrap_or(LogicalPosition::new(0.0, 0.0)),
                         self.draw_y_scale,
                         self.draw_y_offset,
+                        &self.drawing_hint,
                     ),
                     self.viewport.logical_size(),
                     cache,
@@ -769,13 +791,16 @@ impl DrawingWindow {
             self.modifiers = new_modifiers.state();
         }
 
-        input_event
+        input_events
     }
 
     fn redraw(&mut self) -> Vec<u64> {
         self.participants_manager.hide_inactive_cursors();
 
         let cleared = self.participants_manager.update_auto_clear();
+        if self.participants_manager.is_ink_animating() || self.drawing_hint.is_visible() {
+            self.signal_activity();
+        }
 
         let output = match self.surface.get_current_texture() {
             Ok(output) => output,
@@ -798,6 +823,7 @@ impl DrawingWindow {
                     .unwrap_or(LogicalPosition::new(0.0, 0.0)),
                 self.draw_y_scale,
                 self.draw_y_offset,
+                &self.drawing_hint,
             ),
             self.viewport.logical_size(),
             cache,

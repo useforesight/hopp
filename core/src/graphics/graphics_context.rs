@@ -457,9 +457,12 @@ impl<'a> GraphicsContext<'a> {
     /// * `identity` - Identity identifying the participant
     /// * `point` - Starting point of the path
     /// * `path_id` - Unique identifier for the drawing path
-    pub fn draw_start(&mut self, identity: &str, point: Position, path_id: u64) {
+    ///
+    /// # Returns
+    /// Whether this redraws a path that was just cleared, in which case the pen hasn't moved here.
+    pub fn draw_start(&mut self, identity: &str, point: Position, path_id: u64) -> bool {
         self.participants_manager
-            .draw_start(identity, point, path_id);
+            .draw_start(identity, point, path_id)
     }
 
     /// Adds a point to the current drawing path for a participant.
@@ -502,7 +505,12 @@ impl<'a> GraphicsContext<'a> {
     /// # Returns
     /// A vector of removed path IDs
     pub fn update_auto_clear(&mut self) -> Vec<u64> {
-        self.participants_manager.update_auto_clear()
+        let cleared = self.participants_manager.update_auto_clear();
+        // Keep frames coming until fades finish, however they were started.
+        if self.participants_manager.is_ink_animating() {
+            self.trigger_render();
+        }
+        cleared
     }
 }
 

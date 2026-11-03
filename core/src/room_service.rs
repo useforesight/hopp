@@ -1492,7 +1492,7 @@ async fn room_service_commands(
                 let res = local_participant
                     .publish_data(DataPacket {
                         payload,
-                        reliable: false,
+                        reliable: true,
                         topic: Some(TOPIC_DRAW.to_string()),
                         ..Default::default()
                     })

@@ -265,10 +265,36 @@ fn default_screen_area_from_hardcoded() -> ScreenArea {
 }
 
 const REDRAW_INTERVAL: Duration = Duration::from_millis(1_000 / 10);
+const ANIMATION_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 
 pub enum RedrawCommand {
     ForceRedraw,
+    /// Something on screen is animating, so the next frame can't wait for video or the slow timer.
+    Animate,
     Stop,
+}
+
+fn run_redraw_loop(
+    redraw_rx: std::sync::mpsc::Receiver<RedrawCommand>,
+    redraw_in_progress: Arc<AtomicBool>,
+    request_redraw: impl Fn(),
+) {
+    let mut interval = REDRAW_INTERVAL;
+    loop {
+        match redraw_rx.recv_timeout(interval) {
+            Ok(RedrawCommand::ForceRedraw) => {
+                if !redraw_in_progress.load(Ordering::Acquire) {
+                    request_redraw();
+                }
+            }
+            Ok(RedrawCommand::Animate) => interval = ANIMATION_FRAME_INTERVAL,
+            Ok(RedrawCommand::Stop) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                request_redraw();
+                interval = REDRAW_INTERVAL;
+            }
+        }
+    }
 }
 
 fn spawn_redraw_thread(
@@ -276,16 +302,10 @@ fn spawn_redraw_thread(
     redraw_in_progress: Arc<AtomicBool>,
     window: Arc<Window>,
 ) -> std::thread::JoinHandle<()> {
-    std::thread::spawn(move || loop {
-        match redraw_rx.recv_timeout(REDRAW_INTERVAL) {
-            Ok(RedrawCommand::ForceRedraw) => {
-                if !redraw_in_progress.load(Ordering::Acquire) {
-                    window.request_redraw();
-                }
-            }
-            Ok(RedrawCommand::Stop) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => window.request_redraw(),
-        }
+    std::thread::spawn(move || {
+        run_redraw_loop(redraw_rx, redraw_in_progress, move || {
+            window.request_redraw()
+        })
     })
 }
 /// Dedicated renderer ID for the screensharing stream in YUV pipeline caches.
@@ -367,6 +387,19 @@ pub(crate) enum ScreenShareInputEvent {
     PasteFromClipboard(Option<String>),
 }
 
+impl From<drawing_helpers::StrokeEvent> for ScreenShareInputEvent {
+    fn from(event: drawing_helpers::StrokeEvent) -> Self {
+        match event {
+            drawing_helpers::StrokeEvent::Start { x, y, path_id } => {
+                Self::DrawStart { x, y, path_id }
+            }
+            drawing_helpers::StrokeEvent::AddPoint { x, y } => Self::DrawAddPoint { x, y },
+            drawing_helpers::StrokeEvent::End { x, y } => Self::DrawEnd { x, y },
+            drawing_helpers::StrokeEvent::ClearPaths(path_ids) => Self::DrawClearPaths(path_ids),
+        }
+    }
+}
+
 // ── Application state for the screensharing UI ─────────────────────────────
 
 struct ScreensharingState {
@@ -378,10 +411,9 @@ struct ScreensharingState {
     /// Last known stream dimensions for change detection.
     last_stream_width: u32,
     last_stream_height: u32,
-    /// Left mouse button is currently held inside participant area during draw mode.
-    left_mouse_pressed: bool,
-    /// Monotonically increasing path ID for local drawing strokes.
-    current_path_id: u64,
+    /// The stroke being drawn while the left mouse button is held in draw mode.
+    local_stroke: drawing_helpers::LocalStroke,
+    drawing_hint: drawing_helpers::DrawingHint,
     /// Last cursor position (percentage 0.0-1.0) inside participant area.
     last_draw_cursor: Option<(f64, f64)>,
     /// Whether the settings dropdown is open.
@@ -414,8 +446,8 @@ impl Default for ScreensharingState {
             img_aspect: 16.0 / 9.0,
             last_stream_width: 0,
             last_stream_height: 0,
-            left_mouse_pressed: false,
-            current_path_id: 0,
+            local_stroke: Default::default(),
+            drawing_hint: Default::default(),
             last_draw_cursor: None,
             dropdown_open: false,
             draw_persist: false,
@@ -642,12 +674,15 @@ fn build_initial_state(
     participants_manager
         .set_drawing_mode(drawing_helpers::LOCAL_PARTICIPANT_IDENTITY, initial_mode);
 
-    let state = ScreensharingState {
+    let mut state = ScreensharingState {
         sharer_name: sharer_first_name,
         draw_persist,
         active_tab: initial_tab,
         ..Default::default()
     };
+    if initial_tab == "draw" {
+        state.drawing_hint.show_once();
+    }
     (state, participants_manager)
 }
 
@@ -920,25 +955,33 @@ impl ScreensharingWindow {
             .set_cursor_position(identity, position);
     }
 
-    pub fn draw_start(&mut self, identity: &str, point: Position, path_id: u64) {
-        self.participants_manager
+    /// Returns whether this redraws a path that was just cleared, so the pen hasn't moved here.
+    pub fn draw_start(&mut self, identity: &str, point: Position, path_id: u64) -> bool {
+        let redrawn = self
+            .participants_manager
             .draw_start(identity, point, path_id);
+        self.window.request_redraw();
+        redrawn
     }
 
     pub fn draw_add_point(&mut self, identity: &str, point: Position) {
         self.participants_manager.draw_add_point(identity, point);
+        self.window.request_redraw();
     }
 
     pub fn draw_end(&mut self, identity: &str, point: Position) {
         self.participants_manager.draw_end(identity, point);
+        self.window.request_redraw();
     }
 
     pub fn draw_clear_path(&mut self, identity: &str, path_id: u64) {
         self.participants_manager.draw_clear_path(identity, path_id);
+        self.window.request_redraw();
     }
 
     pub fn draw_clear_all_paths(&mut self, identity: &str) {
         self.participants_manager.draw_clear_all_paths(identity);
+        self.window.request_redraw();
     }
 
     pub fn set_drawing_mode(&mut self, identity: &str, mode: crate::room_service::DrawingMode) {
@@ -1123,6 +1166,29 @@ impl ScreensharingWindow {
         }
     }
 
+    /// Ends the local stroke where the cursor was last seen inside the participant area, for when
+    /// the cursor can't keep drawing: it left the area or the window lost focus.
+    fn end_stroke_at_last_cursor(&mut self) -> Vec<ScreenShareInputEvent> {
+        if !self.state.local_stroke.is_active() {
+            return Vec::new();
+        }
+        self.window.request_redraw();
+        let Some((x, y)) = self.state.last_draw_cursor else {
+            self.state.local_stroke.cancel();
+            return Vec::new();
+        };
+        self.state
+            .local_stroke
+            .end(
+                &mut self.participants_manager,
+                Position { x, y },
+                self.modifiers.shift_key(),
+            )
+            .into_iter()
+            .map(ScreenShareInputEvent::from)
+            .collect()
+    }
+
     /// Handle a winit `WindowEvent` — forward to iced and manage resize / redraw.
     /// Returns input events to be forwarded to room service.
     pub fn handle_window_event(&mut self, event: WindowEvent) -> Vec<ScreenShareInputEvent> {
@@ -1154,13 +1220,15 @@ impl ScreensharingWindow {
                     let pct_y = ((logical_y - rect.y) / rect.height) as f64;
                     self.state.last_draw_cursor = Some((pct_x, pct_y));
 
-                    if self.state.active_tab == "draw" && self.state.left_mouse_pressed {
-                        self.participants_manager.draw_add_point(
-                            drawing_helpers::LOCAL_PARTICIPANT_IDENTITY,
-                            crate::utils::geometry::Position { x: pct_x, y: pct_y },
+                    if self.state.local_stroke.is_active() {
+                        let stroke_events = self.state.local_stroke.extend(
+                            &mut self.participants_manager,
+                            Position { x: pct_x, y: pct_y },
+                            self.modifiers.shift_key(),
                         );
                         input_events
-                            .push(ScreenShareInputEvent::DrawAddPoint { x: pct_x, y: pct_y });
+                            .extend(stroke_events.into_iter().map(ScreenShareInputEvent::from));
+                        self.window.request_redraw();
                     } else {
                         input_events
                             .push(ScreenShareInputEvent::CursorMoved { x: pct_x, y: pct_y });
@@ -1174,16 +1242,7 @@ impl ScreensharingWindow {
                         );
                     }
                 } else if !inside && was_inside {
-                    if self.state.active_tab == "draw" && self.state.left_mouse_pressed {
-                        if let Some((lx, ly)) = self.state.last_draw_cursor {
-                            self.participants_manager.draw_end(
-                                drawing_helpers::LOCAL_PARTICIPANT_IDENTITY,
-                                crate::utils::geometry::Position { x: lx, y: ly },
-                            );
-                            input_events.push(ScreenShareInputEvent::DrawEnd { x: lx, y: ly });
-                        }
-                        self.state.left_mouse_pressed = false;
-                    }
+                    input_events.extend(self.end_stroke_at_last_cursor());
                     self.state.last_draw_cursor = None;
                     self.state.queued_modifier_events.clear();
                     log::debug!("ScreensharingWindow: cursor left participant area");
@@ -1193,16 +1252,7 @@ impl ScreensharingWindow {
             // CursorMoved when the cursor exits quickly.
             WindowEvent::CursorLeft { .. } => {
                 if self.mouse_in_participant_area {
-                    if self.state.active_tab == "draw" && self.state.left_mouse_pressed {
-                        if let Some((lx, ly)) = self.state.last_draw_cursor {
-                            self.participants_manager.draw_end(
-                                drawing_helpers::LOCAL_PARTICIPANT_IDENTITY,
-                                crate::utils::geometry::Position { x: lx, y: ly },
-                            );
-                            input_events.push(ScreenShareInputEvent::DrawEnd { x: lx, y: ly });
-                        }
-                        self.state.left_mouse_pressed = false;
-                    }
+                    input_events.extend(self.end_stroke_at_last_cursor());
                     self.state.last_draw_cursor = None;
                     self.state.queued_modifier_events.clear();
                     self.mouse_in_participant_area = false;
@@ -1214,16 +1264,7 @@ impl ScreensharingWindow {
             // linger while the user interacts with another window.
             WindowEvent::Focused(false) => {
                 if self.mouse_in_participant_area {
-                    if self.state.active_tab == "draw" && self.state.left_mouse_pressed {
-                        if let Some((lx, ly)) = self.state.last_draw_cursor {
-                            self.participants_manager.draw_end(
-                                drawing_helpers::LOCAL_PARTICIPANT_IDENTITY,
-                                crate::utils::geometry::Position { x: lx, y: ly },
-                            );
-                            input_events.push(ScreenShareInputEvent::DrawEnd { x: lx, y: ly });
-                        }
-                        self.state.left_mouse_pressed = false;
-                    }
+                    input_events.extend(self.end_stroke_at_last_cursor());
                     self.state.last_draw_cursor = None;
                     self.state.queued_modifier_events.clear();
                     self.mouse_in_participant_area = false;
@@ -1248,36 +1289,32 @@ impl ScreensharingWindow {
                     if self.state.active_tab == "draw" {
                         match button {
                             winit::event::MouseButton::Left => {
+                                let point = Position { x: pct_x, y: pct_y };
                                 if down {
-                                    self.state.current_path_id += 1;
-                                    self.state.left_mouse_pressed = true;
-                                    self.participants_manager.draw_start(
-                                        drawing_helpers::LOCAL_PARTICIPANT_IDENTITY,
-                                        crate::utils::geometry::Position { x: pct_x, y: pct_y },
-                                        self.state.current_path_id,
-                                    );
-                                    input_events.push(ScreenShareInputEvent::DrawStart {
-                                        x: pct_x,
-                                        y: pct_y,
-                                        path_id: self.state.current_path_id,
-                                    });
+                                    let start = self
+                                        .state
+                                        .local_stroke
+                                        .begin(&mut self.participants_manager, point);
+                                    input_events.push(start.into());
                                 } else {
-                                    self.state.left_mouse_pressed = false;
-                                    self.participants_manager.draw_end(
-                                        drawing_helpers::LOCAL_PARTICIPANT_IDENTITY,
-                                        crate::utils::geometry::Position { x: pct_x, y: pct_y },
+                                    let stroke_events = self.state.local_stroke.end(
+                                        &mut self.participants_manager,
+                                        point,
+                                        self.modifiers.shift_key(),
                                     );
-                                    input_events.push(ScreenShareInputEvent::DrawEnd {
-                                        x: pct_x,
-                                        y: pct_y,
-                                    });
+                                    input_events.extend(
+                                        stroke_events.into_iter().map(ScreenShareInputEvent::from),
+                                    );
                                 }
+                                self.window.request_redraw();
                             }
-                            winit::event::MouseButton::Right if down && self.state.draw_persist => {
+                            winit::event::MouseButton::Right if down => {
+                                self.state.local_stroke.cancel();
                                 self.participants_manager.draw_clear_all_paths(
                                     drawing_helpers::LOCAL_PARTICIPANT_IDENTITY,
                                 );
                                 input_events.push(ScreenShareInputEvent::DrawClearAllPaths);
+                                self.window.request_redraw();
                             }
                             _ => {}
                         }
@@ -1400,6 +1437,18 @@ impl ScreensharingWindow {
                                 .send_event(crate::UserEvent::ExitRequested);
                             return input_events;
                         }
+                    }
+                }
+
+                if self.state.active_tab == "draw"
+                    && key_event.state.is_pressed()
+                    && drawing_helpers::is_undo_shortcut(&key_event.logical_key, self.modifiers)
+                {
+                    if let Some(undone) =
+                        self.state.local_stroke.undo(&mut self.participants_manager)
+                    {
+                        input_events.push(undone.into());
+                        self.window.request_redraw();
                     }
                 }
 
@@ -1577,7 +1626,10 @@ impl ScreensharingWindow {
                     match &msg {
                         ScreensharingMessage::TabSelected(id) => {
                             let tab = match *id {
-                                "draw" => ScreenShareTab::Draw,
+                                "draw" => {
+                                    self.state.drawing_hint.show_once();
+                                    ScreenShareTab::Draw
+                                }
                                 "point" => ScreenShareTab::Point,
                                 _ => ScreenShareTab::Control,
                             };
@@ -1605,7 +1657,7 @@ impl ScreensharingWindow {
                                 drawing_helpers::LOCAL_PARTICIPANT_IDENTITY,
                                 mode.clone(),
                             );
-                            self.state.left_mouse_pressed = false;
+                            self.state.local_stroke.cancel();
                             input_events.push(ScreenShareInputEvent::DrawingModeChanged(mode));
                         }
                         ScreensharingMessage::DropdownItemClicked(index) => {
@@ -1948,7 +2000,12 @@ impl ScreensharingWindow {
             video_content,
             app_veil_overlay,
             canvas_overlay,
-            remote_control_disabled_label
+            remote_control_disabled_label,
+            if state.active_tab == "draw" {
+                state.drawing_hint.view(false)
+            } else {
+                Space::new().into()
+            }
         ];
 
         let content_area = container(
@@ -2126,7 +2183,7 @@ impl ScreensharingWindow {
             self.last_rendered_frame_id = 0;
         }
         if current_frame_id > 0 && current_frame_id <= self.last_rendered_frame_id {
-            log::warn!(
+            log::trace!(
                 "redraw_inner: dropping redraw {current_frame_id} {}",
                 self.last_rendered_frame_id
             );
@@ -2299,6 +2356,9 @@ impl ScreensharingWindow {
         seg_ctrl_mod::tick_animation(&mut self.state.tab_anim);
 
         let cleared = self.participants_manager.update_auto_clear();
+        if self.participants_manager.is_ink_animating() || self.state.drawing_hint.is_visible() {
+            let _ = self.redraw_tx.send(RedrawCommand::Animate);
+        }
 
         if !skip_buffer {
             self.last_rendered_frame_id = current_frame_id;
@@ -2323,6 +2383,57 @@ impl Drop for ScreensharingWindow {
     fn drop(&mut self) {
         let _ = self.redraw_tx.send(RedrawCommand::Stop);
         self.redraw_thread.take();
+    }
+}
+
+#[cfg(test)]
+mod redraw_loop_tests {
+    use super::*;
+
+    fn spawn_loop() -> (
+        std::sync::mpsc::Sender<RedrawCommand>,
+        std::sync::mpsc::Receiver<()>,
+        std::thread::JoinHandle<()>,
+    ) {
+        let (redraw_tx, redraw_rx) = std::sync::mpsc::channel();
+        let (frame_tx, frame_rx) = std::sync::mpsc::channel();
+        let redraw_thread = std::thread::spawn(move || {
+            run_redraw_loop(redraw_rx, Arc::new(AtomicBool::new(false)), move || {
+                let _ = frame_tx.send(());
+            })
+        });
+        (redraw_tx, frame_rx, redraw_thread)
+    }
+
+    #[test]
+    fn animating_paces_frames_faster_than_the_idle_timer() {
+        const FRAMES: u32 = 10;
+        let (redraw_tx, frame_rx, redraw_thread) = spawn_loop();
+
+        let started_at = std::time::Instant::now();
+        for _ in 0..FRAMES {
+            redraw_tx.send(RedrawCommand::Animate).unwrap();
+            frame_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+        assert!(started_at.elapsed() < REDRAW_INTERVAL * FRAMES / 2);
+
+        redraw_tx.send(RedrawCommand::Stop).unwrap();
+        redraw_thread.join().unwrap();
+    }
+
+    #[test]
+    fn frames_slow_back_down_once_the_animation_stops_asking() {
+        let (redraw_tx, frame_rx, redraw_thread) = spawn_loop();
+
+        redraw_tx.send(RedrawCommand::Animate).unwrap();
+        frame_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+
+        let last_frame_at = std::time::Instant::now();
+        frame_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(last_frame_at.elapsed() > ANIMATION_FRAME_INTERVAL * 3);
+
+        redraw_tx.send(RedrawCommand::Stop).unwrap();
+        redraw_thread.join().unwrap();
     }
 }
 

@@ -19,7 +19,7 @@ import { CustomIcons } from "@/components/ui/icons";
 import { avatarGradient, HoppAvatar } from "@/components/ui/hopp-avatar";
 import clsx from "clsx";
 import { ChevronDownIcon } from "@radix-ui/react-icons";
-import { MoreHorizontal, X } from "lucide-react";
+import { MoreHorizontal } from "lucide-react";
 import { HiLockClosed, HiMiniLink } from "react-icons/hi2";
 import { CgSpinner } from "react-icons/cg";
 import toast from "react-hot-toast";
@@ -518,17 +518,11 @@ function DrawingEnableButton() {
   const [drawingPermanent, setDrawingPermanent] = useState(false);
   const [drawingEnabled, setDrawingEnabled] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
-  const [hintShown, setHintShown] = useState(false);
 
   useEffect(() => {
     const loadPreferences = async () => {
       try {
-        const [permanent, shown] = await Promise.all([
-          tauriUtils.getSharerDrawPersist(),
-          tauriUtils.getDrawingHintShown(),
-        ]);
-        setDrawingPermanent(permanent);
-        setHintShown(shown);
+        setDrawingPermanent(await tauriUtils.getSharerDrawPersist());
       } catch (error) {
         console.error("Failed to load drawing preferences:", error);
       }
@@ -557,48 +551,6 @@ function DrawingEnableButton() {
   const handleToggleDrawing = async () => {
     const newEnabled = !drawingEnabled;
     try {
-      if (newEnabled && !hintShown) {
-        await new Promise<void>((resolve) => {
-          const toastDurationMs = 3_000;
-          let dismissed = false;
-          let timeoutId: ReturnType<typeof setTimeout> | undefined;
-
-          const dismissHintToast = () => {
-            if (dismissed) return;
-            dismissed = true;
-            if (timeoutId) clearTimeout(timeoutId);
-            resolve();
-          };
-
-          const toastId = toast(
-            (t) => (
-              <div className="flex items-center gap-3">
-                <span className="text-sm leading-none">Press ESC to exit drawing mode</span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    toast.dismiss(t.id);
-                    dismissHintToast();
-                  }}
-                  aria-label="Dismiss drawing hint"
-                  className="size-6 shrink-0 rounded-full border-0 bg-surface p-0 text-foreground transition-colors hover:bg-subtle-strong focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-strong/60"
-                >
-                  <X className="mx-auto size-3 stroke-[1.25]" />
-                </button>
-              </div>
-            ),
-            { duration: toastDurationMs },
-          );
-
-          timeoutId = setTimeout(() => {
-            toast.dismiss(toastId);
-            dismissHintToast();
-          }, toastDurationMs);
-        });
-        await tauriUtils.setDrawingHintShown(true);
-        setHintShown(true);
-      }
-
       await tauriUtils.setDrawingEnabled(newEnabled, drawingPermanent);
       setDrawingEnabled(newEnabled);
     } catch (error) {

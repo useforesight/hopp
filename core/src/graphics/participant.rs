@@ -276,7 +276,10 @@ impl ParticipantsManager {
     }
 
     /// Starts a new drawing path for a participant.
-    pub fn draw_start(&mut self, identity: &str, point: Position, path_id: u64) {
+    ///
+    /// # Returns
+    /// Whether this redraws a path that was just cleared, in which case the pen hasn't moved here.
+    pub fn draw_start(&mut self, identity: &str, point: Position, path_id: u64) -> bool {
         log::debug!(
             "ParticipantsManager::draw_start: identity={} point={:?} path_id={}",
             identity,
@@ -284,12 +287,13 @@ impl ParticipantsManager {
             path_id
         );
         if let Some(participant) = self.participants.get_mut(identity) {
-            participant.draw_mut().start_path(path_id, point);
+            participant.draw_mut().start_path(path_id, point)
         } else {
             log::warn!(
                 "ParticipantsManager::draw_start: participant {} not found",
                 identity
             );
+            false
         }
     }
 
@@ -308,6 +312,20 @@ impl ParticipantsManager {
                 identity
             );
         }
+    }
+
+    /// Reduces a participant's current path to a straight line ending at `end`.
+    pub fn draw_straighten(&mut self, identity: &str, end: Position) {
+        if let Some(participant) = self.participants.get_mut(identity) {
+            participant.draw_mut().straighten_in_progress(end);
+        }
+    }
+
+    /// Takes back a participant's most recently finished path, returning its ID.
+    pub fn draw_undo_last(&mut self, identity: &str) -> Option<u64> {
+        self.participants
+            .get_mut(identity)
+            .and_then(|participant| participant.draw_mut().undo_last_path())
     }
 
     /// Ends the current drawing path for a participant.
@@ -374,6 +392,13 @@ impl ParticipantsManager {
             removed_path_ids.extend(participant.draw_mut().clear_expired_paths());
         }
         removed_path_ids
+    }
+
+    /// Whether any participant's ink is animating and needs frames even with no input.
+    pub fn is_ink_animating(&self) -> bool {
+        self.participants
+            .values()
+            .any(|participant| participant.draw().is_animating())
     }
 
     /// Sets the cursor position for a specific participant.
