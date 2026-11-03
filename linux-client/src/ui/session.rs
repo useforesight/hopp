@@ -35,29 +35,25 @@ pub struct Stroke {
     pub sender: String,
     pub id: u64,
     pub points: Vec<Point>,
-    /// When a stroke of yours was finished; it fades [`super::marks::INK_HOLD`] later.
+    /// When the stroke was finished.
     pub ended: Option<Instant>,
-    /// When it started fading out: its owner cleared it, or yours reached its time.
+    /// When it started fading out: its owner cleared or undid it, or your ink was left
+    /// alone for [`super::marks::INK_HOLD`].
     pub fading: Option<Instant>,
 }
 
 impl Stroke {
-    /// When it starts (or started) fading: yours [`super::marks::INK_HOLD`] after you
-    /// finish it, anyone's once they clear it.
-    pub fn fade_start(&self) -> Option<Instant> {
-        self.fading.or_else(|| {
-            self.ended
-                .filter(|_| self.sender.is_empty())
-                .map(|ended| ended + super::marks::INK_HOLD)
-        })
-    }
-
     /// Faded out completely by `now`.
     pub fn faded(&self, now: Instant) -> bool {
-        self.fade_start()
+        self.fading
             .is_some_and(|start| now >= start + super::marks::INK_FADE)
     }
 }
+
+/// How often a straight line being dragged out is sent to others. There is no message
+/// for changing a stroke, so each update clears it and starts it again; the exact end is
+/// always sent when the stroke ends. The Mac app's rate.
+const STRAIGHT_EVERY: Duration = Duration::from_millis(33);
 
 /// A ripple where someone clicked or dropped a pin.
 #[derive(Clone, Debug)]
@@ -175,9 +171,17 @@ pub struct Session {
     pub local_camera: Option<Picture>,
     pub cameras: HashMap<String, Picture>,
     drawing_path: Option<usize>,
-    /// While Shift is held mid-stroke: the point the straight line starts from (an index
-    /// into the stroke's points). Points after it are replaced as the pointer moves.
-    straight_from: Option<usize>,
+    /// When the straight line you're dragging out (Shift held) was last sent to others.
+    straight_sent: Option<Instant>,
+    /// The latest end of that line, held back by [`STRAIGHT_EVERY`]; it's sent before
+    /// freehand ink carries on from it.
+    straight_held: Option<Point>,
+    /// Your last change to your ink: a stroke, a point, an undo. All of it fades
+    /// [`super::marks::INK_HOLD`] after this, unless you keep it.
+    ink_changed: Instant,
+    /// Keep your ink until you right-click or clear it, instead of letting it fade (the
+    /// Mac app's "Persist until right click").
+    pub keep_ink: bool,
     incoming_paths: HashMap<String, usize>,
     /// What `MarksChanged` last said: whether anything shows over your shared screen.
     marks_announced: bool,
@@ -254,7 +258,10 @@ impl Session {
             local_camera: None,
             cameras: HashMap::new(),
             drawing_path: None,
-            straight_from: None,
+            straight_sent: None,
+            straight_held: None,
+            ink_changed: Instant::now(),
+            keep_ink: false,
             incoming_paths: HashMap::new(),
             marks_announced: false,
             next_path: 0,
@@ -638,16 +645,86 @@ impl Session {
             self.stamping = false;
         }
         self.drawing_path = None;
-        self.straight_from = None;
+        self.straight_sent = None;
+        self.straight_held = None;
+        self.send_drawing_mode();
+        cx.emit(SessionEvent::DrawingChanged);
+        cx.notify();
+    }
+
+    /// Switch between ink that fades and ink kept until you right-click or clear it.
+    pub fn toggle_keep_ink(&mut self, cx: &mut Context<Self>) {
+        self.keep_ink = !self.keep_ink;
+        // Ink you stop keeping gets the usual time before it fades.
+        self.ink_changed = Instant::now();
+        if self.drawing {
+            self.send_drawing_mode();
+        }
+        cx.notify();
+    }
+
+    fn send_drawing_mode(&mut self) {
         self.send(Command::SendInput(InputEvent::DrawingMode(
             if self.drawing {
-                DrawingMode::Draw(DrawSettings { permanent: false })
+                DrawingMode::Draw(DrawSettings {
+                    permanent: self.keep_ink,
+                })
             } else {
                 DrawingMode::Disabled
             },
         )));
-        cx.emit(SessionEvent::DrawingChanged);
+    }
+
+    /// Take back your last finished stroke, here and for everyone. Not while drawing one.
+    pub fn undo_stroke(&mut self, cx: &mut Context<Self>) {
+        if self.drawing_path.is_some() {
+            return;
+        }
+        let now = Instant::now();
+        let Some(path) =
+            self.paths.iter_mut().rev().find(|path| {
+                path.sender.is_empty() && path.ended.is_some() && path.fading.is_none()
+            })
+        else {
+            return;
+        };
+        path.fading = Some(now);
+        let path_id = path.id;
+        self.ink_changed = now;
+        if self.connected {
+            self.send(Command::SendInput(InputEvent::DrawClearPath { path_id }));
+        }
+        cx.emit(SessionEvent::Screen);
         cx.notify();
+    }
+
+    /// Drawing keys, from the viewer or the draw pad: Ctrl+Z (or Super+Z) undoes your
+    /// last stroke. Returns whether the key was used.
+    pub fn drawing_key(&mut self, key: &gpui_kit::Keystroke, cx: &mut Context<Self>) -> bool {
+        let modifiers = key.modifiers;
+        if self.drawing
+            && key.key == "z"
+            && (modifiers.control || modifiers.platform)
+            && !modifiers.shift
+            && !modifiers.alt
+        {
+            self.undo_stroke(cx);
+            return true;
+        }
+        false
+    }
+
+    /// Send the straight line from `start` to `end` as stroke `path_id`: cleared, then
+    /// started again, since there's no message for changing a stroke.
+    fn send_line(&mut self, path_id: u64, start: Point, end: Option<Point>) {
+        self.send(Command::SendInput(InputEvent::DrawClearPath { path_id }));
+        self.send(Command::SendInput(InputEvent::DrawStart(PathPoint {
+            point: start,
+            path_id,
+        })));
+        if let Some(end) = end {
+            self.send(Command::SendInput(InputEvent::DrawAddPoint(end)));
+        }
     }
 
     pub fn toggle_stamping(&mut self, cx: &mut Context<Self>) {
@@ -816,19 +893,26 @@ impl Session {
         }
     }
 
+    /// Clear all your ink, here and for everyone: it fades out. Right-click while drawing
+    /// does this, as in the Mac app. A stroke being drawn goes too.
     pub fn clear_own_drawings(&mut self, cx: &mut Context<Self>) {
-        let own: Vec<_> = self
-            .paths
-            .iter()
-            .filter(|path| path.sender.is_empty())
-            .map(|path| path.id)
-            .collect();
-        self.keep_paths(|path| !path.sender.is_empty());
+        let now = Instant::now();
+        let mut own = Vec::new();
+        for path in &mut self.paths {
+            if path.sender.is_empty() && path.fading.is_none() {
+                path.fading = Some(now);
+                own.push(path.id);
+            }
+        }
+        self.drawing_path = None;
+        self.straight_held = None;
+        self.ink_changed = now;
         if self.connected {
             for path_id in own {
                 self.send(Command::SendInput(InputEvent::DrawClearPath { path_id }));
             }
         }
+        cx.emit(SessionEvent::Screen);
         cx.notify();
     }
 
@@ -842,8 +926,9 @@ impl Session {
     // ---- input forwarded from the viewer ------------------------------------------------
 
     /// Mouse movement over the remote screen. Coordinates are normalized to the frame.
-    /// `straight`: Shift is held, so the stroke runs in a straight line from where Shift
-    /// was pressed (or the stroke began) to the pointer.
+    /// `straight`: Shift is held, so the whole stroke is a straight line from where it
+    /// began to the pointer, as in the Mac app. Others see the line move, at most every
+    /// [`STRAIGHT_EVERY`]; let go of Shift and freehand ink carries on from its end.
     pub fn pointer_moved(
         &mut self,
         point: Point,
@@ -860,35 +945,29 @@ impl Session {
                 && let Some(path) = self.paths.get_mut(index)
                 && path.points.len() < 20_000
             {
-                match (straight, self.straight_from) {
-                    // Shift pressed: the line starts at the last point drawn.
-                    (true, None) => {
-                        let from = path.points.len().saturating_sub(1);
-                        self.straight_from = Some(from);
-                        path.points.truncate(from + 1);
-                        path.points.push(point);
+                let (path_id, start) = (path.id, path.points[0]);
+                let now = Instant::now();
+                self.ink_changed = now;
+                if straight {
+                    path.points.truncate(1);
+                    path.points.push(point);
+                    if self
+                        .straight_sent
+                        .is_some_and(|sent| now.duration_since(sent) < STRAIGHT_EVERY)
+                    {
+                        self.straight_held = Some(point);
+                    } else {
+                        self.straight_sent = Some(now);
+                        self.straight_held = None;
+                        self.send_line(path_id, start, Some(point));
                     }
-                    // Still held: only the far end moves. Others get the line when it's
-                    // finished: points they've been sent can't be taken back.
-                    (true, Some(from)) => {
-                        path.points.truncate(from + 1);
-                        path.points.push(point);
+                } else {
+                    path.points.push(point);
+                    // Others need the line's latest end before the ink carries on from it.
+                    if let Some(end) = self.straight_held.take() {
+                        self.send_line(path_id, start, Some(end));
                     }
-                    // Shift let go: the line is done; send its end and draw on freehand.
-                    (false, Some(_)) => {
-                        self.straight_from = None;
-                        if let Some(end) = path.points.last().copied() {
-                            self.send(Command::SendInput(InputEvent::DrawAddPoint(end)));
-                        }
-                        if let Some(path) = self.paths.get_mut(index) {
-                            path.points.push(point);
-                        }
-                        self.send(Command::SendInput(InputEvent::DrawAddPoint(point)));
-                    }
-                    (false, None) => {
-                        path.points.push(point);
-                        self.send(Command::SendInput(InputEvent::DrawAddPoint(point)));
-                    }
+                    self.send(Command::SendInput(InputEvent::DrawAddPoint(point)));
                 }
                 cx.notify();
             }
@@ -913,6 +992,9 @@ impl Session {
         }
         if self.stamping && button == MouseButton::Left {
             self.place_stamp(point, cx);
+        } else if self.drawing && button == MouseButton::Right {
+            // Right-click clears your ink, as in the Mac app.
+            self.clear_own_drawings(cx);
         } else if self.drawing && button == MouseButton::Left {
             self.next_path = self.next_path.wrapping_add(1);
             self.paths.push(Stroke {
@@ -923,8 +1005,9 @@ impl Session {
                 fading: None,
             });
             self.drawing_path = Some(self.paths.len() - 1);
-            // Shift held from the start: a straight line from here.
-            self.straight_from = modifiers.shift.then_some(0);
+            self.straight_sent = None;
+            self.straight_held = None;
+            self.ink_changed = Instant::now();
             self.send(Command::SendInput(InputEvent::DrawStart(PathPoint {
                 point,
                 path_id: self.next_path,
@@ -946,12 +1029,20 @@ impl Session {
         cx: &mut Context<Self>,
     ) {
         if let Some(index) = self.drawing_path.take() {
-            // A straight line ends where the pointer is, here and for everyone else.
-            if let (Some(from), Some(end)) = (self.straight_from.take(), point)
-                && let Some(path) = self.paths.get_mut(index)
-            {
-                path.points.truncate(from + 1);
-                path.points.push(end);
+            let held = self.straight_held.take();
+            self.straight_sent = None;
+            if let Some(path) = self.paths.get_mut(index) {
+                let (path_id, start) = (path.id, path.points[0]);
+                if modifiers.shift
+                    && let Some(end) = point
+                {
+                    // A straight line ends exactly where the pointer is, for everyone.
+                    path.points.truncate(1);
+                    path.points.push(end);
+                    self.send_line(path_id, start, None);
+                } else if let Some(end) = held {
+                    self.send_line(path_id, start, Some(end));
+                }
             }
             let last = self
                 .paths
@@ -961,9 +1052,11 @@ impl Session {
             if let Some(point) = point.or(last) {
                 self.send(Command::SendInput(InputEvent::DrawEnd(point)));
             }
+            let now = Instant::now();
             if let Some(path) = self.paths.get_mut(index) {
-                path.ended = Some(Instant::now());
+                path.ended = Some(now);
             }
+            self.ink_changed = now;
             cx.notify();
         } else if let Some(last) = self.forwarded_buttons.remove(&button)
             && self.connected
@@ -1078,19 +1171,24 @@ impl Session {
         if dirty {
             self.sync_ring();
         }
-        // Your finished strokes fade, here and (by clearing them, which fades them there)
-        // on everyone's screen. Faded strokes, ripples and stamps are let go.
+        // Your ink, left alone for INK_HOLD and not kept, fades all together, here and (by
+        // clearing it, which fades it there) on everyone's screen: a drawing shouldn't
+        // vanish one stroke at a time. Faded strokes, ripples and stamps are let go.
         let now = Instant::now();
         let mut cleared = Vec::new();
-        for path in &mut self.paths {
-            if path.sender.is_empty()
-                && path.fading.is_none()
-                && let Some(start) = path.fade_start()
-                && now >= start
-            {
-                path.fading = Some(start);
-                cleared.push(path.id);
+        if !self.keep_ink
+            && self.drawing_path.is_none()
+            && now.duration_since(self.ink_changed) >= super::marks::INK_HOLD
+        {
+            for path in &mut self.paths {
+                if path.sender.is_empty() && path.ended.is_some() && path.fading.is_none() {
+                    path.fading = Some(now);
+                    cleared.push(path.id);
+                }
             }
+        }
+        if !cleared.is_empty() {
+            screen = true;
         }
         if self.connected {
             for path_id in cleared {
@@ -1422,7 +1520,8 @@ impl Session {
         self.remote_identity = None;
         self.drawing = false;
         self.drawing_path = None;
-        self.straight_from = None;
+        self.straight_sent = None;
+        self.straight_held = None;
         self.paths.clear();
         self.incoming_paths.clear();
         self.pointers.clear();
@@ -1503,9 +1602,13 @@ impl Session {
                     path.ended = Some(Instant::now());
                 }
             }
-            // Cleared strokes fade out rather than vanish.
+            // Cleared strokes fade out rather than vanish. A stroke cleared while still
+            // being drawn goes at once: that's a straight line being redrawn (cleared,
+            // then started again with the same id), and fading each copy would leave a
+            // trail of ghost lines.
             InputEvent::DrawClearAllPaths => {
                 let now = Instant::now();
+                self.keep_paths(|path| path.sender != sender || path.ended.is_some());
                 for path in &mut self.paths {
                     if path.sender == sender && path.fading.is_none() {
                         path.fading = Some(now);
@@ -1514,6 +1617,9 @@ impl Session {
             }
             InputEvent::DrawClearPath { path_id } => {
                 let now = Instant::now();
+                self.keep_paths(|path| {
+                    path.sender != sender || path.id != path_id || path.ended.is_some()
+                });
                 for path in &mut self.paths {
                     if path.sender == sender && path.id == path_id && path.fading.is_none() {
                         path.fading = Some(now);

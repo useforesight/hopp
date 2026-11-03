@@ -143,7 +143,8 @@ fn flat_sprite(pixmap: &Pixmap, rgb: [u8; 3], offset: (f32, f32)) -> Sprite {
 
 // ---- Ink ------------------------------------------------------------------------------
 
-type Xy = (f32, f32);
+/// A point in device pixels.
+pub type Xy = (f32, f32);
 
 /// A stretch of a stroke's centre line.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -180,9 +181,22 @@ fn mid(a: Xy, b: Xy) -> Xy {
     ((a.0 + b.0) / 2., (a.1 + b.1) / 2.)
 }
 
+/// Turns tighter than about 100 degrees stay corners instead of being rounded off, as
+/// the Mac app draws them (`core/src/graphics/draw.rs`).
+const SHARP_TURN_COSINE: f32 = -0.17;
+
+/// Whether the line turns back on itself at `corner` by more than about 100 degrees.
+fn sharp_turn(previous: Xy, corner: Xy, next: Xy) -> bool {
+    let (ix, iy) = (corner.0 - previous.0, corner.1 - previous.1);
+    let (ox, oy) = (next.0 - corner.0, next.1 - corner.1);
+    let lengths = ix.hypot(iy) * ox.hypot(oy);
+    lengths > 0. && (ix * ox + iy * oy) / lengths < SHARP_TURN_COSINE
+}
+
 /// The centre line through `points`: points closer than `min` to the last one kept are
 /// skipped (but it always reaches the latest), then straight to the first midpoint,
-/// curving through each point to the next midpoint, and straight to the last point.
+/// curving through each point to the next midpoint, and straight to the last point. A
+/// sharp turn stays a corner: straight in to the point and straight out.
 pub fn pieces(points: &[Xy], min: f32) -> Vec<Piece> {
     let mut kept: Vec<Xy> = Vec::with_capacity(points.len());
     for &p in points {
@@ -206,11 +220,13 @@ pub fn pieces(points: &[Xy], min: f32) -> Vec<Piece> {
             let mut line = Vec::with_capacity(n);
             line.push(Piece::Line(kept[0], mid(kept[0], kept[1])));
             for i in 1..n - 1 {
-                line.push(Piece::Quad(
-                    mid(kept[i - 1], kept[i]),
-                    kept[i],
-                    mid(kept[i], kept[i + 1]),
-                ));
+                let (from, to) = (mid(kept[i - 1], kept[i]), mid(kept[i], kept[i + 1]));
+                if sharp_turn(kept[i - 1], kept[i], kept[i + 1]) {
+                    line.push(Piece::Line(from, kept[i]));
+                    line.push(Piece::Line(kept[i], to));
+                } else {
+                    line.push(Piece::Quad(from, kept[i], to));
+                }
             }
             line.push(Piece::Line(mid(kept[n - 2], kept[n - 1]), kept[n - 1]));
             line
@@ -218,9 +234,24 @@ pub fn pieces(points: &[Xy], min: f32) -> Vec<Piece> {
     }
 }
 
-/// How far apart points need to be to keep them, at `scale` device pixels per point.
+/// How far apart points need to be to keep them, at `scale` device pixels per point:
+/// closer than 3 points is hand tremor, not part of the shape (the Mac app's rule).
 pub fn min_spacing(scale: f32) -> f32 {
-    0.75 * scale
+    3. * scale
+}
+
+/// How strong the halo under ink is.
+pub const HALO_ALPHA: f32 = 0.28;
+
+/// The halo colour that keeps ink in `rgb` readable on any background: dark under bright
+/// ink, light under dark ink. The Mac app's rule, on the sRGB values as they are.
+pub fn halo_rgb([r, g, b]: [u8; 3]) -> [u8; 3] {
+    let luminance = (0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b)) / 255.;
+    if luminance > 0.45 {
+        [0, 0, 0]
+    } else {
+        [255, 255, 255]
+    }
 }
 
 fn overlaps([l, t, r, b]: [f32; 4], [l2, t2, r2, b2]: [f32; 4]) -> bool {
@@ -649,6 +680,49 @@ mod tests {
         assert!(b > 200 && r < 120 && g > 100, "{b} {g} {r}");
         let pin = pin([0xff, 0x3b, 0x30], 1.).unwrap();
         assert!(pin.width > 20 && pin.height > 40);
+    }
+
+    #[test]
+    fn a_sharp_turn_stays_a_corner_and_a_gentle_one_curves() {
+        let corner = (60., 0.);
+        // Out to the right and nearly straight back: a corner, reached and left in lines.
+        let sharp = pieces(&[(0., 0.), corner, (0., 12.)], 1.);
+        assert!(
+            sharp
+                .iter()
+                .any(|p| matches!(p, Piece::Line(_, to) if *to == corner))
+        );
+        assert!(
+            sharp
+                .iter()
+                .any(|p| matches!(p, Piece::Line(from, _) if *from == corner))
+        );
+        assert!(!sharp.iter().any(|p| matches!(p, Piece::Quad(..))));
+        // A gentle bend is smoothed through the point instead.
+        let gentle = pieces(&[(0., 0.), corner, (120., 12.)], 1.);
+        assert!(
+            gentle
+                .iter()
+                .any(|p| matches!(p, Piece::Quad(_, c, _) if *c == corner))
+        );
+    }
+
+    #[test]
+    fn points_closer_than_three_points_are_tremor() {
+        // Jitter within 3 points of the start is dropped: one short line to the end.
+        // Points 4 apart are all kept.
+        let shaky = pieces(&[(0., 0.), (2., 0.), (2.5, 0.), (2.6, 0.)], min_spacing(1.));
+        assert_eq!(shaky.len(), 1, "{shaky:?}");
+        let firm = pieces(&[(0., 0.), (4., 0.), (8., 0.)], min_spacing(1.));
+        assert!(firm.len() >= 2, "{firm:?}");
+    }
+
+    #[test]
+    fn halos_are_dark_under_bright_ink_and_light_under_dark() {
+        assert_eq!(halo_rgb([0xff, 0xd6, 0x0a]), [0, 0, 0], "yellow");
+        assert_eq!(halo_rgb([0x64, 0xd2, 0xff]), [0, 0, 0], "cyan");
+        assert_eq!(halo_rgb([0xff, 0x3b, 0x30]), [255, 255, 255], "red");
+        assert_eq!(halo_rgb([0x1e, 0x1e, 0x28]), [255, 255, 255], "near black");
     }
 }
 

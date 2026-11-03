@@ -4,8 +4,10 @@
 //! while others draw. To draw yourself (Draw on the sharing pill, Super+Alt+D, or
 //! `hopp draw`), this pad covers the same monitor and turns the pointer into ink: your
 //! strokes go to everyone in the call as Hopp's usual draw messages, and the overlay
-//! underneath paints them for you. It takes the keyboard while it is up, so Escape (or a
-//! right-click) stops, and C clears your ink; closing it gives focus back to your app.
+//! underneath paints them for you. It takes the keyboard while it is up: Escape stops,
+//! right-click or C clears your ink, Ctrl+Z undoes your last stroke and K keeps your ink
+//! instead of letting it fade (the Mac app's drawing rules). Closing it gives focus back
+//! to your app.
 //! The sharing pill stays clickable through a hole in the pad's input region. Like the
 //! overlay it is left out of the screen share: viewers paint your ink themselves.
 
@@ -105,7 +107,7 @@ impl Render for DrawPad {
                     .child(icon(IconName::Pencil).size(px(13.)))
                     .child("Drawing on your screen")
                     .child(style::muted_text(
-                        "Esc or right-click to stop · C clears your ink",
+                        "Esc stops · right-click clears · Ctrl+Z undoes · K keeps ink",
                         cx,
                     )),
             );
@@ -149,16 +151,32 @@ impl Render for DrawPad {
                     });
                 }),
             )
+            // Right-click clears your ink, as in the Mac app; Escape stops drawing.
             .on_mouse_down(
                 MouseButton::Right,
-                cx.listener(|view, _: &gpui_kit::MouseDownEvent, _, cx| view.stop(cx)),
+                cx.listener(|view, _: &gpui_kit::MouseDownEvent, _, cx| {
+                    view.session
+                        .update(cx, |session, cx| session.clear_own_drawings(cx))
+                }),
             )
             .on_key_down(cx.listener(|view, event: &gpui_kit::KeyDownEvent, _, cx| {
+                if view
+                    .session
+                    .update(cx, |session, cx| session.drawing_key(&event.keystroke, cx))
+                {
+                    return;
+                }
+                let plain = !event.keystroke.modifiers.control
+                    && !event.keystroke.modifiers.platform
+                    && !event.keystroke.modifiers.alt;
                 match event.keystroke.key.as_str() {
                     "escape" => view.stop(cx),
-                    "c" | "backspace" | "delete" => view
+                    "c" | "backspace" | "delete" if plain => view
                         .session
                         .update(cx, |session, cx| session.clear_own_drawings(cx)),
+                    "k" if plain => view
+                        .session
+                        .update(cx, |session, cx| session.toggle_keep_ink(cx)),
                     _ => {}
                 }
             }))

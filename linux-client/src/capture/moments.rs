@@ -1116,19 +1116,36 @@ type InkStroke = (Vec<(f64, f64)>, [u8; 3]);
 /// A pin to draw: where, its number, and its colour.
 type InkPin = ((f64, f64), u32, [u8; 3]);
 
-/// Anti-aliased round strokes with a dark edge, then numbered pins.
+/// Anti-aliased round strokes on a soft halo, then numbered pins. Every halo goes down
+/// before any ink, as on screen, so one stroke's halo never dims another's ink.
 fn draw_ink(image: &mut RgbaImage, strokes: &[InkStroke], pins: &[InkPin]) {
     use crate::ink_raster;
     let (width, height) = (image.width() as f32, image.height() as f32);
     // Drawn as the viewer draws them, at about the size they appear on a 1440p screen.
     let scale = (width.max(height) / 1440.).clamp(1., 3.);
     let ink_width = (width / 420.).clamp(3.4, 8.);
-    for (points, colour) in strokes {
-        let pixels: Vec<(f32, f32)> = points
-            .iter()
-            .map(|&(x, y)| (x as f32 * width, y as f32 * height))
-            .collect();
-        if let Some(sprite) = ink_raster::stroke(&pixels, ink_width, *colour, 1., scale) {
+    // The halo is as much wider than the ink as on screen (5 against 3.5).
+    let halo_width = ink_width * 5. / 3.5;
+    let device: Vec<(Vec<ink_raster::Xy>, [u8; 3])> = strokes
+        .iter()
+        .map(|(points, colour)| {
+            let pixels = points
+                .iter()
+                .map(|&(x, y)| (x as f32 * width, y as f32 * height))
+                .collect();
+            (pixels, *colour)
+        })
+        .collect();
+    for (pixels, colour) in &device {
+        let halo = ink_raster::halo_rgb(*colour);
+        if let Some(sprite) =
+            ink_raster::stroke(pixels, halo_width, halo, ink_raster::HALO_ALPHA, scale)
+        {
+            ink_raster::composite(image, &sprite, (0., 0.), 1.);
+        }
+    }
+    for (pixels, colour) in &device {
+        if let Some(sprite) = ink_raster::stroke(pixels, ink_width, *colour, 1., scale) {
             ink_raster::composite(image, &sprite, (0., 0.), 1.);
         }
     }

@@ -44,6 +44,7 @@ impl Render for SharingView {
             .map(|grant| session.name_for(grant));
         let viewers = session.participants.len();
         let drawing = session.drawing;
+        let keep_ink = session.keep_ink;
         // A window share has no fixed place on screen to draw over.
         let can_draw = session
             .share_target
@@ -92,6 +93,22 @@ impl Render for SharingView {
                         .on_click(cx.listener(|view, _, _, cx| {
                             view.session
                                 .update(cx, |session, cx| session.toggle_drawing(cx))
+                        })),
+                    )
+                })
+                .when(can_draw && drawing, |pill| {
+                    pill.child(
+                        style::chip(
+                            "keep",
+                            "Keep ink",
+                            Some(IconName::Pin),
+                            if keep_ink { Tone::On } else { Tone::Plain },
+                            cx,
+                        )
+                        .rounded(px(12.))
+                        .on_click(cx.listener(|view, _, _, cx| {
+                            view.session
+                                .update(cx, |session, cx| session.toggle_keep_ink(cx))
                         })),
                     )
                 })

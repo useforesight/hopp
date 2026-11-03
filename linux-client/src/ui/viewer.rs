@@ -215,6 +215,13 @@ impl ViewerView {
             });
             return true;
         }
+        // Ctrl+Z while drawing takes back your last stroke.
+        if self
+            .session
+            .update(cx, |session, cx| session.drawing_key(&event.keystroke, cx))
+        {
+            return true;
+        }
         if key == "escape" {
             let controlling = self.session.read(cx).peer_control;
             if controlling {
@@ -303,6 +310,33 @@ impl ViewerView {
         }
     }
 
+    /// Keep ink until you right-click or clear it, or let it fade: the Mac app's
+    /// "Persist until right click". Shown while drawing.
+    fn keep_ink_chip(
+        &self,
+        id: &'static str,
+        labels: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::Stateful<gpui_kit::Div> {
+        let keep = self.session.read(cx).keep_ink;
+        let label = match (labels, keep) {
+            (false, _) => "",
+            (true, true) => "Keeping ink",
+            (true, false) => "Keep ink",
+        };
+        style::chip(
+            id,
+            label,
+            Some(IconName::Pin),
+            if keep { Tone::On } else { Tone::Plain },
+            cx,
+        )
+        .on_click(cx.listener(|view, _, _, cx| {
+            view.session
+                .update(cx, |session, cx| session.toggle_keep_ink(cx))
+        }))
+    }
+
     /// Draw, the control state, and peek. `labels` off gives icon-only buttons.
     fn actions(
         &self,
@@ -375,8 +409,10 @@ impl ViewerView {
             cx,
         )
         .on_click(cx.listener(|_, _, _, cx| cx.defer(Shell::toggle_peek)));
-        [draw, stamp, control, peek]
+        let keep = drawing.then(|| self.keep_ink_chip("dock-keep", labels, cx));
+        [Some(draw), keep, Some(stamp), Some(control), Some(peek)]
             .into_iter()
+            .flatten()
             .map(|chip| {
                 if labels {
                     chip
@@ -565,6 +601,9 @@ impl ViewerView {
                         .update(cx, |session, cx| session.toggle_drawing(cx))
                 })),
             )
+            .when(drawing, |pill| {
+                pill.child(self.keep_ink_chip("keep", !compact, cx))
+            })
             .child(
                 style::chip(
                     "stamp",

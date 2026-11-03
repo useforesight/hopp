@@ -10,8 +10,10 @@
 //! - **Cursors** move at an even speed between network updates, in the person's colour
 //!   with their name in a pill; a pencil while they draw, sitting exactly on the tip of
 //!   their ink. The name hides after a few idle seconds, the cursor fades a little later.
-//! - **Ink** is flat and even, drawn in tiles so only its tip is redrawn as it grows, and
-//!   thins as it fades out instead of vanishing.
+//! - **Ink** follows the Mac app's rules: 3.5 points wide on a 5-point halo (dark under
+//!   bright ink, light under dark), every halo under every stroke so crossings stay clean.
+//!   It is drawn in tiles so only its tip is redrawn as it grows, and fades out rather
+//!   than vanishing.
 //! - **Ripples** are a dot and two rings that pulse out where someone clicks.
 //! - **Stamps** are a pin that drops in with a little bounce, pulses while it listens, and
 //!   carries a bubble with what was said; words still being recognised are dimmed.
@@ -30,9 +32,13 @@ use gpui_kit::{
 use super::session::{Ripple, Stroke};
 use crate::{ink_raster, protocol::Point};
 
-/// Your strokes stay this long after you finish them, then fade over [`INK_FADE`].
-pub const INK_HOLD: Duration = Duration::from_millis(2_400);
-pub const INK_FADE: Duration = Duration::from_millis(600);
+/// Your ink stays this long after your last change to it, then all of it fades together
+/// over [`INK_FADE`] (the Mac app's rule), unless you keep it.
+pub const INK_HOLD: Duration = Duration::from_secs(3);
+pub const INK_FADE: Duration = Duration::from_millis(450);
+/// Ink and its halo, in logical pixels, as the Mac app draws them.
+pub const INK_WIDTH: f32 = 3.5;
+pub const HALO_WIDTH: f32 = INK_WIDTH + 1.5;
 const RIPPLE: Duration = Duration::from_millis(700);
 const NAME_IDLE: Duration = Duration::from_millis(2_500);
 const POINTER_IDLE: Duration = Duration::from_secs(8);
@@ -499,18 +505,19 @@ pub fn paint_ripple(window: &mut Window, at: P, rgb: [u8; 3], age: Duration) -> 
 
 // ---- Ink ------------------------------------------------------------------------------
 
-/// How wide ink is on a screen shown `width` logical pixels across: about 4 pixels on a
-/// big monitor, never hairline-thin when the screen is shown small.
-pub fn ink_width(width: f32) -> f32 {
-    (width / 760.).clamp(2.6, 5.)
+/// Which layer of a stroke to paint: its halo goes under every stroke's ink.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum InkLayer {
+    Halo,
+    Ink,
 }
 
 /// A stroke on a screen shown at `area` (logical pixels), its `points` fractions of that
-/// screen, `width` logical pixels wide, at `alpha`; it thins a little as it fades.
+/// screen, in `rgb` at `alpha`: the `layer` given, its halo or its ink.
 ///
-/// It is drawn in tiles, kept per stroke (`key`): as points arrive only the tiles at the
-/// tip are drawn again; the whole stroke only when the screen's size, the colour or the
-/// fade step changes. Panning costs nothing.
+/// It is drawn in tiles, kept per stroke and layer (`key`): as points arrive only the
+/// tiles at the tip are drawn again; the whole stroke only when the screen's size, the
+/// colour or the fade step changes. Panning costs nothing.
 #[allow(clippy::too_many_arguments)]
 pub fn paint_stroke(
     window: &mut Window,
@@ -520,18 +527,28 @@ pub fn paint_stroke(
     area: Bounds<Pixels>,
     rgb: [u8; 3],
     alpha: f32,
-    width: f32,
+    layer: InkLayer,
 ) {
     let alpha = step(alpha);
     if points.is_empty() || alpha <= 0. {
         return;
     }
+    let (key, rgb, alpha, width) = match layer {
+        InkLayer::Ink => (key.to_owned(), rgb, alpha, INK_WIDTH),
+        InkLayer::Halo => (
+            format!("{key}:halo"),
+            ink_raster::halo_rgb(rgb),
+            alpha * ink_raster::HALO_ALPHA,
+            HALO_WIDTH,
+        ),
+    };
+    let key = key.as_str();
     let scale = window.scale_factor();
     let (w, h) = (
         f32::from(area.size.width) * scale,
         f32::from(area.size.height) * scale,
     );
-    let width = width * scale * (0.45 + 0.55 * alpha);
+    let width = width * scale;
     let look = format!("{w:.0}x{h:.0}:{width:.2}:{alpha}:{rgb:?}");
     let device: Vec<(f32, f32)> = points
         .iter()
@@ -579,11 +596,15 @@ pub fn paint_stroke(
     }
 }
 
-/// How visible a stroke is now: 1 until `fading` starts, then down to 0 over [`INK_FADE`].
+/// How visible a stroke is now: 1 until `fading` starts, then down to 0 over [`INK_FADE`]
+/// on a smoothstep, as the Mac app fades it.
 pub fn ink_alpha(fading: Option<Instant>, now: Instant) -> f32 {
     match fading {
         None => 1.,
-        Some(since) => 1. - ease_in_out(progress(now.duration_since(since), INK_FADE)),
+        Some(since) => {
+            let t = progress(now.duration_since(since), INK_FADE);
+            1. - t * t * (3. - 2. * t)
+        }
     }
 }
 
@@ -625,22 +646,24 @@ pub fn paint_scene(
     let at = |p: Point| super::geometry::point_on_image(area, p);
     let now = Instant::now();
     let mut animating = false;
-    let width = ink_width(f32::from(area.size.width));
     let rgb_of = &scene.colours;
     for path in &scene.paths {
-        let fade = path.fade_start();
-        animating |= fade
-            .is_some_and(|start| now + Duration::from_millis(1_200) >= start && !path.faded(now));
-        paint_stroke(
-            window,
-            sprites,
-            &format!("{}:{}", path.sender, path.id),
-            &path.points,
-            area,
-            rgb_of(&path.sender),
-            ink_alpha(fade, now),
-            width,
-        );
+        animating |= path.fading.is_some() && !path.faded(now);
+    }
+    // Every halo first, then every stroke's ink, so crossings stay clean.
+    for layer in [InkLayer::Halo, InkLayer::Ink] {
+        for path in &scene.paths {
+            paint_stroke(
+                window,
+                sprites,
+                &format!("{}:{}", path.sender, path.id),
+                &path.points,
+                area,
+                rgb_of(&path.sender),
+                ink_alpha(path.fading, now),
+                layer,
+            );
+        }
     }
     for ripple in &scene.ripples {
         animating |= paint_ripple(

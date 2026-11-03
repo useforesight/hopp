@@ -2213,10 +2213,7 @@ mod tests {
             mark("Sam Taylor", "line"),
             mark("Sam Taylor", "pin"),
         ];
-        assert_eq!(
-            summary(&marks),
-            "Alex: 2 drawings · Sam: 2 pins, 1 line"
-        );
+        assert_eq!(summary(&marks), "Alex: 2 drawings · Sam: 2 pins, 1 line");
     }
 
     #[test]
