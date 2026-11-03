@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+network_args=(--unshare-net)
+if [[ "${HOPP_TEST_HOST_NETWORK:-0}" == 1 ]]; then network_args=(); fi
+exec bwrap --unshare-user --unshare-pid --unshare-ipc --unshare-uts "${network_args[@]}" --die-with-parent --new-session --ro-bind /usr /usr --ro-bind /etc /etc --tmpfs /etc/xdg --ro-bind /sys /sys --symlink usr/lib /lib --symlink usr/bin /bin --dev /dev --dev-bind /dev/dri/renderD128 /dev/dri/renderD128 --proc /proc --tmpfs /run --tmpfs /tmp --bind /tmp/hopp-nested /tmp/hopp-nested --ro-bind /tmp/hopp-weston/root /tmp/hopp-weston/root --chdir /tmp/hopp-nested /usr/bin/env -i PATH=/usr/bin LANG=C.UTF-8 USER="$USER" XDG_RUNTIME_DIR=/tmp/hopp-nested/runtime XDG_CONFIG_HOME=/tmp/hopp-nested/config XDG_CACHE_HOME=/tmp/hopp-nested/cache XDG_DATA_HOME=/tmp/hopp-nested/data LIBSEAT_BACKEND=hopp-disabled AQ_DRM_DEVICES=/tmp/hopp-nested/no-kms-device AQ_LIBINPUT_NO_PLUGINS=1 HYPRLAND_NO_SD_VARS=1 HYPRLAND_NO_SD_NOTIFY=1 HYPRLAND_NO_CRASHREPORTER=1 dbus-run-session -- /tmp/hopp-nested/session.sh
