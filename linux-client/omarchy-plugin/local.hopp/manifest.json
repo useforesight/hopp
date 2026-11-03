@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "local.hopp",
+  "name": "Hopp",
+  "version": "0.1.0",
+  "description": "Pair with your team from the bar: teammates, rooms, calls and screen sharing",
+  "kinds": ["service", "bar-widget"],
+  "entryPoints": {"service": "Service.qml", "barWidget": "Widget.qml"},
+  "barWidget": {
+    "displayName": "Hopp",
+    "description": "Hopp pairing: teammates, rooms and the current call",
+    "category": "Network",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
