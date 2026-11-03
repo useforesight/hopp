@@ -323,7 +323,7 @@ input.field{font:inherit;font-size:14px;border:1px solid var(--border-strong);bo
     <tbody>
       <tr><td><a href="#cursors">Crisp cursors, name tags, smoothing</a></td><td><span class="chip partial">Different design</span></td><td>Swap the SVG templates, add playback smoothing and idle timing</td><td>No</td></tr>
       <tr><td><a href="#cursors">Same colour for a person everywhere</a></td><td><span class="chip partial">Per machine</span></td><td>Hash the user id instead of join order</td><td>No</td></tr>
-      <tr><td><a href="#ink">Ink, Shift for straight lines</a></td><td><span class="chip has">Has it</span></td><td>Little. Mac is ahead on undo and persist</td><td>No</td></tr>
+      <tr><td><a href="#ink">Ink, Shift for straight lines</a></td><td><span class="chip has">Has it</span></td><td>Linux now uses the Mac rules. Take one receiver fix for straight lines</td><td>No</td></tr>
       <tr><td><a href="#stamps">Numbered stamps with words</a></td><td><span class="chip missing">Missing</span></td><td>New tool, topic handler and painter</td><td><code>hopp_stamp</code> (exists on Linux)</td></tr>
       <tr><td><a href="#share">Marks hidden from the share</a></td><td><span class="chip has">Has it</span></td><td>None. <code>sharingType = .none</code> already does it</td><td>No</td></tr>
       <tr><td><a href="#controls">Call window, sharing pill, cards</a></td><td><span class="chip partial">Partial</span></td><td>Add capture control and badge, a sharing pill, agent cards</td><td><code>hopp.capture</code> attribute</td></tr>
@@ -441,43 +441,37 @@ input.field{font:inherit;font-size:14px;border:1px solid var(--border-strong);bo
 
 <!-- ============================================================ INK -->
 <section id="ink">
-  <span class="eyebrow">Marks · mostly done on Mac</span>
+  <span class="eyebrow">Marks · one small fix for the Mac</span>
   <h2>Ink</h2>
   <div class="prose">
-    <p><strong>The Mac's drawing is already as good as Linux's, and ahead in places.</strong> Jonny's commit <code>4a952e6</code> added smoothing, Shift for straight lines, Cmd+Z undo and right-click clearing. Linux has no undo and no "persist" mode. Keep the Mac's ink, and borrow only what's listed under "worth borrowing".</p>
-    <p>Draw below. <strong>Hold <kbd>Shift</kbd> for a straight line</strong>, and switch rules to compare how each client fades ink.</p>
+    <p><strong>Both apps now draw by the Mac's rules.</strong> Jonny's commit <code>4a952e6</code> set them, and the Linux client adopted them on 3 November (<code>84a2286</code>). Ink looks and behaves the same whichever app draws it.</p>
+    <p>Draw below. <strong>Hold <kbd>Shift</kbd> for a straight line</strong>, <kbd>Ctrl</kbd>+<kbd>Z</kbd> or <kbd>⌘</kbd>+<kbd>Z</kbd> to undo, and right-click to clear. "Before" shows how Linux drew until then.</p>
   </div>
   <div class="bench">
-    <div class="bench-head"><span class="t">Prototype: ink rules side by side</span>
-      <div style="display:flex;gap:8px;flex-wrap:wrap"><div class="seg" role="group" aria-label="Ink rules"><button type="button" data-ink="linux" aria-pressed="true">Linux rules</button><button type="button" data-ink="mac" aria-pressed="false">Mac rules</button></div><button class="btn" type="button" id="ink-clear">Clear</button></div></div>
+    <div class="bench-head"><span class="t">Prototype: the shared ink rules</span>
+      <div style="display:flex;gap:8px;flex-wrap:wrap"><div class="seg" role="group" aria-label="Ink rules"><button type="button" data-ink="mac" aria-pressed="true">Now, both apps</button><button type="button" data-ink="linux" aria-pressed="false">Before, Linux</button></div><button class="btn" type="button" id="ink-clear">Clear</button></div></div>
     <div class="screen mid" id="ink-screen">
       <div class="code" aria-hidden="true"><span class="c">// Drag to draw. Shift for a straight line.</span>
 <span class="k">const</span> off = <span class="f">discount</span>(cart.coupon, sub);
 <span class="k">return</span> sub;</div>
       <canvas class="ink" id="ink-canvas" aria-label="Drawing area"></canvas>
-      <div class="hint" id="ink-hint">Linux: ink holds 2.4 s, then thins and fades over 0.6 s</div>
+      <div class="hint" id="ink-hint">All ink fades together 3 s after your last change · ⌘Z undoes · right-click clears</div>
     </div>
   </div>
   <div class="tbl"><table>
-    <thead><tr><th>Rule</th><th>Linux (<code>session.rs</code>, <code>ink_raster.rs</code>)</th><th>Mac (<code>core/src/graphics/draw.rs</code>)</th></tr></thead>
+    <thead><tr><th>Rule</th><th>Both apps now</th></tr></thead>
     <tbody>
-      <tr><td>Width</td><td>Shown width ÷ 760, clamped 2.6–5 px</td><td>3.5 px, with a 5 px halo at 28%</td></tr>
-      <tr><td>Fading</td><td>Each stroke holds 2.4 s, then fades over 0.6 s and thins to 45%</td><td>All your strokes fade together 3 s after your last change, over 450 ms</td></tr>
-      <tr><td>Shift</td><td>Sends nothing while held; sends the end point on release</td><td>Resends clear, start and end every 33 ms</td></tr>
-      <tr><td>Undo</td><td>None</td><td><kbd>Cmd</kbd>+<kbd>Z</kbd></td></tr>
-      <tr><td>Clear</td><td><strong>Clear</strong> button, or <kbd>C</kbd> on the draw pad</td><td>Right-click</td></tr>
-      <tr><td>Persist</td><td>None</td><td>"Persist until right click"</td></tr>
-      <tr><td>Smoothing</td><td>Quadratic through midpoints; skip points under 0.75 device px</td><td>Same idea; drops points under 3 px, keeps sharp turns as corners</td></tr>
-      <tr><td>Rendering</td><td>tiny-skia in 256 px tiles; only tiles at the tip redraw</td><td>iced canvas on wgpu</td></tr>
+      <tr><td>Width</td><td>3.5 px on a 5 px halo at 28%: dark under bright ink, light under dark. Every halo is drawn before any ink</td></tr>
+      <tr><td>Fading</td><td>All your strokes fade together 3 s after your last change, over 450 ms</td></tr>
+      <tr><td>Keep</td><td>"Persist until right click" on the Mac, <strong>Keep ink</strong> on Linux; sent as <code>DrawingMode</code> with <code>permanent</code></td></tr>
+      <tr><td>Undo</td><td><kbd>⌘</kbd>+<kbd>Z</kbd> on the Mac, <kbd>Ctrl</kbd>+<kbd>Z</kbd> on Linux; sent as <code>DrawClearPath</code></td></tr>
+      <tr><td>Clear</td><td>Right-click</td></tr>
+      <tr><td>Shift</td><td>The whole stroke becomes a straight line from where it began. Others see it move: clear, start and end, at most every 33 ms</td></tr>
+      <tr><td>Smoothing</td><td>Points under 3 px apart are dropped; curves run through midpoints; turns sharper than about 100° stay corners</td></tr>
+      <tr><td>Captured frames</td><td>Linux paints the same halo under ink in frames, scaled to the frame</td></tr>
     </tbody>
   </table></div>
-  <div class="card"><span class="tag-m">Worth borrowing</span>
-    <ul>
-      <li><strong>Width that scales with the screen.</strong> A fixed 3.5 px reads thin on a 5K display.</li>
-      <li><strong>Tile rendering, if ink frames get slow.</strong> On a 1,500-point stroke across a 5K screen, the worst Linux frame took 0.4 ms. Measure first: <code>cargo test --release --bin hopp ink_raster::timing -- --ignored --nocapture</code>.</li>
-      <li><strong>Both Shift methods work with every client.</strong> Neither needs a protocol change.</li>
-    </ul>
-  </div>
+  <div class="note warn"><strong>Take this fix on the Mac: straight lines leave a trail for viewers.</strong> Each 33 ms update clears the stroke and starts it again. <code>clear_path</code> in <code>core/src/graphics/draw.rs</code> fades a cleared stroke even while it's still being drawn, so a viewer should see a fan of fading copies behind the line. This is from reading the code, not yet seen on a call. Linux removes a stroke at once when it's cleared before its <code>DrawEnd</code>, and fades only finished ones (<code>session.rs</code>, <code>DrawClearPath</code>). Do the same in <code>clear_path</code> for <code>in_progress_path</code>.</div>
 </section>
 
 <!-- ============================================================ STAMPS -->
@@ -1129,7 +1123,7 @@ pub enum StampMessage {
     <li><strong>Not yet seen on a real call:</strong> marks over your own share through the plugin, drawing on your own screen, stamps between two real clients, and WebP frames.</li>
     <li><strong>Stamps are hard to find.</strong> They're only in the viewer, so they don't exist while you share. The Mac pill can fix this.</li>
     <li><strong>Stamp numbers can differ between machines and frames.</strong> Captured frames number stamps when finished, and count the stamp's ripple as a pin. This is a reading of the code, not yet seen.</li>
-    <li><strong>Possible bug:</strong> <code>end_call</code> doesn't clear stamps or the active stamp (<code>session.rs:1410-1435</code>).</li>
+    <li><strong>Possible bug:</strong> <code>end_call</code> in <code>session.rs</code> doesn't clear stamps or the active stamp.</li>
     <li><strong>No auto-capture switch in Settings;</strong> only the JSON file.</li>
     <li><strong>Interoperability with Mac and Windows,</strong> long calls and poor networks are untested.</li>
     <li><strong>Not built yet:</strong> spoken stamps from the placer's live text, spoken cues such as "look here" as frame triggers, a screen-at-a-time command for agents, and app and window names saved with each frame, as Tuple does.</li>
@@ -1166,6 +1160,7 @@ const PALETTE = ['#ff3b30','#0a84ff','#30d158','#ff9f0a','#bf5af2','#ff375f','#6
 const NAMES = ['red','blue','green','orange','purple','pink','cyan','yellow'];
 function lum(hex){const n=parseInt(hex.slice(1),16);return [n>>16&255,n>>8&255,n&255].map(v=>{v/=255;return v<=0.04045?v/12.92:Math.pow((v+0.055)/1.055,2.4)}).reduce((a,c,i)=>a+c*[.2126,.7152,.0722][i],0)}
 const textOn = h => lum(h) > 0.5 ? '#14151a' : '#ffffff';
+const haloOf = h => { const n=parseInt(h.slice(1),16); return ((.2126*(n>>16&255)+.7152*(n>>8&255)+.0722*(n&255))/255) > 0.45 ? 'rgba(0,0,0,.28)' : 'rgba(255,255,255,.28)'; };
 const ARROW = c => `<svg class="spr" width="36" height="40" viewBox="0 0 36 40" aria-hidden="true"><path transform="translate(8 8)" d="M3 2.5 L3 20.5 L8 15.6 L15.6 14.8 Z" fill="${c}" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg>`;
 const PENCIL = c => `<svg class="spr" width="38" height="38" viewBox="0 0 38 38" aria-hidden="true"><g transform="translate(8 8)"><path d="M14.5 3.6 18.4 7.5 7.5 18.4 2.6 19.4 3.6 14.5Z" fill="${c}" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/><path d="M12.6 5.5 16.5 9.4" stroke="#fff" stroke-width="1.5"/></g></svg>`;
 const MARKER = (c,n) => `<svg class="spr" width="40" height="48" viewBox="0 0 40 48" aria-hidden="true"><g transform="translate(20 40)"><path d="M0 0 L-5 -8 A 11 11 0 1 1 5 -8 Z" fill="${c}" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/><text x="0" y="-13.6" font-family="Inter, Geist, sans-serif" font-size="${String(n).length>2?9:11.5}" font-weight="700" fill="${textOn(c)}" text-anchor="middle">${n}</text></g></svg>`;
@@ -1229,7 +1224,7 @@ document.querySelectorAll('[data-copy]').forEach(b=>b.addEventListener('click',(
       const pencil=!!s.draw;
       if(s.draw){
         let st=strokes.find(k=>k.who===i&&!k.done);
-        if(!st){st={who:i,pts:[],done:false,end:0,el:document.createElementNS('http://www.w3.org/2000/svg','polyline')};st.el.setAttribute('fill','none');st.el.setAttribute('stroke',p.c);st.el.setAttribute('stroke-linecap','round');st.el.setAttribute('stroke-linejoin','round');inkSvg.appendChild(st.el);strokes.push(st);}
+        if(!st){const mk=(c,w)=>{const e=document.createElementNS('http://www.w3.org/2000/svg','polyline');e.setAttribute('fill','none');e.setAttribute('stroke',c);e.setAttribute('stroke-width',w);e.setAttribute('stroke-linecap','round');e.setAttribute('stroke-linejoin','round');return e;};st={who:i,pts:[],done:false,end:0,halo:mk(haloOf(p.c),5),el:mk(p.c,3.5)};inkSvg.prepend(st.halo);inkSvg.appendChild(st.el);strokes.push(st);}
         st.pts.push([s.x*W,s.y*H]);
       } else strokes.filter(k=>k.who===i&&!k.done).forEach(k=>{k.done=true;k.end=now;});
       const mode=pencil?'p':'a';
@@ -1240,10 +1235,9 @@ document.querySelectorAll('[data-copy]').forEach(b=>b.addEventListener('click',(
       e.nm.classList.toggle('hid',!pencil && idle>2500);
       e.d.style.opacity=idle>8000?0:1;
     });
-    const w=Math.min(5,Math.max(2.6,W/760));
     strokes=strokes.filter(k=>{
-      let a=1; if(k.done){const age=now-k.end; if(age>2400) a=1-ease(Math.min(1,(age-2400)/600)); if(a<=0){k.el.remove();return false;}}
-      k.el.setAttribute('points',k.pts.map(p=>p.join(',')).join(' '));k.el.setAttribute('stroke-width',w*(0.45+0.55*a));k.el.setAttribute('opacity',a);return true;});
+      let a=1; if(k.done){const age=now-k.end; if(age>3000){const t=Math.min(1,(age-3000)/450);a=1-t*t*(3-2*t);} if(a<=0){k.el.remove();k.halo.remove();return false;}}
+      const pts=k.pts.map(p=>p.join(',')).join(' ');k.el.setAttribute('points',pts);k.halo.setAttribute('points',pts);k.el.setAttribute('opacity',a);k.halo.setAttribute('opacity',a);return true;});
     raf=requestAnimationFrame(frame);
   }
   function start(){cancelAnimationFrame(raf);build();t0=performance.now();els.forEach(e=>e.lastMove=t0);raf=requestAnimationFrame(frame);}
@@ -1267,14 +1261,14 @@ document.querySelectorAll('[data-copy]').forEach(b=>b.addEventListener('click',(
 /* ---------- ink lab ---------- */
 (() => {
   const cv=document.getElementById('ink-canvas'), screen=document.getElementById('ink-screen'), hint=document.getElementById('ink-hint');
-  const ctx=cv.getContext('2d'); let mode='linux', strokes=[], cur=null, raf=0, lastChange=0, dpr=1;
+  const ctx=cv.getContext('2d'); let mode='mac', strokes=[], cur=null, raf=0, lastChange=0, dpr=1;
   const COLOR='#0a84ff';
   function size(){dpr=devicePixelRatio||1;cv.width=screen.clientWidth*dpr;cv.height=screen.clientHeight*dpr;}
   new ResizeObserver(size).observe(screen); size();
   const pt=e=>{const r=cv.getBoundingClientRect();return [e.clientX-r.left,e.clientY-r.top];};
   cv.addEventListener('pointerdown',e=>{if(e.button===2){if(mode==='mac'){strokes=[];}return;}cv.setPointerCapture(e.pointerId);const p=pt(e);cur={pts:[p],base:1,straight:e.shiftKey?0:-1,done:false,end:0};strokes.push(cur);lastChange=performance.now();});
   cv.addEventListener('pointermove',e=>{if(!cur)return;const p=pt(e);
-    if(e.shiftKey){ if(cur.straight<0) cur.straight=cur.pts.length-1; cur.pts=cur.pts.slice(0,cur.straight+1).concat([p]); }
+    if(e.shiftKey){ if(mode==='mac'){cur.pts=[cur.pts[0],p];} else { if(cur.straight<0) cur.straight=cur.pts.length-1; cur.pts=cur.pts.slice(0,cur.straight+1).concat([p]); } }
     else { if(cur.straight>=0){cur.straight=-1;} const l=cur.pts[cur.pts.length-1]; if(Math.hypot(p[0]-l[0],p[1]-l[1])>=(mode==='mac'?3:0.75)) cur.pts.push(p); }
     lastChange=performance.now();});
   const up=()=>{if(cur){cur.done=true;cur.end=performance.now();lastChange=cur.end;cur=null;}};
@@ -1306,7 +1300,7 @@ document.querySelectorAll('[data-copy]').forEach(b=>b.addEventListener('click',(
   raf=requestAnimationFrame(draw);
   document.querySelectorAll('[data-ink]').forEach(b=>b.addEventListener('click',()=>{mode=b.dataset.ink;strokes=[];
     document.querySelectorAll('[data-ink]').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));
-    hint.textContent=mode==='linux'?'Linux: ink holds 2.4 s, then thins and fades over 0.6 s · C clears':'Mac: all ink fades together 3 s after your last change · ⌘Z undoes · right-click clears';}));
+    hint.textContent=mode==='linux'?'Before: each stroke held 2.4 s, then thinned and faded over 0.6 s':'All ink fades together 3 s after your last change · ⌘Z undoes · right-click clears';}));
   document.getElementById('ink-clear').addEventListener('click',()=>{strokes=[];});
 })();
 
