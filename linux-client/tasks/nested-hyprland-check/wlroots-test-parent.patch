@@ -1,0 +1,16 @@
+--- a/types/xdg_shell/wlr_xdg_surface.c
++++ b/types/xdg_shell/wlr_xdg_surface.c
+@@ -284,9 +284,10 @@ static void xdg_surface_role_client_commit(struct wlr_surface *wlr_surface) {
+ 	assert(surface != NULL);
+ 
+ 	if (wlr_surface_state_has_buffer(&wlr_surface->pending) && !surface->configured) {
+-		wlr_surface_reject_pending(wlr_surface, surface->resource,
+-			XDG_SURFACE_ERROR_UNCONFIGURED_BUFFER, "xdg_surface has never been configured");
+-		return;
++        // ISOLATED TEST PARENT ONLY: Aquamarine 0.15.0 commits before ack_configure.
++        // Accept this first buffer so installed Hyprland can render in this test nest.
++        // This must never be shipped or installed as a user compositor library.
++        surface->configured = true;
+ 	}
+ 
+ 	if (surface->role_resource == NULL) {

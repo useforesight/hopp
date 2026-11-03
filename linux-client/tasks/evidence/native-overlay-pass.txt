@@ -1,0 +1,2 @@
+Nested capture ready: true
+Cursor show/hide/remap and drawing configure/crop/color/clear/remap/Drop passed on isolated WAYLAND-1

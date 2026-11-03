@@ -1,0 +1,1 @@
+NATIVE INPUT PASS: scoped pointer movement, clicks, typed text, key/button release on revoke, no typing after revoke.

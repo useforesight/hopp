@@ -1,0 +1,9 @@
+publisher signed in as Publisher Local; sees 3 teammate(s)
+publisher → call Viewer Local (online=True)
+publisher: dialing
+viewer: ringing from Publisher Local (call)
+viewer → accept
+viewer:    call in 'Publisher Local' connected=True participants=['Publisher Local'] mic=False
+publisher: call in 'Viewer Local' connected=True participants=['Viewer Local'] mic=False
+both left; call cleared
+PASS
