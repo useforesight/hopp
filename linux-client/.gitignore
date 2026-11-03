@@ -1,0 +1,9 @@
+/target/
+__pycache__/
+*.pyc
+hyprland-plugin/*.so
+
+# Promo renders: rebuilt by promo/**/make.sh, too large for git
+promo/**/build/
+promo/**/*.mp4
+promo/**/*.wav
