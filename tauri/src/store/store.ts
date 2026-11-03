@@ -7,6 +7,7 @@ import { emit, listen } from "@tauri-apps/api/event";
 import { TCallTokensMessage } from "@/payloads";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { CoreParticipantState, CoreRoleEvent } from "@/core_payloads";
+import { MissedCall, saveMissedCalls } from "@/lib/missed-calls";
 
 const windowName = getCurrentWindow().label;
 
@@ -51,6 +52,8 @@ type State = {
   incomingInviteInviterId: string | null;
   // Teammate to call as soon as their row in the list picks this up
   callbackUserId: string | null;
+  // Newest first. Kept until the user deals with them, and across restarts.
+  missedCalls: MissedCall[];
   // Call tokens for LiveKit
   callTokens: CallState | null;
   customServerUrl: string | null;
@@ -77,6 +80,7 @@ type Actions = {
   // representative anymore or the actual state it holds.
   updateCallTokens: (tokens: Partial<CallState>) => void;
   setCallbackUserId: (userId: string | null) => void;
+  setMissedCalls: (missedCalls: MissedCall[]) => void;
   setCustomServerUrl: (url: string | null) => void;
   setLivekitUrl: (url: string | null) => void;
   setCallsPresence: (presence: { [userId: string]: components["schemas"]["CallPresence"] } | null) => void;
@@ -95,6 +99,7 @@ const initialState: State = {
   inviting: null,
   incomingInviteInviterId: null,
   callbackUserId: null,
+  missedCalls: [],
   callTokens: null,
   customServerUrl: null,
   livekitUrl: null,
@@ -152,6 +157,10 @@ const useStore = create<State & Actions>()(
     setCallbackUserId: (userId) =>
       set((state) => {
         state.callbackUserId = userId;
+      }),
+    setMissedCalls: (missedCalls) =>
+      set((state) => {
+        state.missedCalls = missedCalls;
       }),
     setCallTokens: (tokens) =>
       set((state) => {
@@ -237,6 +246,16 @@ useStore.subscribe((state, prevState) => {
       invoke("toggle_call_sleep_prevention", { enabled: false }).catch((e) => {
         console.error("Failed to disable sleep prevention:", e);
       });
+    }
+
+    if (state.missedCalls !== prevState.missedCalls) {
+      saveMissedCalls(state.missedCalls);
+      const hasMissedCalls = state.missedCalls.length > 0;
+      if (hasMissedCalls !== prevState.missedCalls.length > 0) {
+        invoke("set_tray_missed_calls", { enabled: hasMissedCalls }).catch((e) => {
+          console.error("Failed to set the missed call badge:", e);
+        });
+      }
     }
   }
 });

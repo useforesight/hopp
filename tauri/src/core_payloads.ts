@@ -155,6 +155,7 @@ export interface CommandMap {
   quit_app: { args: void; return: void };
 
   set_tray_notification: { args: { enabled: boolean }; return: void };
+  set_tray_missed_calls: { args: { enabled: boolean }; return: void };
 
   // Permissions
   open_accessibility_settings: { args: void; return: void };

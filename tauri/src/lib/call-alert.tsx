@@ -37,7 +37,12 @@ let nextCallAlertId = 1;
 let autoDismissTimeout: ReturnType<typeof setTimeout> | undefined;
 let usingFallbackToast = false;
 let windowCommands: Promise<unknown> = Promise.resolve();
-let noticeWaitingForCard: CallNotice | null = null;
+let showNextCallAlert: () => void = () => {};
+
+/** Called whenever the card closes, in case something else was waiting for the space. */
+export const setNextCallAlertHandler = (handler: () => void) => {
+  showNextCallAlert = handler;
+};
 
 // Each command runs on its own thread in Tauri, so a hide and the show right
 // after it could otherwise swap places and leave the card hidden.
@@ -79,6 +84,11 @@ const setActiveCallAlert = (alert: CallAlert, onAction: CallAlertActionHandler, 
 
 export const getActiveCallAlertKind = () => activeCallAlert?.alert.kind ?? null;
 
+export const getShownMissedCallerId = () => {
+  const alert = activeCallAlert?.alert;
+  return alert?.kind === "missed" || alert?.kind === "missed-invite" ? alert.caller.id : null;
+};
+
 export const showCallAlert = (alert: CallAlert, onAction: CallAlertActionHandler, noticeKey?: string) => {
   setActiveCallAlert(alert, onAction, noticeKey);
   queueWindowCommand(() => typedInvoke("show_call_alert_window")).catch((error) => {
@@ -108,25 +118,15 @@ export const closeCallAlert = () => {
   queueWindowCommand(() => typedInvoke("close_call_alert_window")).catch((error) => {
     console.error("Failed to close call alert window:", error);
   });
-
-  const waitingNotice = noticeWaitingForCard;
-  noticeWaitingForCard = null;
-  if (waitingNotice) showCallNotice(waitingNotice);
+  showNextCallAlert();
 };
 
-export const showCallNotice = (notice: CallNotice) => {
-  const { key, title, body, actionLabel, onAction, autoDismissMs } = notice;
-
-  // Someone waiting for an answer matters more than a notice.
+export const showCallNotice = ({ key, title, body, actionLabel, onAction, autoDismissMs }: CallNotice) => {
+  // Someone waiting for an answer matters more than a notice. A missed call doesn't need to
+  // hold its place, as it's kept in the list and comes back when the notice closes.
   const activeKind = getActiveCallAlertKind();
   if (activeKind === "ringing" || activeKind === "invite" || activeKind === "connecting") {
     console.warn(`Not showing "${title}" over an incoming call`);
-    return;
-  }
-
-  // Replacing a missed call would lose it, and it can stay up for hours, so this waits.
-  if (activeKind === "missed" || activeKind === "missed-invite") {
-    noticeWaitingForCard = notice;
     return;
   }
 
@@ -145,7 +145,6 @@ export const showCallNotice = (notice: CallNotice) => {
 };
 
 export const closeCallNotice = (key: string) => {
-  if (noticeWaitingForCard?.key === key) noticeWaitingForCard = null;
   if (activeCallAlert?.noticeKey === key) closeCallAlert();
 };
 

@@ -1,8 +1,10 @@
 import clsx from "clsx";
+import { useEffect, useState } from "react";
 import { HiMiniPhone, HiMiniPhoneArrowDownLeft, HiMiniPhoneXMark } from "react-icons/hi2";
 import { Button } from "./button";
 import { HoppAvatar } from "./hopp-avatar";
 import { CallAlert, CallAlertAction } from "@/lib/call-alert-types";
+import { describeMissedCall, MissedCall } from "@/lib/missed-calls";
 import { cn } from "@/lib/utils";
 
 const CARD_CLASS_NAME =
@@ -15,9 +17,17 @@ const ANSWER_ACTION_CLASS_NAME =
 const PERSON_SUBTITLES = {
   ringing: "Calling you…",
   connecting: "Connecting…",
-  missed: "Missed call",
   invite: "Invited you to join a call",
-  "missed-invite": "Missed invite to a call",
+};
+
+/** Stays up to date while it's on screen, as a missed call can sit there past midnight. */
+export const MissedCallText = ({ missedCall }: { missedCall: MissedCall }) => {
+  const [, refresh] = useState(0);
+  useEffect(() => {
+    const interval = setInterval(() => refresh((count) => count + 1), 60_000);
+    return () => clearInterval(interval);
+  }, []);
+  return <>{describeMissedCall(missedCall)}</>;
 };
 
 export const CallAlertCard = ({
@@ -72,7 +82,9 @@ export const CallAlertCard = ({
         <div className="flex min-w-0 flex-col">
           <span className="truncate text-sm leading-5 font-semibold tracking-[-0.005em]">{callerName}</span>
           <span className={clsx("truncate text-xs leading-4", isMissed ? "text-destructive" : "text-muted-foreground")}>
-            {PERSON_SUBTITLES[alert.kind]}
+            {isMissed ?
+              <MissedCallText missedCall={alert.missedCall} />
+            : PERSON_SUBTITLES[alert.kind]}
           </span>
         </div>
       </div>
@@ -107,9 +119,11 @@ export const CallAlertCard = ({
               >
                 Dismiss
               </Button>
-              <Button size="sm" onClick={() => onAction("call-back")} className={ANSWER_ACTION_CLASS_NAME}>
-                <HiMiniPhone className="size-4 min-h-4 min-w-4" /> Call back
-              </Button>
+              {alert.canCallBack && (
+                <Button size="sm" onClick={() => onAction("call-back")} className={ANSWER_ACTION_CLASS_NAME}>
+                  <HiMiniPhone className="size-4 min-h-4 min-w-4" /> Call back
+                </Button>
+              )}
             </>
           )}
           {alert.kind === "missed-invite" && (
