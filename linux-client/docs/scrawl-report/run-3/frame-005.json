@@ -1,0 +1,23 @@
+{
+  "number": 5,
+  "t_ms": 25251,
+  "width": 1920,
+  "height": 1080,
+  "trigger": "screen",
+  "caption": "#5 the shared screen changed",
+  "marks": [],
+  "ink": [
+    {
+      "by": "Sam Local",
+      "shape": "pin",
+      "pin": 1,
+      "bounds": [
+        0.24,
+        0.435,
+        0.24,
+        0.435
+      ],
+      "colour": "#30d158"
+    }
+  ]
+}
