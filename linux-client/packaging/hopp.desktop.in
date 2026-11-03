@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Hopp for Omarchy
+Comment=Native pair programming with screen sharing and remote control
+Exec=@BINARY@ %u
+Icon=hopp
+Terminal=false
+StartupWMClass=hopp
+MimeType=x-scheme-handler/hopp;
+Categories=Development;
+Keywords=pair programming;screen sharing;remote control;
