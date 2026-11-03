@@ -4,8 +4,7 @@ Releases are published at <https://github.com/useforesight/hopp/releases>. Every
 
 ## One-time setup
 
-1. In the repo's Actions tab, if GitHub says workflows aren't being run on this fork, enable them.
-2. Add these secrets to the `Release` environment (Settings > Environments):
+Add these secrets to the `Release` environment (Settings > Environments):
 
 | Secret                       | Value                                                                     |
 | ---------------------------- | ------------------------------------------------------------------------- |
