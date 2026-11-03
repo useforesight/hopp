@@ -133,7 +133,10 @@ class Bridge:
                 delay = min(delay * 2, 5)
 
     def command(self, action, value):
-        if action in SIMPLE:
+        if action == "captures":
+            # Carries an optional call id: {"captures": null} opens the window as it was.
+            payload = {"ui": {"captures": None}}
+        elif action in SIMPLE:
             payload = {"ui": SIMPLE[action]}
         elif action in WITH_ID and isinstance(value, str) and 0 < len(value) <= 128:
             payload = {"ui": {WITH_ID[action]: value}}
