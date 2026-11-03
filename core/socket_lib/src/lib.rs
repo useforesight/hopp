@@ -175,6 +175,9 @@ pub struct CoreParticipantState {
     pub muted: bool,
     pub has_camera: bool,
     pub is_screensharing: bool,
+    /// Capturing (transcribing) the call, as Hopp for Linux does.
+    #[serde(default)]
+    pub capturing: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

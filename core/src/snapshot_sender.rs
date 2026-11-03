@@ -54,6 +54,7 @@ impl SnapshotSender {
                         muted: info.muted(),
                         has_camera: info.camera_active(),
                         is_screensharing: info.is_screensharing(),
+                        capturing: info.capturing(),
                     },
                 );
                 continue;
@@ -74,11 +75,14 @@ impl SnapshotSender {
                     muted: false,
                     has_camera: false,
                     is_screensharing: false,
+                    capturing: false,
                 }
             });
 
             if track_type == "audio" {
                 entry.muted = info.muted();
+                // Set on the audio connection, like mute.
+                entry.capturing = info.capturing();
             }
 
             entry.has_camera = entry.has_camera || info.camera_active();

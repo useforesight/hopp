@@ -1,5 +1,13 @@
 import { showCallNotice } from "@/lib/call-alert";
-import { LuMicOff, LuPhoneOff, LuVideo, LuVideoOff, LuScreenShare, LuScreenShareOff } from "react-icons/lu";
+import {
+  LuAudioLines,
+  LuMicOff,
+  LuPhoneOff,
+  LuVideo,
+  LuVideoOff,
+  LuScreenShare,
+  LuScreenShareOff,
+} from "react-icons/lu";
 import { PiScribbleLoopBold, PiCursorBold } from "react-icons/pi";
 import useStore, { CallState, ParticipantRole } from "@/store/store";
 import {
@@ -191,6 +199,7 @@ export function CallCenter() {
   return (
     <div className="flex h-[var(--app-height)] w-full flex-col gap-2.5 px-3 pb-3 pt-3.5">
       <CallHeader onCopyRoomLink={handleCopyRoomLink} />
+      <CaptureNotice />
       <CallParticipants />
 
       {callTokens.role === ParticipantRole.CONTROLLER && (
@@ -301,6 +310,7 @@ function useCallTiles() {
           isMicrophoneEnabled: hasAudioEnabled,
           hasCamera: hasCameraEnabled,
           isScreensharing: isSharing,
+          isCapturing: false,
         }
       : null;
 
@@ -321,6 +331,7 @@ function useCallTiles() {
           isMicrophoneEnabled: !p.muted,
           hasCamera: p.has_camera,
           isScreensharing: p.is_screensharing,
+          isCapturing: !!p.capturing,
         };
       });
 
@@ -413,6 +424,26 @@ function MicLevelRing() {
   );
 }
 
+/** Who is transcribing the call, so nobody is captured without knowing. */
+function CaptureNotice() {
+  const names = useCallTiles()
+    .filter((tile) => tile.isCapturing)
+    .map((tile) => tile.user?.first_name ?? tile.name);
+  if (names.length === 0) return null;
+  const who = names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+  return (
+    <div
+      role="status"
+      className="flex items-center gap-2 rounded-[12px] bg-destructive/10 px-3 py-1.5 text-xs text-destructive animate-in fade-in-0 duration-300"
+    >
+      <LuAudioLines aria-hidden className="size-3.5 shrink-0" />
+      <span className="truncate">
+        {who} {names.length === 1 ? "is" : "are"} transcribing this call
+      </span>
+    </div>
+  );
+}
+
 function CallParticipants() {
   const coreParticipantCount = useStore((state) => state.callTokens?.participants.length ?? 0);
   const isInitialising = useStore((state) => !!state.callTokens?.isInitialisingCall);
@@ -456,6 +487,9 @@ function CallParticipants() {
           <div className="absolute right-2 top-2 flex items-center gap-1 text-muted-foreground">
             {tile.hasCamera && <LuVideo aria-label="Camera on" className="size-3.5 text-success" />}
             {tile.isScreensharing && <LuScreenShare aria-label="Sharing screen" className="size-3.5 text-accent" />}
+            {tile.isCapturing && (
+              <LuAudioLines aria-label="Transcribing this call" className="size-3.5 text-destructive" />
+            )}
           </div>
           <div className="relative">
             {tile.isLocal && tile.isMicrophoneEnabled && <MicLevelRing />}

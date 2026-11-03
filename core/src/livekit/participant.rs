@@ -1,14 +1,28 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::livekit::audio::AudioTrackHandle;
 use crate::livekit::video::VideoBufferManager;
 
+/// Participant attribute Hopp for Linux sets on its audio connection while it captures
+/// (transcribes) the call: `"1"` while capturing, empty otherwise.
+pub const CAPTURE_ATTRIBUTE: &str = "hopp.capture";
+
+/// Whether these participant attributes say the participant is capturing the call.
+pub fn capturing_from(attributes: &HashMap<String, String>) -> bool {
+    attributes
+        .get(CAPTURE_ATTRIBUTE)
+        .is_some_and(|value| value == "1")
+}
+
 pub struct ParticipantInfo {
     name: String,
     muted: bool,
     is_speaking: bool,
     is_screensharing: bool,
+    /// Capturing (transcribing) the call, from [`CAPTURE_ATTRIBUTE`].
+    capturing: bool,
     camera_buffers: Arc<VideoBufferManager>,
     audio_handle: Option<AudioTrackHandle>,
     camera_stop_tx: Option<mpsc::UnboundedSender<()>>,
@@ -20,6 +34,7 @@ impl std::fmt::Debug for ParticipantInfo {
             .field("name", &self.name)
             .field("muted", &self.muted)
             .field("is_speaking", &self.is_speaking)
+            .field("capturing", &self.capturing)
             .finish()
     }
 }
@@ -31,6 +46,7 @@ impl ParticipantInfo {
             muted,
             is_speaking,
             is_screensharing: false,
+            capturing: false,
             camera_buffers: Arc::new(VideoBufferManager::default()),
             audio_handle: None,
             camera_stop_tx: None,
@@ -51,7 +67,9 @@ impl ParticipantInfo {
             }
         }
 
-        Self::new(name.clone(), muted, is_speaking)
+        let mut info = Self::new(name.clone(), muted, is_speaking);
+        info.capturing = capturing_from(&participant.attributes());
+        info
     }
 
     pub fn name(&self) -> &str {
@@ -72,6 +90,14 @@ impl ParticipantInfo {
 
     pub fn set_is_speaking(&mut self, is_speaking: bool) {
         self.is_speaking = is_speaking;
+    }
+
+    pub fn capturing(&self) -> bool {
+        self.capturing
+    }
+
+    pub fn set_capturing(&mut self, capturing: bool) {
+        self.capturing = capturing;
     }
 
     pub fn is_screensharing(&self) -> bool {
@@ -108,5 +134,20 @@ impl ParticipantInfo {
         if let Some(tx) = self.camera_stop_tx.take() {
             let _ = tx.send(());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capturing_follows_the_capture_attribute() {
+        let mut attributes = HashMap::new();
+        assert!(!capturing_from(&attributes));
+        attributes.insert(CAPTURE_ATTRIBUTE.to_string(), "1".to_string());
+        assert!(capturing_from(&attributes));
+        attributes.insert(CAPTURE_ATTRIBUTE.to_string(), String::new());
+        assert!(!capturing_from(&attributes));
     }
 }
