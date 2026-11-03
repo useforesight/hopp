@@ -343,7 +343,7 @@ impl RemoteControl {
         self.cursor_controller
             .update_cursors(gfx.participants_manager_mut());
         self.cursor_controller.hide_inactive_cursors();
-        let cleared_path_ids = gfx.participants_manager_mut().update_auto_clear();
+        let cleared_path_ids = gfx.update_auto_clear();
         let overlay_window = self.cursor_controller.get_overlay_window();
         let translator = overlay_window.create_position_translator();
         gfx.draw(&translator);
@@ -1218,6 +1218,7 @@ impl<'a> Application<'a> {
             }
             if let Some(gfx) = window_manager.active_gfx_mut() {
                 gfx.set_drawing_mode(identity, drawing_mode);
+                gfx.trigger_render();
             }
         }
     }
@@ -1998,18 +1999,22 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                 if let (Some(window_manager), Some(remote_control)) =
                     (self.window_manager.as_mut(), self.remote_control.as_mut())
                 {
-                    if let Some(gfx) = window_manager.active_gfx_mut() {
-                        gfx.draw_start(sid.as_str(), pos, path_id);
+                    let line_redrawn = window_manager
+                        .active_gfx_mut()
+                        .is_some_and(|gfx| gfx.draw_start(sid.as_str(), pos, path_id));
+                    // A straight line being dragged out restarts from its far end, the pen isn't there.
+                    if !line_redrawn {
+                        remote_control.cursor_controller.cursor_move_controller(
+                            point.x,
+                            point.y,
+                            sid.as_str(),
+                        );
                     }
-                    remote_control.cursor_controller.cursor_move_controller(
-                        point.x,
-                        point.y,
-                        sid.as_str(),
-                    );
                 }
                 if let Some(screensharing_window) = &mut self.screensharing_window {
-                    if screensharing_window.is_visible() {
-                        screensharing_window.draw_start(sid.as_str(), pos, path_id);
+                    if screensharing_window.is_visible()
+                        && !screensharing_window.draw_start(sid.as_str(), pos, path_id)
+                    {
                         screensharing_window.set_cursor_position(sid.as_str(), Some(pos));
                     }
                 }
@@ -2713,8 +2718,8 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
         // Route to drawing window if it matches
         if let Some(drawing) = &mut self.drawing_window {
             if drawing.window_id() == window_id {
-                let input_event = drawing.handle_window_event(event);
-                if let Some(event) = input_event {
+                let input_events = drawing.handle_window_event(event);
+                for event in input_events {
                     if matches!(
                         event,
                         window::drawing_window::DrawingWindowInputEvent::Escape
