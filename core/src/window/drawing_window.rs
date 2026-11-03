@@ -450,6 +450,11 @@ impl DrawingWindow {
         ));
     }
 
+    pub fn set_call_people(&mut self, local_identity: Option<&str>, people: &[String]) {
+        self.participants_manager
+            .set_call_people(local_identity, people);
+    }
+
     pub fn set_draw_persist(&mut self, permanent: bool) {
         self.draw_persist = permanent;
         self.participants_manager.set_drawing_mode(

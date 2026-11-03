@@ -50,7 +50,6 @@ pub mod graphics {
 pub mod utils {
     pub mod clock;
     pub mod geometry;
-    pub mod svg_renderer;
 }
 
 pub(crate) mod window {
@@ -913,6 +912,35 @@ impl<'a> Application<'a> {
         }
     }
 
+    /// Gives everyone the colors the whole call agrees on. Call it when someone joins or
+    /// leaves, and when a window's participants are rebuilt.
+    fn sync_call_colours(&mut self) {
+        let Some(room_service) = self.room_service.as_ref() else {
+            return;
+        };
+        let local_identity = room_service.local_identity();
+        let local_identity = local_identity.as_deref();
+        let people: Vec<String> = room_service
+            .get_participants()
+            .into_iter()
+            .map(|participant| participant.identity)
+            .collect();
+        if let Some(gfx) = self
+            .window_manager
+            .as_mut()
+            .and_then(|window_manager| window_manager.active_gfx_mut())
+        {
+            gfx.participants_manager_mut()
+                .set_call_people(local_identity, &people);
+        }
+        if let Some(window) = &mut self.screensharing_window {
+            window.set_call_people(local_identity, &people);
+        }
+        if let Some(window) = &mut self.drawing_window {
+            window.set_call_people(local_identity, &people);
+        }
+    }
+
     fn close_camera_window(&mut self) {
         log::info!("close_camera_window");
         if let Some(cam) = &mut self.camera_window {
@@ -1190,6 +1218,7 @@ impl<'a> Application<'a> {
                 }
             }
         }
+        self.sync_call_colours();
 
         Ok(())
     }
@@ -1845,6 +1874,7 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                         }
                     }
                 }
+                self.sync_call_colours();
             }
             UserEvent::ParticipantDisconnected(participant) => {
                 log::debug!("user_event: Participant disconnected: {participant:?}");
@@ -1865,6 +1895,7 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                         screensharing_window.remove_participant(participant.identity.as_str());
                     }
                 }
+                self.sync_call_colours();
             }
             UserEvent::LivekitServerUrl(url) => {
                 log::debug!("user_event: Livekit server url: {url}");
@@ -2422,6 +2453,7 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                 ) {
                     screensharing_window.set_app_veil_snapshot(room_service.app_veil_snapshot());
                 }
+                self.sync_call_colours();
                 if let Some(screensharing_window) = &self.screensharing_window {
                     if let Some(room_service) = self.room_service.as_ref() {
                         room_service.publish_drawing_mode(screensharing_window.drawing_mode());
@@ -2595,6 +2627,7 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                             .and_then(|wm| wm.active_window_position());
                         win.set_draw_persist(drawing_enabled.permanent);
                         win.show(overlay_position, capture_frame);
+                        self.sync_call_colours();
                         log::info!(
                             "Local drawing mode enabled (permanent: {})",
                             drawing_enabled.permanent
@@ -2614,6 +2647,7 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                         ) {
                             Ok(win) => {
                                 self.drawing_window = Some(win);
+                                self.sync_call_colours();
                                 log::info!(
                                     "Local drawing mode enabled (permanent: {})",
                                     drawing_enabled.permanent

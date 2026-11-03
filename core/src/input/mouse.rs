@@ -85,7 +85,8 @@ pub use platform::{CursorSimulator, MouseObserver};
 /// 4. Loop is broken, preventing recursive event generation
 pub const CUSTOM_MOUSE_EVENT: i64 = 1234;
 
-const CURSOR_HIDE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Long enough for a resting cursor to fade out by itself.
+const CURSOR_HIDE_TIMEOUT: Duration = hopp_marks::pointer::POINTER_GONE;
 
 const SHARER_POSITION_UPDATE_INTERVAL: Duration = Duration::from_millis(30);
 

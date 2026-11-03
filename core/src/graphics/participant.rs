@@ -4,14 +4,12 @@
 //! per-participant state including drawing and cursor rendering.
 
 use crate::utils::geometry::Position;
-use crate::utils::svg_renderer::SvgRenderError;
+use hopp_marks::colours::{self, Colours};
 use iced::widget::canvas::{Frame, Geometry};
 use iced::{Rectangle, Renderer};
-use std::collections::{HashMap, VecDeque};
-use std::time::Duration;
+use std::collections::HashMap;
+use std::time::Instant;
 use thiserror::Error;
-
-const CURSOR_HIDE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[path = "draw.rs"]
 mod draw;
@@ -26,16 +24,16 @@ pub use cursor::CursorMode;
 
 use crate::room_service::DrawingMode;
 
-const SHARER_COLOR: &str = "#7CCF00";
-const DEFAULT_COLOR: &str = "#FF0000";
+/// How the manager knows you, whoever you are in the call.
+const LOCAL_IDENTITY: &str = "local";
 
 /// Errors that can occur during participant management.
 #[derive(Error, Debug)]
 pub enum ParticipantError {
     #[error("Participant already exists: {0}")]
     AlreadyExists(String),
-    #[error("SVG render error: {0}")]
-    SvgRender(#[from] SvgRenderError),
+    #[error("Couldn't render the cursor for {0}")]
+    CursorRender(String),
 }
 
 /// Generates a unique visible name based on the full name and existing names.
@@ -89,27 +87,40 @@ fn generate_unique_visible_name(name: &str, used_names: &[String]) -> String {
 pub struct Participant {
     draw: Draw,
     cursor: Cursor,
-    color: &'static str,
+    rgb: [u8; 3],
 }
 
 impl Participant {
     /// Creates a new participant with the given color, name and auto-clear setting.
     ///
     /// # Arguments
-    /// * `color` - Hex color string for the participant's drawings and cursor
+    /// * `rgb` - Color of the participant's drawings and cursor
     /// * `name` - Display name for the participant's cursor
     /// * `auto_clear` - Whether to automatically clear paths after 3 seconds
+    /// * `follows_instantly` - Whether the cursor skips playback, because it's your own
     pub fn new(
-        color: &'static str,
+        rgb: [u8; 3],
         name: &str,
         auto_clear: bool,
         initial_drawing_mode: DrawingMode,
-    ) -> Result<Self, SvgRenderError> {
+        follows_instantly: bool,
+    ) -> Result<Self, ParticipantError> {
         Ok(Self {
-            draw: Draw::new(color, auto_clear, initial_drawing_mode),
-            cursor: Cursor::new(color, name)?,
-            color,
+            draw: Draw::new(&colours::hex(rgb), auto_clear, initial_drawing_mode),
+            cursor: Cursor::new(rgb, name, follows_instantly)
+                .ok_or_else(|| ParticipantError::CursorRender(name.to_string()))?,
+            rgb,
         })
+    }
+
+    /// Changes the participant's color, including ink they've already drawn.
+    fn set_colour(&mut self, rgb: [u8; 3]) {
+        if self.rgb == rgb {
+            return;
+        }
+        self.rgb = rgb;
+        self.draw.set_color(&colours::hex(rgb));
+        self.cursor.set_colour(rgb);
     }
 
     /// Returns a reference to the participant's Draw instance.
@@ -131,34 +142,30 @@ impl Participant {
     pub fn cursor_mut(&mut self) -> &mut Cursor {
         &mut self.cursor
     }
+}
 
-    /// Returns the participant's color.
-    pub fn color(&self) -> &str {
-        self.color
-    }
+/// A participant's color: the one the call agreed on, or else the one they'd prefer.
+fn colour_of(call_colours: &Colours, local_identity: Option<&str>, identity: &str) -> [u8; 3] {
+    let person = match local_identity {
+        Some(local_identity) if identity == LOCAL_IDENTITY => local_identity,
+        _ => identity,
+    };
+    call_colours
+        .get(person)
+        .unwrap_or_else(|| colours::colour(person))
 }
 
 /// Manager that owns Participant objects mapped by participant identity.
 ///
-/// Each participant gets their own Participant instance with their assigned color,
-/// drawing state, and cursor.
-#[derive(Debug)]
+/// Each participant gets their own Participant instance with their color, drawing state,
+/// and cursor.
+#[derive(Debug, Default)]
 pub struct ParticipantsManager {
     participants: HashMap<String, Participant>,
-    /// Available colors for new controllers
-    available_colors: VecDeque<&'static str>,
-}
-
-impl Default for ParticipantsManager {
-    fn default() -> Self {
-        Self {
-            participants: HashMap::new(),
-            available_colors: VecDeque::from([
-                "#615FFF", "#009689", "#C800DE", "#00A6F4", "#FFB900", "#ED0040", "#E49500",
-                "#B80088", "#FF5BFF", "#00D091",
-            ]),
-        }
-    }
+    /// Everyone's colors in this call, worked out the same way on every machine.
+    call_colours: Colours,
+    /// Who you are in this call, for your own color.
+    local_identity: Option<String>,
 }
 
 impl ParticipantsManager {
@@ -166,15 +173,24 @@ impl ParticipantsManager {
         Self::default()
     }
 
-    /// Adds a new participant with automatic color assignment.
+    /// Gives everyone the colors worked out from who's in the call, so each person has the
+    /// same one on every machine. A clash can move someone's color as people come and go.
+    pub fn set_call_people(&mut self, local_identity: Option<&str>, people: &[String]) {
+        self.local_identity = local_identity.map(str::to_owned);
+        self.call_colours =
+            Colours::for_call(people.iter().map(String::as_str).chain(local_identity));
+        for (identity, participant) in &mut self.participants {
+            participant.set_colour(colour_of(&self.call_colours, local_identity, identity));
+        }
+    }
+
+    /// Adds a new participant with their color.
     ///
     /// # Arguments
     /// * `identity` - Identity for the participant
     /// * `name` - Full name of the participant (will be made unique)
     /// * `auto_clear` - Whether to automatically clear paths after 3 seconds
     ///
-    /// # Returns
-    /// The assigned color, or None if no colors are available
     pub fn add_participant(
         &mut self,
         identity: String,
@@ -187,17 +203,11 @@ impl ParticipantsManager {
             return Err(ParticipantError::AlreadyExists(identity));
         }
 
-        let color = if identity == "local" {
-            SHARER_COLOR
-        } else {
-            self.available_colors.pop_front().unwrap_or_else(|| {
-                log::warn!(
-                    "ParticipantsManager::add_participant: no colors available for participant {}",
-                    identity
-                );
-                DEFAULT_COLOR
-            })
-        };
+        let rgb = colour_of(
+            &self.call_colours,
+            self.local_identity.as_deref(),
+            &identity,
+        );
 
         let used_names: Vec<String> = self
             .participants
@@ -209,18 +219,25 @@ impl ParticipantsManager {
         log::info!(
             "ParticipantsManager::add_participant: identity={} color={} auto_clear={}",
             identity,
-            color,
+            colours::hex(rgb),
             auto_clear
         );
 
+        let follows_instantly = identity == LOCAL_IDENTITY;
         self.participants.insert(
             identity,
-            Participant::new(color, &visible_name, auto_clear, initial_drawing_mode)?,
+            Participant::new(
+                rgb,
+                &visible_name,
+                auto_clear,
+                initial_drawing_mode,
+                follows_instantly,
+            )?,
         );
         Ok(())
     }
 
-    /// Removes all participants and resets color pool.
+    /// Removes all participants and forgets the call's colors.
     pub fn clear(&mut self) {
         *self = Self::default();
     }
@@ -244,17 +261,11 @@ impl ParticipantsManager {
             "ParticipantsManager::remove_participant: identity={}",
             identity
         );
-        let participant = self.participants.remove(identity);
-        if participant.is_none() {
+        if self.participants.remove(identity).is_none() {
             log::warn!(
                 "ParticipantsManager::remove_participant: participant {} not found",
                 identity
             );
-            return;
-        };
-        let participant = participant.unwrap();
-        if identity != "local" {
-            self.available_colors.push_back(participant.color);
         }
     }
 
@@ -415,12 +426,22 @@ impl ParticipantsManager {
         }
     }
 
-    /// Hides cursors that haven't been updated within `CURSOR_HIDE_TIMEOUT`.
+    /// Whether any cursor is moving or fading and needs frames even with no input.
+    pub fn is_cursor_animating(&self) -> bool {
+        let now = Instant::now();
+        self.participants
+            .values()
+            .any(|participant| participant.cursor().is_animating(now))
+    }
+
+    /// Hides cursors that have rested long enough to have faded out. A pen held still in the
+    /// middle of a stroke is still there.
     pub fn hide_inactive_cursors(&mut self) {
+        let now = Instant::now();
         for participant in self.participants.values_mut() {
-            participant
-                .cursor_mut()
-                .hide_if_expired(CURSOR_HIDE_TIMEOUT);
+            if participant.draw().pen_tip().is_none() {
+                participant.cursor_mut().hide_if_gone(now);
+            }
         }
     }
 
@@ -453,11 +474,116 @@ impl ParticipantsManager {
                 .draw_in_progress_to_frame(&mut in_progress_frame, translate);
         }
 
+        let now = Instant::now();
         for participant in self.participants.values() {
-            participant.cursor().draw(&mut in_progress_frame, translate);
+            participant.cursor().draw(
+                &mut in_progress_frame,
+                translate,
+                participant.draw().pen_tip(),
+                now,
+            );
         }
         geometries.push(in_progress_frame.into_geometry());
 
         geometries
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two user ids that want the same color, so one of them has to move.
+    fn clashing_people() -> (String, String) {
+        let ids: Vec<String> = (0..50).map(|i| format!("usr_{i}")).collect();
+        for first in &ids {
+            for second in &ids {
+                if first != second && colours::colour(first) == colours::colour(second) {
+                    return (first.clone(), second.clone());
+                }
+            }
+        }
+        unreachable!("fifty people and eight colors");
+    }
+
+    fn identity(person: &str, connection: &str) -> String {
+        format!("room:r:{person}:{connection}")
+    }
+
+    /// One machine in the call: `me`, looking at everyone else.
+    fn machine(me: &str, others: &[&str]) -> ParticipantsManager {
+        let mut manager = ParticipantsManager::new();
+        manager
+            .add_participant(LOCAL_IDENTITY.to_string(), "Me ", true, DrawingMode::Any)
+            .unwrap();
+        let others: Vec<String> = others
+            .iter()
+            .map(|person| identity(person, "video"))
+            .collect();
+        for other in &others {
+            manager
+                .add_participant(other.clone(), "Someone", false, DrawingMode::Any)
+                .unwrap();
+        }
+        manager.set_call_people(Some(&identity(me, "audio")), &others);
+        manager
+    }
+
+    fn colour_on(manager: &ParticipantsManager, identity: &str) -> [u8; 3] {
+        manager.participants[identity].rgb
+    }
+
+    #[test]
+    fn a_person_has_the_same_colour_on_every_machine() {
+        let (first, second) = clashing_people();
+        let on_firsts = machine(&first, &[&second]);
+        let on_seconds = machine(&second, &[&first]);
+
+        let first_on_seconds = colour_on(&on_seconds, &identity(&first, "video"));
+        let second_on_firsts = colour_on(&on_firsts, &identity(&second, "video"));
+        assert_eq!(colour_on(&on_firsts, LOCAL_IDENTITY), first_on_seconds);
+        assert_eq!(colour_on(&on_seconds, LOCAL_IDENTITY), second_on_firsts);
+        assert_ne!(first_on_seconds, second_on_firsts);
+    }
+
+    #[test]
+    fn a_clash_is_settled_again_when_someone_leaves() {
+        let (first, second) = clashing_people();
+        let mut manager = machine(&second, &[&first]);
+        let mine = colour_on(&manager, LOCAL_IDENTITY);
+        assert_ne!(mine, colours::colour(&second), "first keeps the color");
+
+        let theirs = identity(&first, "video");
+        manager.remove_participant(&theirs);
+        manager.set_call_people(Some(&identity(&second, "audio")), &[]);
+        assert_eq!(
+            colour_on(&manager, LOCAL_IDENTITY),
+            colours::colour(&second)
+        );
+    }
+
+    #[test]
+    fn someone_joining_gets_the_colour_the_call_agreed_on() {
+        let (first, second) = clashing_people();
+        let mut manager = machine(&first, &[]);
+        let joining = identity(&second, "video");
+        manager.set_call_people(Some(&identity(&first, "audio")), &[joining.clone()]);
+        manager
+            .add_participant(joining.clone(), "Someone", false, DrawingMode::Any)
+            .unwrap();
+        assert_ne!(
+            colour_on(&manager, &joining),
+            colour_on(&manager, LOCAL_IDENTITY)
+        );
+    }
+
+    #[test]
+    fn before_the_call_is_known_people_get_their_own_colour() {
+        let mut manager = ParticipantsManager::new();
+        let person = identity("usr_1", "video");
+        manager
+            .add_participant(person.clone(), "Someone", false, DrawingMode::Any)
+            .unwrap();
+        assert_eq!(colour_on(&manager, &person), colours::colour("usr_1"));
     }
 }

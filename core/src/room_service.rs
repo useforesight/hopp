@@ -258,6 +258,8 @@ pub(crate) struct RoomServiceInner {
     snapshot_sender: SnapshotSender,
     app_veil_snapshot: std::sync::Mutex<Option<AppVeilSnapshot>>,
     published_app_veil_snapshot: std::sync::Mutex<Option<AppVeilSnapshot>>,
+    /// Your identity in the room, while you're in one.
+    local_identity: std::sync::Mutex<Option<String>>,
 }
 
 impl RoomServiceInner {
@@ -298,6 +300,7 @@ impl RoomServiceInner {
         }
         {
             self.participants.write().unwrap().clear();
+            self.local_identity.lock().unwrap().take();
         }
         {
             self.remote_screen_share.buffer.lock().unwrap().take();
@@ -423,6 +426,7 @@ impl RoomService {
             snapshot_sender,
             app_veil_snapshot: std::sync::Mutex::new(None),
             published_app_veil_snapshot: std::sync::Mutex::new(None),
+            local_identity: std::sync::Mutex::new(None),
         });
         let audio_runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -559,6 +563,11 @@ impl RoomService {
         if let Err(e) = res {
             log::error!("tick_response: Failed to send command: {e:?}");
         }
+    }
+
+    /// Your identity in the room, while you're in one.
+    pub fn local_identity(&self) -> Option<String> {
+        self.inner.local_identity.lock().unwrap().clone()
     }
 
     /// Returns a list of all non-local participants from the participants map.
@@ -1229,6 +1238,7 @@ async fn room_service_commands(
                 )));
                 log::info!("room_service_commands: Spawned stats task");
                 let user_identity = room.local_participant().identity().as_str().to_string();
+                *inner.local_identity.lock().unwrap() = Some(user_identity.clone());
                 let user_name = room.local_participant().name();
                 log::info!("room_service_commands: Got user identity and name");
                 {

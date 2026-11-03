@@ -1,0 +1,10 @@
+[package]
+name = "hopp-marks"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+description = "What people put on a shared screen, the same in every Hopp client: colours, cursor sprites and cursor playback"
+
+[dependencies]
+# A range, so each client's lockfile keeps the version it already has.
+resvg = { version = ">=0.45, <0.47", default-features = false, features = ["text", "system-fonts"] }
