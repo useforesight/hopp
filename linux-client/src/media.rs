@@ -225,7 +225,13 @@ pub struct Session {
     playback: Option<Playback>,
     audio_queues: AudioQueues,
     render_reference: Arc<RenderReference>,
+    /// The open microphone device and the work feeding it into `voice`.
     microphone: Option<Microphone>,
+    /// Your microphone track, published muted when the call connects and kept for the
+    /// whole call: muting mutes it rather than unpublishing it. Other Hopp apps show
+    /// you as muted from this track's mute state, so with no track (or a new one after
+    /// each unmute) they showed the wrong state.
+    voice: Option<(LocalAudioTrack, NativeAudioSource)>,
     camera: Option<Camera>,
     camera_slots: CameraSlots,
     input_device: Option<String>,
@@ -362,6 +368,7 @@ impl Session {
             audio_queues,
             render_reference,
             microphone: None,
+            voice: None,
             camera: None,
             camera_slots,
             input_device: None,
@@ -454,25 +461,12 @@ impl Session {
             .context("Sending Hopp room data")
     }
 
-    /// The device is opened only after an explicit unmute. Muting closes it.
-    pub async fn set_microphone(&mut self, enabled: bool) -> Result<()> {
-        if !enabled {
-            if let Some(microphone) = self.microphone.take() {
-                microphone.track.mute();
-                let sid = microphone.track.sid();
-                drop(microphone);
-                self.audio_room
-                    .local_participant()
-                    .unpublish_track(&sid)
-                    .await?;
-            }
-            return Ok(());
+    /// Your microphone track, published muted the first time it's needed.
+    async fn voice(&mut self) -> Result<(LocalAudioTrack, NativeAudioSource)> {
+        if let Some(voice) = &self.voice {
+            return Ok(voice.clone());
         }
-        if self.microphone.is_some() {
-            return Ok(());
-        }
-        let (mut stream, source, samples, sample_rate, channels, failed) =
-            microphone_device(self.input_device.as_deref(), self.events.clone())?;
+        let source = microphone_source();
         let track = LocalAudioTrack::create_audio_track(
             "microphone",
             RtcAudioSource::Native(source.clone()),
@@ -488,14 +482,36 @@ impl Session {
             )
             .await
             .context("Publishing microphone")?;
-        if let Err(error) = stream.play(&samples, &self.events, &failed) {
-            let _ = self
-                .audio_room
-                .local_participant()
-                .unpublish_track(&track.sid())
-                .await;
-            return Err(error).context("Starting microphone device");
+        // Muted after publishing, not before: the Mac app updates someone's mute state
+        // from mute events, and a track published already muted sends none. Nothing is
+        // fed to it in between, so nobody hears anything.
+        track.mute();
+        self.voice = Some((track.clone(), source.clone()));
+        Ok((track, source))
+    }
+
+    /// Publish your microphone track, muted, so others see you as muted from the start.
+    pub async fn publish_muted_microphone(&mut self) -> Result<()> {
+        self.voice().await.map(|_| ())
+    }
+
+    /// The device is opened only after an explicit unmute. Muting closes it and mutes
+    /// your track, which stays published.
+    pub async fn set_microphone(&mut self, enabled: bool) -> Result<()> {
+        if !enabled {
+            // Dropping it mutes the track and stops the work; the device closes.
+            self.microphone.take();
+            return Ok(());
         }
+        if self.microphone.is_some() {
+            return Ok(());
+        }
+        let (track, source) = self.voice().await?;
+        let (mut stream, samples, sample_rate, channels, failed) =
+            microphone_device(self.input_device.as_deref(), self.events.clone())?;
+        stream
+            .play(&samples, &self.events, &failed)
+            .context("Starting microphone device")?;
         let events = self.events.clone();
         let worker_track = track.clone();
         let worker_failed = failed.clone();
@@ -549,6 +565,7 @@ impl Session {
             worker_failed.store(true, Ordering::Release);
             let _ = events.send(Event::Microphone(false));
         });
+        track.unmute();
         self.microphone = Some(Microphone {
             _stream: stream,
             track,
@@ -777,6 +794,7 @@ impl Session {
             let _ = task.await;
         }
         self.microphone.take();
+        self.voice.take();
         self.camera.take();
         self.playback.take();
         if let Ok(mut slots) = self.camera_slots.lock() {
@@ -1516,7 +1534,6 @@ impl Drop for MicrophoneStream {
 
 type MicrophoneDevice = (
     MicrophoneStream,
-    NativeAudioSource,
     Arc<AudioBlockQueue>,
     u32,
     u32,
@@ -1533,7 +1550,6 @@ fn microphone_device(selected: Option<&str>, events: Sender<Event>) -> Result<Mi
         };
         return Ok((
             MicrophoneStream::File(samples, Arc::new(AtomicBool::new(false))),
-            microphone_source(),
             AudioBlockQueue::new(),
             48000,
             1,
@@ -1584,7 +1600,6 @@ fn microphone_device(selected: Option<&str>, events: Sender<Event>) -> Result<Mi
     {
         bail!("Microphone requires mono/stereo PCM and a sample rate divisible by 100");
     }
-    let source = microphone_source();
     let samples = AudioBlockQueue::new();
     let failed = Arc::new(AtomicBool::new(false));
     let build = |config: &StreamConfig| match format {
@@ -1625,7 +1640,6 @@ fn microphone_device(selected: Option<&str>, events: Sender<Event>) -> Result<Mi
     };
     Ok((
         MicrophoneStream::Device(stream),
-        source,
         samples,
         sample_rate,
         channels,
@@ -1645,7 +1659,6 @@ fn pipewire_microphone(node: &str) -> Result<MicrophoneDevice> {
     let capture = Capture::open(node)?;
     Ok((
         MicrophoneStream::PipeWire(capture),
-        microphone_source(),
         AudioBlockQueue::new(),
         RATE,
         1,
