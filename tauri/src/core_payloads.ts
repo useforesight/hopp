@@ -82,6 +82,8 @@ export interface CoreParticipantState {
   muted: boolean;
   has_camera: boolean;
   is_screensharing: boolean;
+  /** Capturing (transcribing) the call, as Hopp for Linux does. */
+  capturing?: boolean;
 }
 
 export type ScreenShareResolution = "P1080" | "P1440" | "P4K";
