@@ -29,12 +29,12 @@
   },
   "productName": "hopp",
   "mainBinaryName": "hopp",
-  "version": "1.0.32",
+  "version": "1.1.0",
   "identifier": "com.hopp.app",
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDkwQkQ0NjlDQ0Q0QkM4QTQKUldTa3lFdk5uRWE5a003RnhYVXV6OFZYc05UWFVBenRYTnhON2N5Zy8rVUYyd1JXRDNURVBGQ3MK",
-      "endpoints": ["https://github.com/gethopp/hopp/releases/latest/download/latest.json"]
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDcwRTU5QjA4N0E3N0REREEKUldUYTNYZDZDSnZsY0NteEtHS3IrcHBISi9DTnROUllJNEZXbk0vbzJtbG1rbE5ONHpzM1ltbSsK",
+      "endpoints": ["https://github.com/useforesight/hopp/releases/latest/download/latest.json"]
     },
     "deep-link": {
       "desktop": {
