@@ -26,6 +26,7 @@ import { pollUpdates } from "@/lib/auto-update";
 import { setupCallAlertBridge } from "@/lib/call-alert";
 import { setupCallRecoveryListeners } from "@/lib/call-recovery";
 import { setJoinCallHandler, setupIncomingCallHandling } from "@/lib/incoming-call";
+import { restoreCustomServerUrl } from "@/constants";
 
 function App() {
   const {
@@ -123,10 +124,7 @@ function App() {
     (async () => {
       if (!isTauri()) return;
       // Load custom server URL first (before auth token, since auth uses the URL)
-      const customUrl = await tauriUtils.loadCustomServerUrl();
-      if (customUrl) {
-        useStore.getState().setCustomServerUrl(customUrl);
-      }
+      await restoreCustomServerUrl();
       // Then load auth token
       const token = await tauriUtils.getStoredToken();
       if (token) {

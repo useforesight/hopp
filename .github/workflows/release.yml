@@ -182,7 +182,7 @@ jobs:
       - name: Set signing identity
         if: matrix.platform == 'macos-26'
         run: |
-          CERT_ID=$(security find-identity -p codesigning build.keychain | awk '/Foresight Hopp/ {print $2; exit}')
+          CERT_ID=$(security find-identity -p codesigning build.keychain | awk '/^ *1\)/ {print $2; exit}')
           if [[ -z "$CERT_ID" ]]; then
             echo "::error::The signing certificate wasn't imported"
             exit 1
@@ -223,7 +223,9 @@ jobs:
           SENTRY_DSN_RUST: ${{ secrets.SENTRY_DSN_RUST }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           VITE_SENTRY_DSN_JS: ${{ secrets.VITE_SENTRY_DSN_JS }}
-          VITE_API_BASE_URL: pairing.useforesight.dev
+          # Stock Hopp's server. People on their own server set it once in Settings, and updates
+          # keep it, so no private address ends up in this public repo or its builds.
+          VITE_API_BASE_URL: pair.gethopp.app
           VITE_POSTHOG_API_KEY: ${{ secrets.VITE_POSTHOG_API_KEY }}
           VITE_POSTHOG_HOST: ${{ secrets.VITE_POSTHOG_HOST }}
         with:

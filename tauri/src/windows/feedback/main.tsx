@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { Constants } from "@/constants";
+import { Constants, restoreCustomServerUrl } from "@/constants";
 import clsx from "clsx";
 import createFetchClient from "openapi-fetch";
 import type { paths } from "@/openapi";
@@ -57,6 +57,8 @@ function FeedbackWindow() {
     setIsSubmitting(true);
 
     try {
+      await restoreCustomServerUrl();
+
       // Get stored token for authentication
       const token = await tauriUtils.getStoredToken();
 

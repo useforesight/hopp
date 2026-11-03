@@ -3,7 +3,7 @@ import toast from "react-hot-toast";
 import useStore from "@/store/store";
 import { tauriUtils } from "@/windows/window-utils";
 import { paths } from "@/openapi";
-import { Constants } from "@/constants";
+import { Constants, restoreCustomServerUrl } from "@/constants";
 
 /**
  * Validates an authentication token by fetching user details.
@@ -16,6 +16,9 @@ export const validateAndSetAuthToken = async (token: string) => {
     reset(); // Resets the store to initial state, including clearing token and user
     await tauriUtils.deleteStoredToken(); // Clear token in backend
   }
+
+  // A sign-in link can open the app before its startup has loaded the server
+  await restoreCustomServerUrl();
 
   const tempFetchClient = createFetchClient<paths>({
     baseUrl: Constants.backendUrl,

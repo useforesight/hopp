@@ -1,4 +1,4 @@
-# Releasing Hopp (Foresight fork)
+# Releasing Hopp
 
 Releases are published at <https://github.com/useforesight/hopp/releases>. Every installed copy checks the latest published release and updates itself, so publishing reaches everyone.
 
@@ -11,7 +11,11 @@ Hopp isn't notarized, as this repo has no Apple Developer account, and macOS blo
 
 Updates aren't quarantined either, so they install without a prompt.
 
-Everything is signed with a self-signed "Foresight Hopp" certificate. It keeps the signature stable, so macOS permissions carry over between updates. If you replace the certificate, update the hash in `install.sh`, and everyone has to grant permissions again.
+Everything is signed with a self-signed certificate. It keeps the signature stable, so macOS permissions carry over between updates. If you replace the certificate, update the hash in `install.sh`, and everyone has to grant permissions again.
+
+## Server
+
+This repo and its builds are public, so neither names a private server. Builds default to stock Hopp's server, `pair.gethopp.app`. Anyone on their own server sets it once in Settings, under General, and updates keep it. New installs can reach that setting from the sign-in screen.
 
 ## Secrets
 
@@ -46,6 +50,6 @@ Stock Hopp updates from upstream, so it never receives these releases. Everyone 
 curl -fsSL https://raw.githubusercontent.com/useforesight/hopp/main/install.sh | bash
 ```
 
-Sign-in and settings carry over. macOS asks for each permission again, because the signature is different.
+Sign-in and settings carry over, including a custom server. macOS asks for each permission again, because the signature is different.
 
 Stock Hopp and this build can call each other. Someone on stock sees drawings in the older style.

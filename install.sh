@@ -1,5 +1,5 @@
 #!/bin/bash
-# Installs the latest Foresight build of Hopp on a Mac, replacing any existing copy.
+# Installs the latest release of this fork of Hopp on a Mac, replacing any existing copy.
 #
 # Hopp isn't notarized by Apple. Files fetched with curl aren't quarantined, so macOS doesn't
 # block the app on first open. The signature is checked here instead.
@@ -38,7 +38,7 @@ if ! curl -fsSL "$RELEASES/hopp_$arch.app.tar.gz" | tar -xz -C "$work_dir"; then
   exit 1
 fi
 codesign --verify --deep --strict -R="$SIGNED_BY" "$work_dir/hopp.app" || {
-  echo "The download isn't signed by Foresight, so it wasn't installed."
+  echo "The download has the wrong signature, so it wasn't installed."
   exit 1
 }
 

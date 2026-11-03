@@ -3,7 +3,7 @@ import createFetchClient from "openapi-fetch";
 import createClient, { type OpenapiQueryClient } from "openapi-react-query";
 import type { paths } from "@/openapi";
 import useStore from "../store/store";
-import { Constants } from "@/constants";
+import { Constants, restoreCustomServerUrl } from "@/constants";
 import { tauriUtils } from "@/windows/window-utils";
 import { isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -27,6 +27,7 @@ export function QueryProvider({ children }: QueryProviderProps) {
   useEffect(() => {
     (async () => {
       if (!isTauri()) return;
+      await restoreCustomServerUrl();
       const token = await tauriUtils.getStoredToken();
       if (token) {
         setAuthToken(token);
