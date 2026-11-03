@@ -1,0 +1,802 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hopp for Omarchy — UI prototype</title>
+<style>
+/* ---------- Omarchy theme tokens (mirrors colors.toml) ---------- */
+:root{
+  --accent:#7aa2f7; --selection:#292e42; --muted:#414868;
+  --bg:#1a1b26; --bg-dark:#13141c; --bg-darker:#0e0e14; --bg-light:#24283b;
+  --fg:#a9b1d6; --fg-dim:#565f89; --fg-bright:#c0caf5;
+  --red:#f7768e; --green:#9ece6a; --yellow:#e0af68; --magenta:#bb9af7; --cyan:#0db9d7; --orange:#eb927b;
+  --font:"Iosevka Nerd Font Mono","Iosevka","JetBrains Mono",ui-monospace,monospace;
+  --gap-out:10px; --gap-in:5px; --rounding:12px; --border:2px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg-darker);color:var(--fg);font-family:var(--font);font-size:12px}
+body{padding:0}
+button{font:inherit;color:inherit}
+
+/* ---------- prototype chrome (outside the fake desktop) ---------- */
+.proto-bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:0 0 10px}
+.proto-bar .lbl{color:var(--fg-dim);margin-right:2px;letter-spacing:.06em;font-size:10px;text-transform:uppercase}
+.chip{background:var(--bg-light);border:1px solid transparent;border-radius:6px;padding:5px 9px;cursor:pointer;color:var(--fg)}
+.chip:hover{border-color:var(--muted)}
+.chip.on{background:var(--accent);color:var(--bg-dark)}
+.chip kbd{opacity:.55;margin-right:5px;font-family:inherit}
+.spacer{flex:1}
+select.chip{appearance:none;padding-right:20px}
+
+.viewport{position:relative;width:100%;overflow:hidden;border-radius:10px;border:1px solid var(--bg-light)}
+.stage{position:absolute;left:0;top:0;width:1600px;height:900px;transform-origin:0 0;overflow:hidden;
+  background:
+    radial-gradient(1200px 700px at 80% 110%, color-mix(in srgb,var(--accent) 35%, transparent), transparent 60%),
+    radial-gradient(900px 600px at 0% -10%, color-mix(in srgb,var(--magenta) 30%, transparent), transparent 60%),
+    linear-gradient(160deg,var(--bg-dark),var(--bg-darker));
+}
+
+/* ---------- Omarchy bar ---------- */
+.bar{position:absolute;inset:0 0 auto 0;height:28px;display:flex;align-items:center;padding:0 10px;color:var(--fg-bright);z-index:50}
+.bar .left,.bar .right{display:flex;align-items:center;gap:4px}
+.bar .center{position:absolute;left:50%;transform:translateX(-50%);display:flex;gap:10px;align-items:center}
+.bar .right{margin-left:auto}
+.ws{width:20px;text-align:center;color:var(--fg-dim)} .ws.on{color:var(--fg-bright)}
+.bicon{min-width:24px;height:22px;display:grid;place-items:center;border-radius:6px;font-size:13px;color:var(--fg-bright);padding:0 4px}
+.bicon.dim{color:var(--fg)}
+
+/* Hopp bar widget */
+.hopp-widget{display:flex;align-items:center;gap:6px;height:22px;padding:0 6px;border-radius:6px;cursor:pointer;transition:background .15s}
+.hopp-widget:hover,.hopp-widget.open{background:color-mix(in srgb,var(--fg-bright) 12%,transparent)}
+.hopp-mark{width:14px;height:14px;display:block}
+.hopp-widget .pill{display:none;align-items:center;gap:6px}
+.hopp-widget.incall .pill{display:flex}
+.mini-faces{display:flex}
+.mini-faces span{width:16px;height:16px;border-radius:50%;border:1.5px solid var(--bg-dark);margin-left:-5px;font-size:8px;display:grid;place-items:center;color:var(--bg-dark);font-weight:700}
+.mini-faces span:first-child{margin-left:0}
+.mini-faces span.speaking{border-color:var(--green)}
+.timer{font-variant-numeric:tabular-nums;color:var(--fg)}
+.rec-dot{width:7px;height:7px;border-radius:50%;background:var(--red);box-shadow:0 0 0 3px color-mix(in srgb,var(--red) 30%,transparent);display:none;animation:pulse 1.6s infinite}
+.hopp-widget.sharing .rec-dot{display:block}
+@keyframes pulse{50%{box-shadow:0 0 0 5px color-mix(in srgb,var(--red) 0%,transparent)}}
+.mic-ind{color:var(--fg)} .mic-ind.muted{color:var(--red)}
+
+/* ---------- Tiled windows ---------- */
+.win{position:absolute;border:var(--border) solid var(--muted);border-radius:var(--rounding);background:var(--bg);overflow:hidden;transition:all .35s cubic-bezier(.2,.8,.2,1)}
+.win.active{border-color:var(--accent)}
+.win .title{height:0} /* Omarchy: no titlebars */
+
+.term{padding:14px 16px;line-height:1.55;color:var(--fg);white-space:pre;font-size:12px}
+.term .k{color:var(--magenta)} .term .s{color:var(--green)} .term .c{color:var(--fg-dim)} .term .f{color:var(--accent)} .term .t{color:var(--cyan)} .term .n{color:var(--orange)}
+.term .ln{color:var(--fg-dim);display:inline-block;width:28px;text-align:right;margin-right:14px}
+.term .cursorline{background:var(--selection);display:block;margin:0 -16px;padding:0 16px}
+.term .status{position:absolute;left:0;right:0;bottom:0;height:22px;display:flex;align-items:center;gap:10px;padding:0 0 0 0;background:var(--bg-dark);color:var(--fg-dim)}
+.term .status b{background:var(--accent);color:var(--bg-dark);padding:0 10px;height:100%;display:flex;align-items:center}
+
+.browser{display:flex;flex-direction:column;height:100%}
+.browser .url{margin:10px;height:28px;border-radius:7px;background:var(--bg-light);display:flex;align-items:center;padding:0 10px;color:var(--fg-dim)}
+.browser .page{flex:1;margin:0 10px 10px;border-radius:8px;background:linear-gradient(180deg,var(--bg-light),var(--bg));padding:26px}
+.skel{height:10px;border-radius:5px;background:color-mix(in srgb,var(--fg) 14%,transparent);margin-bottom:12px}
+
+/* ---------- Hopp panel (bar dropdown) ---------- */
+.panel{position:absolute;top:34px;width:384px;background:var(--bg);border:1px solid var(--accent);border-radius:10px;padding:18px;z-index:60;
+  box-shadow:0 18px 50px rgba(0,0,0,.45);opacity:0;transform:translateY(-6px);pointer-events:none;transition:opacity .16s,transform .16s;display:flex;flex-direction:column;gap:14px}
+.panel.show{opacity:1;transform:none;pointer-events:auto}
+.hero{display:flex;align-items:center;gap:10px}
+.hero .ico{width:34px;height:34px;border-radius:9px;background:var(--bg-light);display:grid;place-items:center}
+.hero h3{margin:0;font-size:14px;color:var(--fg-bright);font-weight:600}
+.hero .meta{color:var(--fg-dim);font-size:11px}
+.hero .actions{margin-left:auto;display:flex;gap:4px}
+.iconbtn{width:28px;height:28px;border-radius:7px;border:0;background:transparent;display:grid;place-items:center;cursor:pointer;color:var(--fg)}
+.iconbtn:hover{background:var(--bg-light)}
+.search{height:34px;border-radius:8px;border:1px solid color-mix(in srgb,var(--fg) 25%,transparent);display:flex;align-items:center;gap:8px;padding:0 10px;color:var(--fg-dim)}
+.search .k{margin-left:auto;font-size:10px;border:1px solid var(--muted);border-radius:4px;padding:1px 5px}
+.sect{display:flex;justify-content:space-between;color:var(--fg-dim);font-size:10px;letter-spacing:.1em;font-weight:600}
+.rows{display:flex;flex-direction:column;gap:2px;margin:-4px -8px 0}
+.row{display:flex;align-items:center;gap:10px;padding:7px 8px;border-radius:8px;cursor:default}
+.row:hover,.row.cursor{background:var(--selection)}
+.row .who{display:flex;flex-direction:column;gap:1px;min-width:0}
+.row .who b{font-weight:500;color:var(--fg-bright)}
+.row .who small{color:var(--fg-dim);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .go{margin-left:auto;opacity:0;display:flex;gap:4px}
+.row:hover .go,.row.cursor .go{opacity:1}
+.btn{height:26px;padding:0 10px;border-radius:7px;border:1px solid var(--muted);background:transparent;cursor:pointer;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.btn:hover{border-color:var(--fg-dim)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--bg-dark);font-weight:600}
+.btn.danger{background:var(--red);border-color:var(--red);color:var(--bg-dark);font-weight:600}
+.av{position:relative;width:30px;height:30px;border-radius:50%;flex:none;display:grid;place-items:center;font-weight:700;color:var(--bg-dark);font-size:11px}
+.av i{position:absolute;right:-1px;bottom:-1px;width:10px;height:10px;border-radius:50%;border:2px solid var(--bg)}
+.on-g{background:var(--green)} .on-y{background:var(--yellow)} .on-o{background:var(--fg-dim)} .on-r{background:var(--red)}
+.room-faces{display:flex;margin-left:auto}
+.room-faces .av{width:20px;height:20px;font-size:8px;margin-left:-6px;border:2px solid var(--bg)}
+.callcard{border:1px solid color-mix(in srgb,var(--green) 55%,transparent);background:color-mix(in srgb,var(--green) 7%,var(--bg));border-radius:10px;padding:12px;display:none;flex-direction:column;gap:10px}
+.panel.incall .callcard{display:flex}
+.callcard .top{display:flex;align-items:center;gap:8px}
+.callcard .top b{color:var(--fg-bright);font-weight:600}
+.callcard .ctrls{display:flex;gap:6px}
+.callcard .ctrls .btn{flex:1;justify-content:center}
+.foot{display:flex;gap:12px;color:var(--fg-dim);font-size:10px;border-top:1px solid var(--bg-light);padding-top:10px;margin-top:-2px}
+.foot kbd{font-family:inherit;color:var(--fg)}
+
+/* ---------- Incoming call toast (Omarchy notification style) ---------- */
+.toast{position:absolute;top:38px;right:10px;width:360px;background:var(--bg);border:1px solid var(--accent);border-radius:10px;padding:14px;z-index:70;
+  display:flex;gap:12px;align-items:center;box-shadow:0 18px 50px rgba(0,0,0,.45);transform:translateX(420px);transition:transform .3s cubic-bezier(.2,.8,.2,1)}
+.toast.show{transform:none}
+.toast .vid{width:64px;height:64px;border-radius:10px;overflow:hidden;flex:none;position:relative}
+.toast .txt b{color:var(--fg-bright);display:block;font-weight:600;font-size:13px}
+.toast .txt small{color:var(--fg-dim)}
+.toast .acts{display:flex;gap:6px;margin-top:8px}
+
+/* ---------- Faces window (the Tuple-style floating call window) ---------- */
+.faces{position:absolute;z-index:40;border:var(--border) solid var(--muted);border-radius:var(--rounding);background:var(--bg-dark);
+  padding:6px;display:flex;gap:6px;transition:opacity .25s, transform .25s;box-shadow:0 14px 40px rgba(0,0,0,.5)}
+.faces.hidden{opacity:0;transform:scale(.96);pointer-events:none}
+.faces.active{border-color:var(--accent)}
+.faces .tiles{display:flex;gap:6px}
+.faces.vertical,.faces.vertical .tiles{flex-direction:column}
+.faces.horizontal,.faces.horizontal .tiles{flex-direction:row}
+.tile{position:relative;width:var(--tile);height:var(--tile);border-radius:8px;overflow:hidden;flex:none;background:var(--bg-light)}
+.faces.dots .tile{border-radius:50%}
+.tile .cam{position:absolute;inset:0}
+.tile .name{position:absolute;left:6px;bottom:6px;font-size:10px;background:color-mix(in srgb,var(--bg-dark) 75%,transparent);color:var(--fg-bright);border-radius:4px;padding:1px 5px;opacity:0;transition:opacity .15s}
+.faces:hover .tile .name{opacity:1}
+.faces.dots .tile .name{display:none}
+.tile .muted{position:absolute;right:6px;top:6px;width:18px;height:18px;border-radius:50%;background:var(--red);color:var(--bg-dark);display:grid;place-items:center;font-size:10px}
+.faces.dots .tile .muted{right:auto;left:50%;top:auto;bottom:4px;transform:translateX(-50%)}
+.tile.speaking::after{content:"";position:absolute;inset:0;border-radius:inherit;box-shadow:inset 0 0 0 2px var(--green);animation:speak 1.2s ease-in-out infinite}
+@keyframes speak{50%{box-shadow:inset 0 0 0 3px var(--green)}}
+.tile .initials{position:absolute;inset:0;display:grid;place-items:center;font-size:calc(var(--tile)*.28);font-weight:700;color:var(--fg-bright)}
+.tile.camoff .cam{display:none}
+.faces .ctrlbar{display:flex;gap:4px;justify-content:center;align-items:center}
+.faces.vertical .ctrlbar{flex-direction:row;flex-wrap:wrap;width:var(--tile);padding:2px 0}
+.faces.horizontal .ctrlbar,.faces.dots.horizontal .ctrlbar{flex-direction:column}
+.cbtn{width:26px;height:26px;border-radius:7px;border:0;background:var(--bg-light);color:var(--fg-bright);cursor:pointer;display:grid;place-items:center;font-size:13px}
+.cbtn:hover{background:var(--muted)}
+.cbtn.off{background:color-mix(in srgb,var(--red) 22%,var(--bg-light));color:var(--red)}
+.cbtn.leave{background:var(--red);color:var(--bg-dark)}
+.cbtn.on{background:var(--accent);color:var(--bg-dark)}
+.dim-tag{position:absolute;font-size:10px;color:var(--bg-dark);background:var(--yellow);padding:2px 6px;border-radius:4px;white-space:nowrap;z-index:45;pointer-events:none;transition:opacity .2s}
+.annot-off .dim-tag,.annot-off .note{opacity:0}
+
+/* fake camera video: gradient "room" + silhouette, never stretched (object-fit: cover semantics) */
+.cam svg{width:100%;height:100%;display:block}
+
+/* ---------- Screen-share viewer window ---------- */
+.viewer{display:flex;flex-direction:column;height:100%;background:var(--bg-darker)}
+.viewer .vtool{height:38px;display:flex;align-items:center;gap:8px;padding:0 8px 0 12px;background:var(--bg-dark);border-bottom:1px solid var(--bg-light);flex:none}
+.viewer .vtool b{color:var(--fg-bright);font-weight:600}
+.viewer .vtool small{color:var(--fg-dim)}
+.viewer .vtool .sp{flex:1}
+.seg{display:flex;border:1px solid var(--muted);border-radius:7px;overflow:hidden}
+.seg button{border:0;background:transparent;height:24px;padding:0 9px;cursor:pointer;color:var(--fg)}
+.seg button.on{background:var(--selection);color:var(--fg-bright)}
+.viewer .canvas{flex:1;position:relative;display:grid;place-items:center;overflow:hidden}
+.viewer .frame{position:relative;aspect-ratio:16/10;max-width:100%;max-height:100%;width:100%;background:var(--bg);box-shadow:0 0 0 1px var(--bg-light)}
+.viewer .frame.fit-h{width:auto;height:100%}
+.viewer .letterbox-tag{position:absolute;color:var(--fg-dim);font-size:10px;letter-spacing:.08em}
+.remote-desktop{position:absolute;inset:0;font-size:9px}
+.rd-bar{height:4%;display:flex;align-items:center;justify-content:space-between;padding:0 1.2%;color:var(--fg-bright)}
+.rd-win{position:absolute;border:1.5px solid var(--accent);border-radius:6px;background:var(--bg);overflow:hidden;padding:1.4% 1.6%;line-height:1.55;white-space:pre;color:var(--fg)}
+.rd-win.b2{border-color:var(--muted)}
+.rcursor{position:absolute;z-index:5;pointer-events:none;transition:left 1.2s cubic-bezier(.4,0,.2,1),top 1.2s cubic-bezier(.4,0,.2,1)}
+.rcursor svg{width:18px;height:18px;display:block;filter:drop-shadow(0 1px 1px rgba(0,0,0,.5))}
+.rcursor span{position:absolute;left:14px;top:14px;font-size:10px;padding:1px 6px;border-radius:4px;color:var(--bg-dark);font-weight:700;white-space:nowrap}
+.ctl-banner{position:absolute;left:50%;transform:translateX(-50%);bottom:12px;background:var(--bg-dark);border:1px solid var(--muted);border-radius:8px;padding:6px 10px;display:flex;gap:10px;align-items:center;color:var(--fg)}
+
+/* ---------- Sharing (host side) ---------- */
+.share-border{position:absolute;inset:0;border:3px solid var(--red);border-radius:0;pointer-events:none;z-index:80;opacity:0;transition:opacity .3s}
+.share-border.show{opacity:1}
+.share-pill{position:absolute;top:34px;left:50%;transform:translate(-50%,-80px);opacity:0;z-index:81;background:var(--bg);border:1px solid var(--red);border-radius:999px;padding:5px 6px 5px 12px;display:flex;align-items:center;gap:10px;transition:transform .3s cubic-bezier(.2,.8,.2,1);box-shadow:0 10px 30px rgba(0,0,0,.4)}
+.share-pill.show{transform:translate(-50%,0);opacity:1}
+.share-pill b{color:var(--fg-bright);font-weight:600}
+.share-pill .btn{height:24px;border-radius:999px}
+.drawing{position:absolute;inset:0;pointer-events:none;z-index:39;opacity:0;transition:opacity .4s}
+.drawing.show{opacity:1}
+
+/* ---------- Annotations ---------- */
+.note{position:absolute;z-index:90;max-width:240px;background:var(--yellow);color:#1a1b26;border-radius:8px;padding:8px 10px;font-size:11px;line-height:1.4;box-shadow:0 8px 20px rgba(0,0,0,.35);transition:opacity .2s;pointer-events:none}
+.note b{display:block;margin-bottom:2px}
+.note::before{content:attr(data-n);position:absolute;left:-9px;top:-9px;width:20px;height:20px;border-radius:50%;background:#1a1b26;color:var(--yellow);display:grid;place-items:center;font-weight:700;font-size:11px}
+.note[hidden]{display:none}
+
+/* ---------- Docs below the stage ---------- */
+.docs{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-top:16px}
+.card{background:var(--bg);border:1px solid var(--bg-light);border-radius:10px;padding:14px 16px;line-height:1.55}
+.card h4{margin:0 0 6px;color:var(--fg-bright);font-size:13px}
+.card p,.card li{color:var(--fg);margin:0}
+.card ul{padding-left:16px;margin:0;display:flex;flex-direction:column;gap:4px}
+.card code,.card pre{font-family:var(--font);color:var(--green)}
+.card pre{background:var(--bg-dark);border-radius:8px;padding:10px 12px;overflow:auto;margin:8px 0 0;font-size:11px;color:var(--fg)}
+.card pre .c{color:var(--fg-dim)} .card pre .s{color:var(--green)} .card pre .k{color:var(--magenta)}
+.caption{color:var(--fg-dim);margin:10px 0 0;font-size:11px}
+
+/* ---------- Viewer v2: no toolbar row, frame owns the window, spare space becomes the dock ---------- */
+.viewer{position:relative;display:block;height:100%;background:var(--bg-darker)}
+.viewer .canvas{position:absolute;inset:0;display:block}
+.viewer .frame{position:absolute;container-type:size;max-width:none;max-height:none;aspect-ratio:auto;box-shadow:none;border-radius:4px;overflow:hidden;transition:all .35s cubic-bezier(.2,.8,.2,1)}
+.remote-desktop{font-size:.62cqw}
+.vpill{position:absolute;z-index:6;display:flex;align-items:center;gap:6px;padding:4px 4px 4px 6px;border-radius:10px;white-space:nowrap;
+  background:color-mix(in srgb,var(--bg-dark) 90%,transparent);border:1px solid var(--bg-light);box-shadow:0 8px 24px rgba(0,0,0,.35);transform:translateX(-50%);transition:all .35s cubic-bezier(.2,.8,.2,1)}
+.vpill b{color:var(--fg-bright);font-weight:600}
+.vpill small{color:var(--fg-dim)}
+.vpill .sep{width:1px;height:16px;background:var(--bg-light);margin:0 2px}
+.vpill .btn{height:24px}
+.dock{position:absolute;display:flex;gap:8px;align-items:center;justify-content:center;transition:all .35s cubic-bezier(.2,.8,.2,1)}
+.dock.v{flex-direction:column}
+.dock.h{flex-direction:row}
+.dock .tile{border-radius:10px}
+.dock .dctl{display:flex;gap:4px}
+.dock.v .dctl{flex-wrap:wrap;justify-content:center;width:60px}
+.dimmer{position:absolute;inset:0;background:rgba(0,0,0,.45);z-index:30;opacity:0;pointer-events:none;transition:opacity .3s}
+.dimmer.show{opacity:1}
+#wView{z-index:35}
+.win{transition:left .35s cubic-bezier(.2,.8,.2,1),top .35s cubic-bezier(.2,.8,.2,1),width .35s cubic-bezier(.2,.8,.2,1),height .35s cubic-bezier(.2,.8,.2,1),opacity .25s,border-color .2s}
+.ws.pair{color:var(--accent)}
+.sub{display:none;gap:6px;align-items:center}
+.sub.show{display:flex}
+
+.pfaces{display:none;align-items:center}
+.pfaces .av{width:20px;height:20px;font-size:8px;margin-left:-5px;border:2px solid var(--bg-dark)}
+.pfaces .av.speaking{border-color:var(--green)}
+.minimap{position:absolute;right:12px;bottom:12px;width:150px;aspect-ratio:16/10;border-radius:6px;background:var(--bg-dark);border:1px solid var(--muted);z-index:7;display:none;overflow:hidden;box-shadow:0 8px 24px rgba(0,0,0,.4)}
+.minimap .mm-l,.minimap .mm-r{position:absolute;top:8%;bottom:4%;border:1px solid var(--muted);border-radius:2px}
+.minimap .mm-l{left:3%;width:56%} .minimap .mm-r{left:62%;right:3%}
+.minimap .mm-view{position:absolute;border:1.5px solid var(--accent);background:color-mix(in srgb,var(--accent) 18%,transparent);border-radius:2px;transition:all 1.2s cubic-bezier(.4,0,.2,1)}
+.minimap span{position:absolute;left:5px;bottom:3px;font-size:9px;color:var(--fg-dim)}
+.viewer.follow .frame{transition:left 1.2s cubic-bezier(.4,0,.2,1),top 1.2s cubic-bezier(.4,0,.2,1),width .35s,height .35s}
+.viewer.follow .minimap,.viewer.follow .pfaces{display:flex}
+.viewer.follow .minimap{display:block}
+</style>
+</head>
+<body>
+
+<div class="proto-bar">
+  <span class="lbl">Scene</span>
+  <button class="chip" data-scene="idle"><kbd>1</kbd>Idle</button>
+  <button class="chip" data-scene="menu"><kbd>2</kbd>Bar menu</button>
+  <button class="chip" data-scene="incoming"><kbd>3</kbd>Incoming</button>
+  <button class="chip" data-scene="call"><kbd>4</kbd>In call</button>
+  <button class="chip" data-scene="viewing"><kbd>5</kbd>Viewing share</button>
+  <button class="chip" data-scene="sharing"><kbd>6</kbd>Sharing</button>
+  <span class="sub" id="viewModes"><span class="lbl">&nbsp;Viewer</span>
+    <button class="chip" data-mode="follow">Tile · follow</button>
+    <button class="chip" data-mode="workspace">Peek (special ws)</button>
+    <button class="chip" data-mode="floating">Float, aspect-locked</button>
+    <button class="chip" data-mode="tiled">Tile · fit + dock</button></span>
+  <span class="spacer"></span>
+  <span class="lbl">Display</span>
+  <button class="chip" data-display="169">16:9</button>
+  <button class="chip" data-display="uw">5120×2160</button>
+  <span class="lbl">Faces</span>
+  <button class="chip" data-layout="vertical">Column</button>
+  <button class="chip" data-layout="horizontal">Row</button>
+  <button class="chip" data-layout="dots">Bubbles</button>
+  <button class="chip" id="minus">−</button><button class="chip" id="plus">+</button>
+  <span class="lbl">Theme</span>
+  <select class="chip" id="theme">
+    <option value="tokyo-night">Tokyo Night</option>
+    <option value="catppuccin">Catppuccin</option>
+    <option value="gruvbox">Gruvbox</option>
+    <option value="everforest">Everforest</option>
+    <option value="rose-pine">Rosé Pine</option>
+    <option value="flexoki-light">Flexoki Light</option>
+  </select>
+  <button class="chip on" id="annot">Notes</button>
+</div>
+
+<div class="viewport" id="viewport">
+<div class="stage" id="stage">
+
+  <!-- Omarchy bar -->
+  <div class="bar">
+    <div class="left">
+      <span class="bicon">󰣇</span>
+      <span class="ws on">1</span><span class="ws">2</span><span class="ws">3</span><span class="ws">4</span><span class="ws">5</span>
+    </div>
+    <div class="center"><span class="dim">Tue 6 Oct 22:58</span><span class="bicon dim">󰖐 14°</span></div>
+    <div class="right">
+      <span class="bicon dim">󰻠</span>
+      <div class="hopp-widget" id="widget" title="Hopp">
+        <svg class="hopp-mark" viewBox="0 0 16 16"><rect x="1" y="1" width="14" height="14" rx="4" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5.2 4.2v7.6M5.2 8.2c.6-1.3 1.6-2 2.9-2 1.5 0 2.4 1 2.4 2.6v3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <span class="rec-dot"></span>
+        <span class="pill">
+          <span class="mini-faces" id="miniFaces"></span>
+          <span class="timer" id="timer">12:04</span>
+          <span class="mic-ind" id="micInd">󰍬</span>
+        </span>
+      </div>
+      <span class="bicon dim">󰒋</span><span class="bicon dim">󰂯</span><span class="bicon dim">󰤨</span><span class="bicon dim">󰕾</span><span class="bicon dim">󰁹</span>
+    </div>
+  </div>
+
+  <!-- Tiled windows (workspace 1) -->
+  <div class="win active" id="wTerm">
+    <div class="term" id="termBody"></div>
+  </div>
+  <div class="win" id="wRight">
+    <div class="browser" id="browser">
+      <div class="url">󰖟  github.com/gethopp/hopp/pull/391</div>
+      <div class="page">
+        <div class="skel" style="width:46%;height:16px"></div>
+        <div class="skel" style="width:30%"></div><br>
+        <div class="skel" style="width:92%"></div><div class="skel" style="width:84%"></div><div class="skel" style="width:88%"></div><div class="skel" style="width:60%"></div><br>
+        <div class="skel" style="width:92%"></div><div class="skel" style="width:76%"></div>
+      </div>
+    </div>
+  </div>
+  <div class="dimmer" id="dimmer"></div>
+  <div class="win" id="wView" style="display:none">
+    <div class="viewer" id="viewer">
+      <div class="canvas" id="canvas">
+        <div class="vpill" id="vpill">
+          <div class="av" style="width:20px;height:20px;font-size:8px;background:var(--magenta)">MC</div>
+          <b>Mira</b><small>DP-1 · 2560×1600</small>
+          <span class="pfaces" id="pfaces"></span>
+          <span class="sep"></span>
+          <div class="seg" id="fitSeg"><button class="on" data-fit="fit">Fit</button><button data-fit="1x">1:1</button></div>
+          <button class="btn" id="drawBtn">󰏫</button>
+          <button class="btn primary" id="ctrlBtn">󰍽 Request control</button>
+          <button class="iconbtn" id="modeBtn" title="Cycle: workspace / float / tile">󰊓</button>
+        </div>
+        <div class="dock" id="dock"></div>
+        <div class="minimap" id="minimap"><div class="mm-l"></div><div class="mm-r"></div><div class="mm-view" id="mmView"></div><span>Follow · Mira</span></div>
+        <div class="frame" id="frame">
+          <div class="remote-desktop">
+            <div class="rd-bar"><span>󰣇  1 2 3</span><span>Tue 22:58</span><span>󰤨 󰁹</span></div>
+            <div class="rd-win" style="left:1%;top:5%;width:58.5%;height:93.5%"><span style="color:var(--magenta)">pub fn</span> <span style="color:var(--accent)">publish_screen</span>(&amp;self, frame: <span style="color:var(--cyan)">Frame</span>) {
+    <span style="color:var(--fg-dim)">// keep source geometry for remote input</span>
+    <span style="color:var(--magenta)">let</span> geom = frame.<span style="color:var(--accent)">geometry</span>();
+    <span style="color:var(--magenta)">let</span> scaled = <span style="color:var(--accent)">fit_within</span>(geom, <span style="color:var(--orange)">4096</span>, <span style="color:var(--orange)">2304</span>);
+    self.track.<span style="color:var(--accent)">push</span>(frame.<span style="color:var(--accent)">scale</span>(scaled));
+}
+
+<span style="color:var(--magenta)">fn</span> <span style="color:var(--accent)">fit_within</span>(g: <span style="color:var(--cyan)">Size</span>, w: <span style="color:var(--cyan)">u32</span>, h: <span style="color:var(--cyan)">u32</span>) -&gt; <span style="color:var(--cyan)">Size</span> {
+    <span style="color:var(--magenta)">let</span> s = (w <span style="color:var(--magenta)">as</span> f32 / g.w <span style="color:var(--magenta)">as</span> f32)
+        .<span style="color:var(--accent)">min</span>(h <span style="color:var(--magenta)">as</span> f32 / g.h <span style="color:var(--magenta)">as</span> f32)
+        .<span style="color:var(--accent)">min</span>(<span style="color:var(--orange)">1.0</span>);
+    g.<span style="color:var(--accent)">scale</span>(s)
+}
+
+<span style="color:var(--fg-dim)">/// Map a click in the viewer back to the sharer's output,</span>
+<span style="color:var(--fg-dim)">/// accounting for scale, transform and the visible crop.</span>
+<span style="color:var(--magenta)">pub fn</span> <span style="color:var(--accent)">to_remote</span>(&amp;self, p: <span style="color:var(--cyan)">Point</span>) -&gt; <span style="color:var(--cyan)">Option</span>&lt;<span style="color:var(--cyan)">Point</span>&gt; {
+    <span style="color:var(--magenta)">let</span> local = p - self.viewport.origin;
+    <span style="color:var(--magenta)">if</span> !self.viewport.<span style="color:var(--accent)">contains</span>(local) { <span style="color:var(--magenta)">return</span> <span style="color:var(--cyan)">None</span>; }
+    <span style="color:var(--magenta)">let</span> q = local / self.zoom + self.pan;
+    <span style="color:var(--cyan)">Some</span>(self.output.<span style="color:var(--accent)">untransform</span>(q))
+}
+
+<span style="color:var(--magenta)">fn</span> <span style="color:var(--accent)">follow</span>(&amp;<span style="color:var(--magenta)">mut</span> self, cursor: <span style="color:var(--cyan)">Point</span>, dt: <span style="color:var(--cyan)">f32</span>) {
+    <span style="color:var(--magenta)">let</span> margin = self.viewport.size * <span style="color:var(--orange)">0.2</span>;
+    <span style="color:var(--magenta)">let</span> target = self.pan.<span style="color:var(--accent)">keep_in_view</span>(cursor, margin);
+    self.pan = self.pan.<span style="color:var(--accent)">lerp</span>(target, (dt * <span style="color:var(--orange)">6.0</span>).<span style="color:var(--accent)">min</span>(<span style="color:var(--orange)">1.0</span>));
+}</div>
+            <div class="rd-win b2" style="left:60.5%;top:5%;width:38.5%;height:93.5%"><span style="color:var(--green)">❯</span> cargo test --locked
+<span style="color:var(--fg-dim)">   Compiling hopp-omarchy v0.4.0</span>
+running 43 tests
+test frames::fit_5k ... <span style="color:var(--green)">ok</span>
+test frames::fit_4k ... <span style="color:var(--green)">ok</span>
+test input::letterbox ... <span style="color:var(--green)">ok</span>
+test input::scale_1_6 ... <span style="color:var(--green)">ok</span>
+...
+test result: <span style="color:var(--green)">ok</span>. 43 passed
+
+<span style="color:var(--green)">❯</span> cargo clippy --all-targets -- -D warnings
+<span style="color:var(--fg-dim)">    Checking hopp-omarchy v0.4.0</span>
+<span style="color:var(--fg-dim)">    Finished dev profile in 4.12s</span>
+
+<span style="color:var(--green)">❯</span> git status -sb
+## follow-viewport
+ M src/viewer.rs
+ M src/frames.rs
+?? src/viewport.rs
+
+<span style="color:var(--green)">❯</span> <span style="background:var(--fg);color:var(--bg)"> </span></div>
+            <div class="rcursor" id="miraCursor" style="left:30%;top:40%"><svg viewBox="0 0 18 18"><path d="M2 1l13 7-6 1.5L6 16z" fill="var(--magenta)" stroke="var(--bg-dark)" stroke-width="1.2"/></svg><span style="background:var(--magenta)">Mira</span></div>
+            <div class="rcursor" id="myCursor" style="left:64%;top:62%;opacity:0"><svg viewBox="0 0 18 18"><path d="M2 1l13 7-6 1.5L6 16z" fill="var(--accent)" stroke="var(--bg-dark)" stroke-width="1.2"/></svg><span style="background:var(--accent)">You</span></div>
+          </div>
+        </div>
+        <div class="ctl-banner" id="ctlBanner" style="display:none">󰍽 You’re controlling Mira’s DP-1 <span style="color:var(--fg-dim)">·</span> <kbd style="font-family:inherit">Esc Esc</kbd> to release</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Host-side drawing overlay (when someone draws on my screen) -->
+  <svg class="drawing" id="drawing" viewBox="0 0 1600 900"><path d="M300 330 C 360 300, 470 300, 520 335 S 560 410, 470 420 S 290 400, 300 330" fill="none" stroke="var(--yellow)" stroke-width="4" stroke-linecap="round"/><path d="M540 440 l70 50 m0 0 l-28 -2 m28 2 l-6 -26" fill="none" stroke="var(--yellow)" stroke-width="4" stroke-linecap="round"/></svg>
+
+  <!-- Faces window -->
+  <div class="faces vertical hidden" id="faces">
+    <div class="tiles" id="tiles"></div>
+    <div class="ctrlbar">
+      <button class="cbtn" id="cMic" title="Mute · Super+Shift+M">󰍬</button>
+      <button class="cbtn" id="cCam" title="Camera">󰄀</button>
+      <button class="cbtn" id="cShare" title="Share screen">󰍹</button>
+      <button class="cbtn leave" id="cLeave" title="Leave">󰜏</button>
+    </div>
+  </div>
+  <div class="dim-tag" id="facesTag"></div>
+
+  <!-- Hopp panel -->
+  <div class="panel" id="panel">
+    <div class="hero">
+      <div class="ico"><svg class="hopp-mark" style="width:18px;height:18px;color:var(--fg-bright)" viewBox="0 0 16 16"><rect x="1" y="1" width="14" height="14" rx="4" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5.2 4.2v7.6M5.2 8.2c.6-1.3 1.6-2 2.9-2 1.5 0 2.4 1 2.4 2.6v3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></div>
+      <div><h3>Hopp</h3><div class="meta" id="heroMeta">3 available · Acme Engineering</div></div>
+      <div class="actions"><button class="iconbtn" title="Refresh">󰑐</button><button class="iconbtn" title="Settings · Ctrl+,">󰒓</button></div>
+    </div>
+
+    <div class="callcard">
+      <div class="top"><span style="color:var(--green)">●</span><b>Pairing with Mira, Jonas</b><span class="timer" style="margin-left:auto" id="timer2">12:04</span></div>
+      <div class="ctrls">
+        <button class="btn">󰍬 Mute</button><button class="btn">󰍹 Share</button><button class="btn">󰖯 Show faces</button><button class="btn danger">Leave</button>
+      </div>
+    </div>
+
+    <div class="search">󰍉 <span>Search teammates and rooms</span><span class="k">/</span></div>
+
+    <div class="sect"><span>TEAMMATES</span><span>3 available</span></div>
+    <div class="rows" id="people"></div>
+
+    <div class="sect"><span>ROOMS</span><span>2 active</span></div>
+    <div class="rows" id="rooms"></div>
+
+    <div class="foot"><span><kbd>↑↓</kbd> move</span><span><kbd>⏎</kbd> pair</span><span><kbd>Ctrl ⏎</kbd> share & pair</span><span style="margin-left:auto"><kbd>Super Alt H</kbd> toggle</span></div>
+  </div>
+
+  <!-- Incoming toast -->
+  <div class="toast" id="toast">
+    <div class="vid" id="toastVid"></div>
+    <div class="txt">
+      <b>Mira Chen wants to pair</b>
+      <small>“Can you look at the encoder clamp?”</small>
+      <div class="acts"><button class="btn primary" id="accept">Accept <span style="opacity:.6">⏎</span></button><button class="btn">Decline <span style="opacity:.6">Esc</span></button><button class="btn">󰏤 5 min</button></div>
+    </div>
+  </div>
+
+  <!-- Host sharing indicators -->
+  <div class="share-border" id="shareBorder"></div>
+  <div class="share-pill" id="sharePill">
+    <span class="rec-dot" style="display:block"></span>
+    <b>Sharing DP-1</b><span style="color:var(--fg-dim)">·</span><span id="ctlWho">Jonas has control</span>
+    <button class="btn">Revoke <span style="opacity:.6">Super Ctrl Esc</span></button>
+    <button class="btn danger">Stop</button>
+  </div>
+  <div class="rcursor" id="jonasCursor" style="left:420px;top:380px;z-index:82;display:none"><svg viewBox="0 0 18 18"><path d="M2 1l13 7-6 1.5L6 16z" fill="var(--orange)" stroke="var(--bg-dark)" stroke-width="1.2"/></svg><span style="background:var(--orange)">Jonas</span></div>
+
+  <!-- Annotations -->
+  <div class="note" data-n="1" id="n1"></div>
+  <div class="note" data-n="2" id="n2"></div>
+  <div class="note" data-n="3" id="n3"></div>
+</div>
+</div>
+
+<p class="caption">Prototype only. Keys <b>1–6</b> switch scenes, <b>Super Alt H</b> in the real client toggles the bar panel. Colours follow the active Omarchy theme; try the theme picker.</p>
+
+<div class="docs">
+  <div class="card">
+    <h4>1 · No main window</h4>
+    <p>Hopp lives in the Omarchy bar as a shell plugin (same shape as <code>local.otuple</code>). Teammates, rooms, presence and call controls sit in a keyboard-driven panel. Nothing occupies a tile until you're actually looking at someone's screen.</p>
+  </div>
+  <div class="card">
+    <h4>2 · Faces are fixed-size</h4>
+    <p>The call window is a small floating, pinned window whose size is <em>derived from the participant count</em>: tile × n + gaps. Cameras are centre-cropped to square (cover), never stretched. Resize snaps between three tile sizes (S/M/L) instead of free-form stretching. Column, row or bubble layouts.</p>
+  </div>
+  <div class="card">
+    <h4>3 · Viewing a share in a tiling WM</h4>
+    <p>A tile has whatever shape Hyprland gives it, and a screen has a fixed one, so fitting one into the other always leaves bars. Instead, the tiled viewer is a <b>viewport</b>: readable scale, cropped to the tile, following the sharer's cursor, with a minimap. For the whole screen at once, <code>Super+H</code> opens it fitted in a special workspace, monitor to monitor.</p>
+  </div>
+  <div class="card">
+    <h4>Hyprland rules shipped with the client</h4>
+<pre><span class="c">-- ~/.config/hypr/apps/hopp.lua</span>
+o.window(<span class="s">"app.gethopp.faces"</span>, {
+  float = <span class="k">true</span>, pin = <span class="k">true</span>,
+  move = { <span class="s">"100%-w-10"</span>, <span class="s">"100%-w-10"</span> },
+  no_initial_focus = <span class="k">true</span>,
+  keep_aspect_ratio = <span class="k">true</span>,
+  no_screen_share = <span class="k">true</span>,
+})
+o.window(<span class="s">"app.gethopp.viewer"</span>, {
+  tag = <span class="s">"-floating-window"</span>, <span class="c">-- tiles normally</span>
+})
+o.window(<span class="s">"app.gethopp.peek"</span>, {
+  workspace = <span class="s">"special:hopp"</span>,
+})
+<span class="c">-- Super+H: whole remote screen over anything</span>
+o.bind(<span class="s">"SUPER, H"</span>, <span class="s">"Hopp peek"</span>,
+  <span class="s">"hyprctl dispatch togglespecialworkspace hopp"</span>)</pre>
+    <p class="caption">Field names need checking against Hyprland 0.56's Lua rule schema before shipping.</p>
+  </div>
+  <div class="card">
+    <h4>How it maps onto the current code</h4>
+    <ul>
+      <li><b>Bar plugin</b>: QML <code>Widget.qml</code> + <code>Service.qml</code> talking to the GPUI client over the existing private IPC socket (<code>instance.rs</code>).</li>
+      <li><b>GPUI client</b> becomes headless-by-default and opens up to two windows: <code>faces</code> and <code>viewer</code>, with distinct app IDs.</li>
+      <li><b>Toast</b>: Omarchy notification with actions, or a layer-shell surface (we already use layer-shell for cursors).</li>
+      <li><b>Share border/pill</b>: reuse the existing output-bound overlay layer in <code>cursor_overlay.rs</code>.</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h4>Keyboard first</h4>
+    <ul>
+      <li><code>Super Alt H</code> open the Hopp panel, <code>/</code> search, <code>⏎</code> call</li>
+      <li><code>Super Shift M</code> mute anywhere · <code>Super Shift S</code> share</li>
+      <li><code>Super Ctrl Esc</code> revoke control (global, already a CLI flag)</li>
+      <li><code>Esc Esc</code> release control when driving someone's screen</li>
+    </ul>
+  </div>
+</div>
+
+<script>
+const THEMES={
+ "tokyo-night":{accent:"#7aa2f7",selection:"#292e42",muted:"#414868",bg:"#1a1b26","bg-dark":"#13141c","bg-darker":"#0e0e14","bg-light":"#24283b",fg:"#a9b1d6","fg-dim":"#565f89","fg-bright":"#c0caf5",red:"#f7768e",green:"#9ece6a",yellow:"#e0af68",magenta:"#bb9af7",cyan:"#0db9d7",orange:"#eb927b"},
+ "catppuccin":{accent:"#89b4fa",selection:"#45475a",muted:"#585b70",bg:"#1e1e2e","bg-dark":"#161622","bg-darker":"#11111b","bg-light":"#313244",fg:"#cdd6f4","fg-dim":"#6c7086","fg-bright":"#cdd6f4",red:"#f38ba8",green:"#a6e3a1",yellow:"#f9e2af",magenta:"#cba6f7",cyan:"#89dceb",orange:"#fab387"},
+ "gruvbox":{accent:"#7daea3",selection:"#504945",muted:"#665c54",bg:"#282828","bg-dark":"#1e1e1e","bg-darker":"#141414","bg-light":"#3c3836",fg:"#d4be98","fg-dim":"#7c6f64","fg-bright":"#ddc7a1",red:"#ea6962",green:"#a9b665",yellow:"#d8a657",magenta:"#d3869b",cyan:"#89b482",orange:"#e78a4e"},
+ "everforest":{accent:"#7fbbb3",selection:"#3d484d",muted:"#475258",bg:"#2d353b","bg-dark":"#21272c","bg-darker":"#1a1f23","bg-light":"#343f44",fg:"#d3c6aa","fg-dim":"#7a8478","fg-bright":"#d3c6aa",red:"#e67e80",green:"#a7c080",yellow:"#dbbc7f",magenta:"#d699b6",cyan:"#83c092",orange:"#e69875"},
+ "rose-pine":{accent:"#56949f",selection:"#dfdad9",muted:"#cecacd",bg:"#faf4ed","bg-dark":"#ede7e1","bg-darker":"#e4ddd6","bg-light":"#f2e9e1",fg:"#575279","fg-dim":"#9893a5","fg-bright":"#464261",red:"#b4637a",green:"#286983",yellow:"#ea9d34",magenta:"#907aa9",cyan:"#56949f",orange:"#d7827e"},
+ "flexoki-light":{accent:"#205EA6",selection:"#CECDC3",muted:"#B7B5AC",bg:"#FFFCF0","bg-dark":"#f2efe4","bg-darker":"#e6e3d6","bg-light":"#E6E4D9",fg:"#100F0F","fg-dim":"#878580","fg-bright":"#100F0F",red:"#D14D41",green:"#879A39",yellow:"#D0A215",magenta:"#8B7EC8",cyan:"#3AA99F",orange:"#DA702C"},
+};
+const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+const stage=$("#stage"), vp=$("#viewport");
+
+/* ---- scale the 1600×900 desktop to the available width ---- */
+let SW=1600, SH=900;
+function fit(){const s=vp.clientWidth/SW;stage.style.width=SW+"px";stage.style.height=SH+"px";stage.style.transform=`scale(${s})`;vp.style.height=SH*s+"px";}
+new ResizeObserver(fit).observe(vp);
+
+/* ---- people ---- */
+const PEOPLE=[
+ {id:"mira",name:"Mira Chen",init:"MC",hue:"magenta",status:"g",note:"Available · hopp-omarchy",cam:true,muted:false},
+ {id:"jonas",name:"Jonas Weber",init:"JW",hue:"orange",status:"g",note:"Available",cam:true,muted:true},
+ {id:"you",name:"You",init:"KG",hue:"accent",status:"g",note:"",cam:true,muted:false},
+ {id:"ana",name:"Ana Souza",init:"AS",hue:"cyan",status:"g",note:"Available",cam:false,muted:false},
+ {id:"lee",name:"Lee Park",init:"LP",hue:"green",status:"y",note:"In “Standup” · 4m",cam:true,muted:false},
+ {id:"sam",name:"Sam Ortiz",init:"SO",hue:"yellow",status:"o",note:"Away · back 14:00",cam:false,muted:false},
+];
+const roster=["mira","jonas","you","ana","lee"];
+let count=3;
+function person(id){return PEOPLE.find(p=>p.id===id)}
+
+function camSVG(p,seed){
+  // a soft "room" plus head-and-shoulders silhouette; rendered square and cropped, never stretched
+  return `<svg viewBox="0 0 100 100" preserveAspectRatio="xMidYMid slice">
+   <defs><radialGradient id="g${seed}" cx="${30+seed*13%40}%" cy="25%" r="90%">
+     <stop offset="0" stop-color="var(--${p.hue})" stop-opacity=".55"/><stop offset="1" stop-color="var(--bg-dark)"/></radialGradient></defs>
+   <rect width="100" height="100" fill="url(#g${seed})"/>
+   <rect x="${60-seed*7%30}" y="8" width="22" height="30" rx="2" fill="var(--fg-bright)" opacity=".07"/>
+   <ellipse cx="50" cy="104" rx="36" ry="30" fill="var(--bg-darker)" opacity=".85"/>
+   <circle cx="50" cy="50" r="17" fill="var(--bg-darker)" opacity=".9"/>
+   <circle cx="50" cy="50" r="17" fill="var(--${p.hue})" opacity=".18"/>
+  </svg>`;
+}
+function tileHTML(p,i,speaking){
+  return `<div class="tile ${p.cam?"":"camoff"} ${speaking?"speaking":""}" style="background:color-mix(in srgb,var(--${p.hue}) 22%,var(--bg-light))">
+    <div class="initials">${p.init}</div><div class="cam">${camSVG(p,i+1)}</div>
+    <span class="name">${p.name}</span>${p.muted?'<span class="muted">󰍭</span>':""}</div>`;
+}
+
+/* ---- render faces window ---- */
+let layout="vertical", tileSize={vertical:120,horizontal:120,dots:72};
+function renderFaces(){
+  const f=$("#faces");
+  const eff = scene==="viewing" ? "dots" : layout; // auto-compact while watching a share
+  f.className=`faces ${eff==="dots"?"dots vertical":eff} ${f.classList.contains("hidden")?"hidden":""}`;
+  f.style.setProperty("--tile",tileSize[eff]+"px");
+  const ids=roster.filter(id=>id!=="you").slice(0,count-1).concat("you");
+  $("#tiles").innerHTML=ids.map((id,i)=>tileHTML(person(id),i,id==="mira")).join("");
+  $("#miniFaces").innerHTML=ids.filter(id=>id!=="you").map(id=>{const p=person(id);return `<span class="${id==="mira"?"speaking":""}" style="background:var(--${p.hue})">${p.init[0]}</span>`}).join("");
+  requestAnimationFrame(placeFaces);
+}
+function placeFaces(){
+  const f=$("#faces"), tag=$("#facesTag");
+  const w=f.offsetWidth,h=f.offsetHeight;
+  const top = SH-10-h;
+  f.style.left=(SW-10-w)+"px"; f.style.top=top+"px";
+  tag.textContent=`${w}×${h} · float · pin · size = tiles × ${count}`;
+  tag.style.left="auto";tag.style.right="10px"; tag.style.top=(top-22)+"px";
+  tag.style.opacity=f.classList.contains("hidden")?0:1;
+  placeNotes();
+}
+
+/* ---- panel content ---- */
+function renderPanel(){
+  $("#people").innerHTML=PEOPLE.filter(p=>p.id!=="you").map((p,i)=>`
+    <div class="row ${i===0?"cursor":""}"><div class="av" style="background:var(--${p.hue})">${p.init}<i class="on-${p.status}"></i></div>
+    <div class="who"><b>${p.name}</b><small>${p.note}</small></div>
+    <div class="go">${p.status==="g"?'<button class="btn">󰍹</button><button class="btn primary">Pair</button>':p.status==="y"?'<button class="btn">Join</button>':'<button class="btn">Knock</button>'}</div></div>`).join("");
+  const room=(name,ids,meta)=>`<div class="row"><div class="av" style="background:var(--bg-light);color:var(--fg-bright);border-radius:8px">󰋜</div>
+    <div class="who"><b>${name}</b><small>${meta}</small></div>
+    <div class="room-faces">${ids.map(id=>{const p=person(id);return `<div class="av" style="background:var(--${p.hue})">${p.init[0]}</div>`}).join("")}</div>
+    <div class="go" style="margin-left:8px"><button class="btn">Join</button></div></div>`;
+  $("#rooms").innerHTML=room("Standup",["lee","sam"],"2 people · 4m")+room("Friday pairing",[],"Empty · link copied ⌘");
+}
+
+/* ---- tiled layout ---- */
+const TOP=28+10; // bar + gaps_out
+const REMOTE_AR=2560/1600;
+let viewMode="follow", vRect={x:0,y:0,w:0,h:0};
+function place(el,r){Object.assign(el.style,{left:r.x+"px",top:r.y+"px",width:r.w+"px",height:r.h+"px"});}
+function layoutTiles(){
+  const t=$("#wTerm"), r=$("#wRight"), v=$("#wView");
+  const H=SH-TOP-10, W=SW-20, viewing=scene==="viewing", mode=viewing?viewMode:null;
+  const lw=Math.round(W*(mode==="tiled"?.36:.5)-5);
+  const tiledMode = mode==="tiled"||mode==="follow";
+  place(t,{x:10,y:TOP,w:lw,h:H}); place(r,{x:10+lw+10,y:TOP,w:W-lw-10,h:H});
+  // pair workspace: ws1 tiles stay where they are, we just look at ws2
+  t.style.opacity = mode==="workspace"?0:1;
+  r.style.opacity = mode==="workspace"||tiledMode?0:1;
+  v.style.display = viewing?"block":"none";
+  $("#dimmer").classList.toggle("show",mode==="floating");
+  if(mode==="workspace") vRect={x:10,y:TOP,w:W,h:H};
+  else if(tiledMode) vRect={x:10+lw+10,y:TOP,w:W-lw-10,h:H};
+  else if(mode==="floating"){ // window is exactly the remote aspect: no letterbox at all
+    let w=W*.78,h=w/REMOTE_AR; if(h>H*.88){h=H*.88;w=h*REMOTE_AR}
+    vRect={x:Math.round((SW-w)/2),y:Math.round(TOP+(H-h)/2),w:Math.round(w)+4,h:Math.round(h)+4};
+  }
+  if(viewing) place(v,vRect);
+  t.classList.toggle("active",!viewing); r.classList.remove("active"); v.classList.toggle("active",viewing);
+  $$(".ws").forEach((e,i)=>{e.classList.toggle("on",mode==="workspace"?i===1:i===0);e.classList.toggle("pair",mode==="workspace"&&i===1)});
+  fitFrame();
+}
+// Fit the remote frame and turn whatever space is left into the faces dock.
+function fitFrame(){
+  if(scene!=="viewing") return;
+  const fr=$("#frame"), d=$("#dock"), pill=$("#vpill");
+  const cw=vRect.w-4, ch=vRect.h-4, ar=REMOTE_AR, pad=10;
+  const fitIn=(w,h)=>{let fw=w,fh=w/ar; if(fh>h){fh=h;fw=h*ar} return [fw,fh]};
+  const ids=roster.filter(id=>id!=="you").slice(0,count-1).concat("you");
+  let fw,fh,fx,fy,dock=null;
+  $("#viewer").classList.toggle("follow",viewMode==="follow");
+  if(viewMode==="follow"){
+    // The tile is a viewport onto the remote screen at readable scale, panned to keep the
+    // remote cursor in view. Tile shape no longer matters, so it can tile like anything else.
+    fw=Math.max(cw,ch*ar)*1.55; fh=fw/ar;
+    const [px,py]=followPt;
+    fx=Math.min(0,Math.max(cw-fw,cw/2-px*fw)); fy=Math.min(0,Math.max(ch-fh,ch/2-py*fh));
+    const mv=$("#mmView").style; mv.left=(-fx/fw*100)+"%"; mv.top=(-fy/fh*100)+"%"; mv.width=(cw/fw*100)+"%"; mv.height=(ch/fh*100)+"%";
+    $("#pfaces").innerHTML=ids.filter(id=>id!=="you").map(id=>{const p=person(id);return `<span class="av ${id==="mira"?"speaking":""}" style="background:var(--${p.hue})">${p.init}</span>`}).join("");
+    Object.assign(fr.style,{left:fx+"px",top:fy+"px",width:fw+"px",height:fh+"px",borderRadius:"0"});
+    Object.assign(pill.style,{left:cw/2+"px",top:"10px"});
+    d.style.display="none";
+    const ox=vRect.x+2, oy=vRect.y+2;
+    viewNotes={pill:[ox+cw/2,oy+56],dock:[ox+cw-300,oy+ch-210],frame:[ox+30,oy+ch-120]};
+    placeNotes(); return;
+  }
+  if(viewMode==="floating"){ [fw,fh]=[cw,ch]; fx=0; fy=0; }
+  else{
+    const SIDE=140, BOTTOM=112;
+    const side=fitIn(cw-SIDE-pad*2,ch-pad*2), bottom=fitIn(cw-pad*2,ch-BOTTOM-pad*2);
+    if(side[0]*side[1]>=bottom[0]*bottom[1]){
+      [fw,fh]=side; fy=(ch-fh)/2;
+      fx=Math.max(pad,Math.min((cw-fw)/2,cw-SIDE-pad-fw)); // centred if the pillarbox can hold the dock
+      const tile=Math.min(116,Math.floor((ch-90-(ids.length-1)*8)/ids.length));
+      const dx=fx+fw+(cw-fx-fw)/2;
+      dock={cls:"v",tile,style:{left:dx+"px",top:ch/2+"px",transform:"translate(-50%,-50%)"}};
+    }else{
+      [fw,fh]=bottom; fx=(cw-fw)/2;
+      const group=fh+BOTTOM; fy=Math.max(pad,(ch-group)/2);
+      dock={cls:"h",tile:84,style:{left:cw/2+"px",top:(fy+fh+(BOTTOM)/2+4)+"px",transform:"translate(-50%,-50%)"}};
+    }
+  }
+  Object.assign(fr.style,{left:fx+"px",top:fy+"px",width:fw+"px",height:fh+"px",borderRadius:viewMode==="floating"?"0":"6px"});
+  Object.assign(pill.style,{left:(fx+fw/2)+"px",top:(fy+10)+"px"});
+  $("#ctlBanner").style.cssText+=`;bottom:auto;top:${fy+fh-44}px;left:${fx+fw/2}px`;
+  d.style.display=dock?"flex":"none";
+  if(dock){
+    d.className="dock "+dock.cls; Object.assign(d.style,dock.style); d.style.setProperty("--tile",dock.tile+"px");
+    d.innerHTML=ids.map((id,i)=>tileHTML(person(id),i+20,id==="mira")).join("")+
+      `<div class="dctl"><button class="cbtn">󰍬</button><button class="cbtn">󰄀</button><button class="cbtn">󰍹</button><button class="cbtn leave">󰜏</button></div>`;
+  }
+  // stage coordinates for annotations
+  const ox=vRect.x+2, oy=vRect.y+2;
+  viewNotes={pill:[ox+fx+fw/2,oy+fy+50],dock:dock?[ox+(dock.cls==="v"?parseFloat(dock.style.left)-260:cw/2+180),oy+(dock.cls==="v"?ch/2-40:fy+fh+8)]:null,frame:[ox+fx+24,oy+fy+fh-110]};
+  placeNotes();
+}
+let viewNotes={}, followPt=[.30,.40];
+/* ---- terminal content ---- */
+$("#termBody").innerHTML=`<span class="c">~/Projects/hopp/linux-client</span> <span class="f">main</span> <span class="s">❯</span> nvim src/ui.rs
+
+<span class="ln">412</span><span class="k">impl</span> <span class="t">Render</span> <span class="k">for</span> <span class="t">FacesWindow</span> {
+<span class="ln">413</span>    <span class="k">fn</span> <span class="f">render</span>(&amp;<span class="k">mut</span> self, w: &amp;<span class="k">mut</span> <span class="t">Window</span>, cx: &amp;<span class="k">mut</span> <span class="t">Context</span>&lt;Self&gt;) -&gt; <span class="k">impl</span> <span class="t">IntoElement</span> {
+<span class="ln">414</span>        <span class="c">// size is derived from participants, never stretched</span>
+<span class="cursorline"><span class="ln">415</span>        <span class="k">let</span> tile = self.size.<span class="f">px</span>(); <span class="c">// S=72 M=120 L=168</span></span><span class="ln">416</span>        <span class="k">let</span> n = self.participants.<span class="f">len</span>() <span class="k">as</span> <span class="t">f32</span>;
+<span class="ln">417</span>        w.<span class="f">resize</span>(<span class="f">size</span>(tile + <span class="n">12.</span>, n * (tile + <span class="n">6.</span>) + <span class="n">40.</span>));
+<span class="ln">418</span>        <span class="f">div</span>().<span class="f">flex_col</span>().<span class="f">gap</span>(<span class="f">px</span>(<span class="n">6.</span>))
+<span class="ln">419</span>            .<span class="f">children</span>(self.participants.<span class="f">iter</span>().<span class="f">map</span>(|p| {
+<span class="ln">420</span>                <span class="f">video_tile</span>(p).<span class="f">size</span>(<span class="f">px</span>(tile)).<span class="f">object_fit</span>(<span class="t">Cover</span>)
+<span class="ln">421</span>            }))
+<span class="ln">422</span>            .<span class="f">child</span>(<span class="f">call_controls</span>(cx))
+<span class="ln">423</span>    }
+<span class="ln">424</span>}
+<div class="status"><b>NORMAL</b><span>src/ui.rs</span><span style="margin-left:auto;padding-right:12px">rust · 415:9</span></div>`;
+
+/* ---- notes per scene ---- */
+const NOTES={
+ idle:[["n1",1180,48,"<b>Hopp is a bar widget</b>No app window. Click the mark or press Super Alt H."]],
+ menu:[["n1",820,70,"<b>Bar panel, not a window</b>Same KeyboardPanel as other Omarchy widgets: themed, focus-trapped, Esc to close."],["n2",820,330,"<b>One-key pairing</b>⏎ calls the highlighted teammate. Ctrl ⏎ calls and starts sharing."]],
+ incoming:[["n1",980,170,"<b>Incoming call toast</b>Sits where Omarchy notifications sit. Live camera preview, ⏎ / Esc, snooze."]],
+ call:[["n1",1200,300,"<b>Faces window</b>Floating + pinned, follows you across workspaces. Square tiles, centre-cropped. Grows by a tile per person; never free-stretch."],["n2",1060,48,"<b>Bar pill</b>Who’s here, who’s speaking, timer, mic state. Always visible even with faces hidden."]],
+ sharing:[["n1",360,90,"<b>Unmissable sharing state</b>Monitor border + pill on the shared output (layer-shell, excluded from capture)."],["n2",620,470,"<b>Remote cursors & drawing</b>Rendered on the existing click-through overlay layer."]],
+};
+const VIEW_NOTES={
+ follow:["<b>A window onto the screen, not a picture of it</b>Shown at readable scale and cropped to whatever shape the tile is. It pans to follow Mira's cursor, so it tiles, splits and resizes like any other window.","<b>Minimap</b>Shows where you are on the remote screen. Click to jump; Super+scroll zooms; Shift+F pins the view instead of following."],
+ workspace:["<b>Peek: special workspace</b>Super+H toggles special:hopp over whatever you're on. That's monitor to monitor, so fitting the whole screen makes sense here. Press again to drop back to your tiles.","<b>The black bars become the dock</b>Faces and call controls live in the pillarbox, so nothing covers the remote screen."],
+ floating:["<b>Aspect-locked float</b>The window is exactly the remote's 16:10, so there is no letterbox to look odd. Hyprland dims the rest while it has focus.","<b>Faces stay bubbles</b>Small pinned window in the corner, never over the share."],
+ tiled:["<b>Tiled, but honest</b>The frame keeps its aspect; the spare band holds faces and controls instead of empty bars.","<b>Dock follows the shape</b>Narrow tile puts the dock underneath; wide tile puts it at the side."],
+};
+function placeNotes(){
+  ["n1","n2","n3"].forEach(id=>$("#"+id).hidden=true);
+  if(scene==="viewing"){
+    const [a,b]=VIEW_NOTES[viewMode], put=(id,pt,html)=>{if(!pt)return;const n=$("#"+id);n.hidden=false;n.innerHTML=html;n.style.left=Math.max(10,Math.min(SW-250,pt[0]-120))+"px";n.style.top=pt[1]+"px";};
+    put("n1",viewNotes.pill,a);
+    put("n2",viewMode==="floating"?[SW-420,SH-150]:viewNotes.dock,b);
+    put("n3",viewNotes.frame,viewMode==="follow"?"<b>Faces move into the pill</b>No extra window over your tiles. Speaking ring still visible.":"<b>No toolbar row</b>Controls float over the top edge and fade after 2 s idle.");
+    return;
+  }
+  (NOTES[scene]||[]).forEach(([id,x,y,html])=>{const n=$("#"+id);n.hidden=false;n.innerHTML=html;n.style.left=x+"px";n.style.top=y+"px";});
+}
+
+/* ---- scenes ---- */
+let scene="idle";
+function setScene(s){
+  scene=s;
+  $$("[data-scene]").forEach(b=>b.classList.toggle("on",b.dataset.scene===s));
+  const inCall=["call","viewing","sharing"].includes(s);
+  const w=$("#widget");
+  w.classList.toggle("incall",inCall); w.classList.toggle("sharing",s==="sharing"); w.classList.toggle("open",s==="menu");
+  const p=$("#panel"); p.classList.toggle("show",s==="menu"); p.classList.toggle("incall",false);
+  $("#toast").classList.toggle("show",s==="incoming");
+  $("#faces").classList.toggle("hidden",!inCall||(s==="viewing"&&viewMode!=="floating"));
+  $("#viewModes").classList.toggle("show",s==="viewing");
+  $("#faces").classList.toggle("active",s==="call");
+  $("#shareBorder").classList.toggle("show",s==="sharing");
+  $("#sharePill").classList.toggle("show",s==="sharing");
+  $("#drawing").classList.toggle("show",s==="sharing");
+  $("#jonasCursor").style.display=s==="sharing"?"block":"none";
+  $("#cShare").classList.toggle("on",s==="sharing");
+  layoutTiles(); renderFaces(); placePanel();
+}
+function placePanel(){
+  const w=$("#widget"), r=w.getBoundingClientRect(), sr=stage.getBoundingClientRect(), s=sr.width/1600;
+  const x=(r.left-sr.left)/s + r.width/s/2 - 192;
+  $("#panel").style.left=Math.min(1600-10-384,Math.max(10,x))+"px";
+}
+
+/* ---- interactions ---- */
+$$("[data-scene]").forEach(b=>b.onclick=()=>setScene(b.dataset.scene));
+$$("[data-layout]").forEach(b=>b.onclick=()=>{layout=b.dataset.layout;$$("[data-layout]").forEach(x=>x.classList.toggle("on",x===b));renderFaces();});
+$$("[data-mode]").forEach(b=>b.onclick=()=>{viewMode=b.dataset.mode;$$("[data-mode]").forEach(x=>x.classList.toggle("on",x===b));setScene("viewing");});
+$("#modeBtn").onclick=()=>{const m=["follow","workspace","floating","tiled"];$$("[data-mode]")[(m.indexOf(viewMode)+1)%4].click();};
+$$("[data-display]").forEach(b=>b.onclick=()=>{[SW,SH]=b.dataset.display==="uw"?[1600,675]:[1600,900];$$("[data-display]").forEach(x=>x.classList.toggle("on",x===b));fit();setScene(scene);});
+$("#plus").onclick=()=>{count=Math.min(5,count+1);renderFaces();fitFrame()};
+$("#minus").onclick=()=>{count=Math.max(2,count-1);renderFaces();fitFrame()};
+$("#widget").onclick=()=>{ if(scene==="menu") setScene("idle"); else if(["call","viewing","sharing"].includes(scene)){ $("#panel").classList.toggle("show"); $("#panel").classList.add("incall"); placePanel(); } else setScene("menu"); };
+$("#accept").onclick=()=>setScene("call");
+$("#cMic").onclick=e=>{const b=e.currentTarget;b.classList.toggle("off");b.textContent=b.classList.contains("off")?"󰍭":"󰍬";$("#micInd").classList.toggle("muted");$("#micInd").textContent=b.textContent;};
+$("#cCam").onclick=e=>{const b=e.currentTarget;b.classList.toggle("off");person("you").cam=!b.classList.contains("off");renderFaces();};
+$("#cShare").onclick=()=>setScene(scene==="sharing"?"call":"sharing");
+$("#cLeave").onclick=()=>setScene("idle");
+$("#ctrlBtn").onclick=e=>{const on=e.currentTarget.classList.toggle("danger");e.currentTarget.classList.toggle("primary",!on);
+  e.currentTarget.textContent=on?"Release control":"󰍽 Request control";$("#ctlBanner").style.display=on?"flex":"none";$("#myCursor").style.opacity=on?1:0;};
+$$("#fitSeg button").forEach(b=>b.onclick=()=>{$$("#fitSeg button").forEach(x=>x.classList.toggle("on",x===b))});
+$("#theme").onchange=e=>{const t=THEMES[e.target.value];for(const k in t)document.documentElement.style.setProperty("--"+k,t[k]);};
+$("#annot").onclick=e=>{e.currentTarget.classList.toggle("on");stage.classList.toggle("annot-off")};
+document.addEventListener("keydown",e=>{const m={"1":"idle","2":"menu","3":"incoming","4":"call","5":"viewing","6":"sharing"}[e.key];if(m)setScene(m);});
+window.addEventListener("resize",()=>{fit();placePanel();});
+
+/* ---- ambient motion: timer, remote cursors ---- */
+let secs=12*60+4;
+setInterval(()=>{secs++;const t=`${String(secs/60|0).padStart(2,"0")}:${String(secs%60).padStart(2,"0")}`;$("#timer").textContent=t;$("#timer2").textContent=t;},1000);
+const path=[[30,40],[22,27],[44,33],[38,58],[70,30],[80,52]];let pi=0;
+setInterval(()=>{pi=(pi+1)%path.length;const c=$("#miraCursor");c.style.left=path[pi][0]+"%";c.style.top=path[pi][1]+"%";
+  followPt=[path[pi][0]/100,path[pi][1]/100]; if(scene==="viewing"&&viewMode==="follow") fitFrame();},2600);
+const jp=[[420,380],[520,330],[600,470],[300,520]];let ji=0;
+setInterval(()=>{ji=(ji+1)%jp.length;const c=$("#jonasCursor");c.style.left=jp[ji][0]+"px";c.style.top=jp[ji][1]+"px";},1700);
+
+
+$("#toastVid").innerHTML=camSVG(person("mira"),9);
+$$("[data-layout]")[0].classList.add("on");
+$$("[data-mode]")[0].classList.add("on"); $$("[data-display]")[0].classList.add("on");
+renderPanel(); fit(); setScene(location.hash.slice(1)||"idle");
+</script>
+</body>
+</html>

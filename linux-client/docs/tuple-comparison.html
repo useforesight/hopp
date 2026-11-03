@@ -1,0 +1,132 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+  body{margin:0;font:14px/1.45 system-ui,sans-serif;color:var(--foreground)}
+  .wrap{display:flex;flex-direction:column;gap:18px}
+  .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+  .stat{border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px}
+  .stat b{display:block;font-size:24px;line-height:1.1}
+  .stat span{color:var(--muted-foreground);font-size:12px}
+  .legend{display:flex;flex-wrap:wrap;gap:12px;font-size:12px;color:var(--muted-foreground);align-items:center}
+  table{width:100%;border-collapse:collapse}
+  th{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted-foreground);text-align:left;font-weight:600;padding:6px 6px;border-bottom:1px solid var(--border)}
+  th.c,td.c{text-align:center;width:72px}
+  td{padding:6px 6px;border-bottom:1px solid color-mix(in srgb,var(--border) 60%,transparent);vertical-align:top}
+  tr.group td{padding-top:16px;font-weight:650;font-size:13px;border-bottom:1px solid var(--border)}
+  .note{display:block;color:var(--muted-foreground);font-size:12px;margin-top:1px}
+  .chip{display:inline-block;min-width:46px;padding:1px 6px;border-radius:999px;font-size:11px;font-weight:600}
+  .y{background:color-mix(in srgb,#22c55e 20%,transparent);color:color-mix(in srgb,#22c55e 75%,var(--foreground))}
+  .p{background:color-mix(in srgb,#eab308 22%,transparent);color:color-mix(in srgb,#ca8a04 75%,var(--foreground))}
+  .n{background:color-mix(in srgb,#ef4444 18%,transparent);color:color-mix(in srgb,#ef4444 75%,var(--foreground))}
+  .u,.x{background:color-mix(in srgb,var(--muted-foreground) 15%,transparent);color:var(--muted-foreground)}
+  @media (max-width:520px){th.c,td.c{width:52px}.chip{min-width:0}.stats{grid-template-columns:1fr}}
+</style></head><body>
+<div class="wrap">
+  <div class="stats" id="stats"></div>
+  <div class="legend">
+    <span><span class="chip y">Yes</span> has it</span>
+    <span><span class="chip p">Partial</span> some of it</span>
+    <span><span class="chip n">No</span> missing</span>
+    <span><span class="chip u">?</span> not verified</span>
+    <span><span class="chip x">–</span> web app, not a client feature</span>
+  </div>
+  <table>
+    <thead><tr><th>Tuple feature</th><th class="c">Tuple</th><th class="c">Hopp Mac/Win</th><th class="c">Hopp Linux</th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+</div>
+<script>
+const G = [
+ ["Calling and presence", [
+  ["Free guest accounts for outside collaborators","y","n","n","Tuple guests see only the person who invited them. Hopp links need team membership."],
+  ["Reusable personal call link","y","p","n","Hopp has room links for its web app, team members only."],
+  ["Turn a live 1:1 call into a joinable link","y","n","n","New in Tuple, Sep 2026."],
+  ["Personal room with an open/closed door","y","n","n","Closed door: visitors ask to be let in."],
+  ["Knock to join a teammate's call","y","p","p","Hopp joins ongoing calls directly. No approval step found."],
+  ["Alert when teammates enter a room","y","n","n",""],
+  ["Missed-call notification with Call Back","y","n","n",""],
+  ["Decline with a message","y","n","n",""],
+  ["Favourite teammates and rooms","y","n","n",""],
+  ["Hide who you're pairing with","y","n","n","Hopp always shows call peers to the team."],
+  ["Mute mic and camera when the screen locks","y","n","p","Linux client stops sharing and control on lock."],
+  ["Alone-on-call reminder, hang up on sleep","y","n","n",""],
+ ]],
+ ["Screen sharing", [
+  ["Share up to 5K","y","p","p","Hopp desktop caps at 4K. Linux scales to 4096 px wide."],
+  ["Share part of a screen, or snap to a window","y","p","p","Tuple: macOS only. Hopp window share: macOS only, or view-only on Linux."],
+  ["Ask someone to share, or take over sharing","y","n","n",""],
+  ["Viewer chooses resolution; upscaling","y","n","n","Hopp sets resolution on the sharer's side only."],
+  ["Zoom and pan a large share","y","u","y","Linux viewer adds follow-the-cursor and a minimap."],
+  ["Hide chosen apps from the share (App Veil)","y","p","n","Hopp: macOS only."],
+  ["Hide notifications while sharing","y","n","n",""],
+  ["Share system audio","y","n","n","Tuple: macOS, headphones only. New Oct 2026."],
+  ["Send the focused window's title and URL","y","n","n","Tuple: macOS. New Sep 2026."],
+ ]],
+ ["Remote control", [
+  ["Forward ⌘-Tab and system shortcuts","y","u","n","Not found in Hopp code."],
+  ["Open a link in the host's browser","y","n","n","Tuple's Send Link."],
+  ["Remove a participant from a call","y","n","n",""],
+  ["Choose your cursor colour","y","n","n","Hopp assigns colours."],
+ ]],
+ ["Drawing and reactions", [
+  ["Click highlight on the host's screen","y","y","p","Linux host doesn't draw it."],
+  ["Strokes that fade","y","y","p","Linux host keeps every stroke until cleared."],
+  ["Drawing colour per person","y","y","p","Linux host draws one colour."],
+  ["Text and emoji annotations","y","n","n",""],
+  ["Emoji and full-screen reactions","y","n","n",""],
+  ["GIFs and sound reactions","y","n","n",""],
+ ]],
+ ["Audio and video", [
+  ["Push-to-talk","y","n","n","Tuple: macOS."],
+  ["\"You're muted\" alert when you speak","y","n","n",""],
+  ["Mute others, or ask them to unmute","y","n","n",""],
+  ["Speaking indicators","u","y","n","Not documented by Tuple."],
+  ["Noise suppression on/off","y","y","p","Linux: always on, no toggle."],
+ ]],
+ ["Capture and AI", [
+  ["Record calls locally with an on-device transcript","y","n","n","Tuple Capture. Whisper on the device."],
+  ["Search past calls and transcripts","y","n","n",""],
+  ["Screenshot of the shared screen","y","n","n",""],
+  ["CLI for calls, rooms and contacts","y","n","p","Linux: a few flags (--peek, --quit, --revoke-control)."],
+  ["MCP server for coding agents","y","n","n","About 35 tools. Claude Code, Codex and others."],
+  ["Start an agent with call context; in-call cards","y","n","n","tuple connect, tuple notifications."],
+ ]],
+ ["Integrations", [
+  ["Run scripts on call events (Triggers)","y","n","n","16 events, plus a directory of 35 scripts."],
+  ["Google and Apple Calendar call links","y","n","n",""],
+  ["Slack slash command","y","y","n","Linux client rejects Slack join links."],
+  ["Launcher integration","y","n","p","Tuple: Spotlight, Raycast. Linux: bar plugin and Super+Alt+H."],
+  ["Usage API","y","p","x","Hopp has an OpenAPI spec but only user tokens."],
+ ]],
+ ["Admin and security", [
+  ["End-to-end encryption; peer-to-peer for small calls","y","n","n","Hopp media passes decrypted through the LiveKit server."],
+  ["SAML SSO and a required sign-in method","y","n","x",""],
+  ["SCIM provisioning","y","n","x",""],
+  ["Owner, Manager and User roles","y","p","x","Hopp has one admin flag."],
+  ["Pairing insights and usage export","y","n","x",""],
+  ["Call-link policies","y","n","x",""],
+  ["Call history","y","n","n",""],
+ ]],
+ ["Everyday use", [
+  ["Call stats window","y","y","n",""],
+  ["Customisable global shortcuts","y","y","n",""],
+  ["Snooze notifications","y","n","n",""],
+ ]],
+];
+const L={y:"Yes",p:"Partial",n:"No",u:"?",x:"–"};
+const chip=s=>`<span class="chip ${s}">${L[s]}</span>`;
+let html="",rows=0,desk=0,lin=0;
+for(const [g,items] of G){
+  html+=`<tr class="group"><td colspan="4">${g}</td></tr>`;
+  for(const [f,t,d,l,note] of items){
+    rows++; if(d==="n")desk++; if(l==="n")lin++;
+    html+=`<tr><td>${f}${note?`<span class="note">${note}</span>`:""}</td><td class="c">${chip(t)}</td><td class="c">${chip(d)}</td><td class="c">${chip(l)}</td></tr>`;
+  }
+}
+document.getElementById("rows").innerHTML=html;
+document.getElementById("stats").innerHTML=
+ `<div class="stat"><b>${rows}</b><span>Tuple features compared</span></div>`+
+ `<div class="stat"><b>${desk}</b><span>missing from Hopp on Mac/Windows</span></div>`+
+ `<div class="stat"><b>${lin}</b><span>missing from your Linux client</span></div>`;
+</script>
+</body></html>

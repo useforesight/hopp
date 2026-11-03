@@ -1,0 +1,34 @@
+{
+  "number": 2,
+  "t_ms": 9565,
+  "width": 1920,
+  "height": 1080,
+  "trigger": "marks",
+  "caption": "#2 Sam Local circled something at middle right (85%, 60%)",
+  "marks": [
+    {
+      "by": "Sam Local",
+      "shape": "circle",
+      "bounds": [
+        0.7800682057116741,
+        0.5501062202838842,
+        0.91,
+        0.6399881936165017
+      ],
+      "colour": "#ffd60a"
+    }
+  ],
+  "ink": [
+    {
+      "by": "Sam Local",
+      "shape": "circle",
+      "bounds": [
+        0.7800682057116741,
+        0.5501062202838842,
+        0.91,
+        0.6399881936165017
+      ],
+      "colour": "#ffd60a"
+    }
+  ]
+}

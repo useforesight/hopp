@@ -1,0 +1,36 @@
+{
+  "number": 4,
+  "t_ms": 21283,
+  "width": 1920,
+  "height": 1080,
+  "trigger": "marks",
+  "caption": "#4 Sam Local dropped pin 1 at middle left (24%, 44%)",
+  "marks": [
+    {
+      "by": "Sam Local",
+      "shape": "pin",
+      "pin": 1,
+      "bounds": [
+        0.24,
+        0.435,
+        0.24,
+        0.435
+      ],
+      "colour": "#ffd60a"
+    }
+  ],
+  "ink": [
+    {
+      "by": "Sam Local",
+      "shape": "pin",
+      "pin": 1,
+      "bounds": [
+        0.24,
+        0.435,
+        0.24,
+        0.435
+      ],
+      "colour": "#ffd60a"
+    }
+  ]
+}

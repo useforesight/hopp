@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hopp viewer · what goes in the empty bands</title>
+<style>
+:root{
+  --bg:#1a1b26;--inset:#13141c;--darker:#0e0e14;--surface:#24283b;--sel:#292e42;--border:#414868;
+  --fg:#a9b1d6;--dim:#565f89;--bright:#c0caf5;--accent:#7aa2f7;--green:#9ece6a;--yellow:#e0af68;--red:#f7768e;--magenta:#bb9af7;--orange:#eb927b;--cyan:#7dcfff;
+  --mono:"Iosevka Nerd Font Mono","JetBrains Mono",ui-monospace,monospace;
+  --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:transparent;color:var(--fg);font:14px/1.5 var(--sans)}
+.top{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:14px}
+.top .lbl{font:600 11px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--dim);margin-right:2px}
+.chip{font:12px var(--mono);color:var(--fg);background:var(--surface);border:1px solid transparent;border-radius:999px;padding:4px 11px;cursor:pointer}
+.chip.on{background:var(--accent);color:var(--inset);font-weight:600}
+.variant{margin:0 0 26px}
+.variant h3{margin:0 0 2px;color:var(--bright);font-size:15px}
+.variant p{margin:0 0 10px;font-size:13px;color:var(--fg);max-width:760px}
+.variant .n{font:600 11px var(--mono);color:var(--accent);letter-spacing:.08em}
+
+/* the Hyprland tile */
+.desk{padding:10px;border-radius:14px;background:#0e0e14 url('wallpaper-sample.jpg') center/cover}
+.tile{position:relative;width:100%;border:2px solid var(--accent);border-radius:12px;overflow:hidden;background:var(--inset);container-type:inline-size}
+.tile.see{background:transparent}
+.behind{position:absolute;inset:0}
+.blur .behind{backdrop-filter:blur(14px) saturate(1.1)}
+.tile.uw{aspect-ratio:1600/675}
+.tile.tall{aspect-ratio:620/860}
+.frame{position:absolute;overflow:hidden;box-shadow:0 10px 40px rgba(0,0,0,.55)}
+.frame img{width:100%;height:100%;display:block}
+.ambient{position:absolute;inset:-60px;background-size:cover;background-position:center;filter:blur(34px) saturate(1.3) brightness(.6);opacity:var(--ambient,.6)}
+.vignette{position:absolute;inset:0;background:radial-gradient(ellipse at center,transparent 45%,rgba(10,10,16,.35) 100%)}
+
+/* floating pill (today's design, used when there's no dock) */
+.pill{position:absolute;left:50%;top:10px;transform:translateX(-50%);display:flex;align-items:center;gap:6px;padding:4px 5px 4px 6px;border-radius:10px;background:rgba(26,27,38,.92);border:1px solid rgba(65,72,104,.8);box-shadow:0 8px 24px rgba(0,0,0,.4);white-space:nowrap;font-size:11.5px;z-index:4}
+.pill b{color:var(--bright);font-weight:600}
+.seg{display:flex;padding:2px;gap:2px;border:1px solid rgba(65,72,104,.8);border-radius:7px}
+.seg span{padding:2px 7px;border-radius:5px;font-size:11px;color:var(--fg)}
+.seg span.on{background:var(--sel);color:var(--bright);font-weight:600}
+.btn{display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 9px;border-radius:7px;border:1px solid var(--border);font-size:11.5px;color:var(--fg);background:transparent;white-space:nowrap}
+.btn.off{background:var(--sel);color:var(--bright)}
+.icon{width:13px;height:13px;flex:none}
+
+/* dock panels */
+.dock{position:absolute;display:flex;gap:8px;align-items:center;justify-content:center;z-index:3}
+.dock.col{flex-direction:column}
+.dock.row{flex-direction:row}
+.glass .dock .card,.glass .info{background:rgba(19,20,28,.55);backdrop-filter:blur(8px);border:1px solid rgba(192,202,245,.10)}
+.card{border-radius:12px;padding:8px;display:flex;gap:6px;align-items:center;justify-content:center}
+.dock.col .card{flex-direction:column}
+.info{position:absolute;display:flex;flex-direction:column;gap:9px;z-index:3;border-radius:12px;padding:12px}
+.info.row{flex-direction:row;align-items:center;flex-wrap:wrap;justify-content:center}
+.who{display:flex;align-items:center;gap:8px}
+.who .t{display:flex;flex-direction:column;line-height:1.25}
+.who b{color:var(--bright);font-size:12.5px}
+.who small{color:var(--dim);font-size:10.5px}
+.stack{display:flex;flex-direction:column;gap:6px}
+.av{border-radius:50%;display:grid;place-items:center;font-weight:600;flex:none}
+
+/* faces */
+.face{position:relative;border-radius:10px;overflow:hidden;flex:none}
+.face svg{width:100%;height:100%;display:block}
+.face.speaking::after{content:"";position:absolute;inset:0;border-radius:inherit;box-shadow:inset 0 0 0 2px var(--green)}
+.face .badge{position:absolute;top:5px;right:5px;width:17px;height:17px;border-radius:50%;display:grid;place-items:center;background:rgba(26,27,38,.85)}
+.face .badge.alert{background:var(--red)}
+.face .initials{position:absolute;inset:0;display:grid;place-items:center;font-weight:600}
+.ctrls{display:grid;grid-template-columns:repeat(2,28px);gap:4px}
+.dock.row .ctrls{grid-template-columns:repeat(4,28px)}
+.ctrl{width:28px;height:28px;border-radius:7px;display:grid;place-items:center;background:var(--surface);color:var(--bright)}
+.ctrl.leave{background:var(--red);color:var(--inset)}
+.ctrl.offc{background:rgba(247,118,142,.16);color:var(--red)}
+.vseg{flex-direction:column;width:100%}
+.vseg span{text-align:center}
+.icons{display:flex;gap:4px}
+.btn.ib{width:26px;padding:0;justify-content:center}
+.note{font-size:12px;color:var(--dim);margin-top:6px}
+</style>
+</head>
+<body>
+<div class="top">
+  <span class="lbl">Tile shape</span>
+  <button class="chip on" data-shape="uw">Wide tile / ultrawide</button>
+  <button class="chip" data-shape="tall">Tall tile</button>
+  <span class="lbl" style="margin-left:10px">People</span>
+  <button class="chip" data-people="2">2</button><button class="chip on" data-people="3">3</button><button class="chip" data-people="4">4</button>
+</div>
+<div class="top">
+  <span class="lbl">Ambient opacity</span>
+  <input type="range" id="amb" min="20" max="100" value="60" style="accent-color:var(--accent);width:150px"><span id="ambv" style="font:12px var(--mono);min-width:36px">60%</span>
+  <span class="lbl" style="margin-left:10px">Behind the window</span>
+  <button class="chip on" data-blur="1">Hyprland blur on</button><button class="chip" data-blur="0">Blur off (your current setting)</button>
+</div>
+
+<div class="variant"><div class="n">OPTION 1</div><h3>Faces and controls dock in the bands</h3>
+<p>The leftover space becomes the call window: who's sharing and the view controls on one side, faces and call buttons on the other. Nothing floats over the remote screen, and the separate call window isn't needed while you watch.</p>
+<div class="desk"><div class="tile" data-variant="dock"></div></div></div>
+
+<div class="variant"><div class="n">OPTION 2</div><h3>Ambient: a blurred, dimmed copy of the screen</h3>
+<p>The bands are a blurred copy of the shared screen, partly transparent so your wallpaper (or whatever is behind the window) shows through, frosted by Hyprland's blur. The window feels part of the desktop rather than a box with bars. Controls stay in the small floating pill; faces stay in the call window.</p>
+<div class="desk"><div class="tile" data-variant="ambient"></div></div></div>
+
+<div class="variant"><div class="n">OPTION 3</div><h3>Both: ambient bands with frosted dock panels</h3>
+<p>The same see-through ambient bands, with the info and faces on frosted panels sitting in them. Everything is in one window, and it still blends into the desktop.</p>
+<div class="desk"><div class="tile glass" data-variant="combo"></div></div></div>
+
+<p class="note">In the real client the window would be transparent (GPUI supports it) and Hyprland would do the frosting, but only with <code>decoration:blur</code> enabled — it's off on your machine today, which is what "Blur off" shows. The shared screen is the same synthetic 2560×1600 editor used in the screenshots. Resize the page or switch the tile shape: everything is laid out from the window's size, as the real viewer would be. If a band is too thin for a dock (under ~90 px), it falls back to the floating pill.</p>
+
+<script>
+const SCREEN="screen-sample.png";
+const AR=2560/1600;
+const PEOPLE=[
+  {name:"Mira Chen",init:"MC",hue:"var(--magenta)",cam:true,speaking:true,sharing:true},
+  {name:"Jonas Weber",init:"JW",hue:"var(--orange)",cam:false,muted:true},
+  {name:"Ana Souza",init:"AS",hue:"var(--cyan)",cam:true},
+  {name:"You",init:"KG",hue:"var(--accent)",cam:true},
+];
+let shape="uw", count=3, blur=true;
+const I={
+  mic:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4"/></svg>',
+  micoff:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 2l20 20M9 9v2a3 3 0 0 0 5 2M15 9.3V5a3 3 0 0 0-5.7-1.3M19 10v1a7 7 0 0 1-1.1 3.8M5 10v1a7 7 0 0 0 11.4 5.4M12 18v4"/></svg>',
+  cam:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M16 13l5.2 3.5a.5.5 0 0 0 .8-.4V7.9a.5.5 0 0 0-.8-.4L16 11"/><rect x="2" y="6" width="14" height="12" rx="2"/></svg>',
+  share:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4M9 10l3-3 3 3"/></svg>',
+  leave:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 2 2 22M10.7 13.3a16 16 0 0 0 2.4 2l1.3-1.3a2 2 0 0 1 2.1-.4 12.8 12.8 0 0 0 2.8.7A2 2 0 0 1 21 16.4v3a2 2 0 0 1-2.2 2A19.8 19.8 0 0 1 4.6 15M5.1 13.1A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.4 2.1L8.1 9.9"/></svg>',
+  pen:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>',
+  eye:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>',
+  min:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></svg>',
+};
+function avatar(p,d){return `<div class="av" style="width:${d}px;height:${d}px;font-size:${Math.max(8,d*.38)}px;background:color-mix(in srgb,${p.hue} 22%,transparent);color:${p.hue}">${p.init}</div>`}
+function face(p,s,i){
+  const cam=p.cam?`<svg viewBox="0 0 100 100" preserveAspectRatio="xMidYMid slice"><defs><radialGradient id="g${s}${i}" cx="40%" cy="25%" r="90%"><stop offset="0" stop-color="${p.hue}" stop-opacity=".55"/><stop offset="1" stop-color="#13141c"/></radialGradient></defs><rect width="100" height="100" fill="url(#g${s}${i})"/><ellipse cx="50" cy="106" rx="34" ry="30" fill="${p.hue}" opacity=".85"/><circle cx="50" cy="48" r="17" fill="${p.hue}" opacity=".9"/></svg>`
+    :`<div class="initials" style="background:color-mix(in srgb,${p.hue} 18%,#24283b);color:${p.hue};font-size:${s*.3}px">${p.init}</div>`;
+  const badges=(p.muted?`<div class="badge alert">${I.micoff.replace('class="icon"','class="icon" style="width:10px;height:10px;color:#13141c"')}</div>`:"");
+  return `<div class="face ${p.speaking?"speaking":""}" style="width:${s}px;height:${s}px">${cam}${badges}</div>`;
+}
+function controls(){return `<div class="ctrls"><div class="ctrl">${I.mic}</div><div class="ctrl">${I.cam}</div><div class="ctrl">${I.share}</div><div class="ctrl leave">${I.leave}</div></div>`}
+// mode: "full" (wide band), "narrow" (thin side band: icons only), "row" (top band)
+function infoBlock(mode){
+  const sharer=PEOPLE[0];
+  if(mode==="narrow") return `<div class="who" style="flex-direction:column;text-align:center;gap:5px">${avatar(sharer,30)}<div class="t"><b>Mira's<br>screen</b><small>2560×1600</small></div></div>
+    <div class="seg vseg"><span>Follow</span><span>1:1</span><span class="on">Fit</span></div>
+    <div class="icons"><span class="btn ib" title="Draw">${I.pen}</span><span class="btn ib off" title="View only">${I.eye}</span><span class="btn ib" title="Back to tiles">${I.min}</span></div>`;
+  return `<div class="who">${avatar(sharer,26)}<div class="t"><b>Mira's screen</b><small>2560×1600</small></div></div>
+    <div class="seg"><span>Follow</span><span>1:1</span><span class="on">Fit</span></div>
+    <div style="display:flex;gap:6px;${mode==="full"?"flex-direction:column":""}"><span class="btn">${I.pen}Draw</span><span class="btn off">${I.eye}View only</span><span class="btn">${I.min}Back to tiles</span></div>`;
+}
+function pill(compact){
+  const sharer=PEOPLE[0];
+  if(compact) return `<div class="pill">${avatar(sharer,20)}<div class="seg"><span>Follow</span><span>1:1</span><span class="on">Fit</span></div><span class="btn ib">${I.pen}</span><span class="btn ib off">${I.eye}</span><span class="btn ib">${I.min}</span></div>`;
+  return `<div class="pill">${avatar(sharer,20)}<b>Mira's screen</b><span style="width:1px;height:16px;background:#414868"></span><div class="seg"><span>Follow</span><span>1:1</span><span class="on">Fit</span></div><span class="btn">${I.pen}Draw</span><span class="btn off">${I.eye}View only</span><span class="btn">${I.min}</span></div>`;
+}
+function render(tile){
+  const see=tile.dataset.variant!=="dock";
+  tile.className="tile "+shape+(tile.dataset.variant==="combo"?" glass":"")+(see?" see":"")+(see&&blur?" blur":"");
+  const W=tile.clientWidth,H=tile.clientHeight; if(!W||!H) return;
+  let fw=W,fh=W/AR; if(fh>H){fh=H;fw=H*AR}
+  const fx=(W-fw)/2, fy=(H-fh)/2, band=Math.max(fx,fy), sideways=fx>=fy;
+  const v=tile.dataset.variant, people=PEOPLE.slice(0,count-1).concat(PEOPLE[3]);
+  const ambient=v!=="dock", dock=v!=="ambient" && band>=90;
+  let html="";
+  if(ambient) html+=`<div class="behind"></div><div class="ambient" style="background-image:url('${SCREEN}')"></div><div class="vignette"></div>`;
+  html+=`<div class="frame" style="left:${fx}px;top:${fy}px;width:${fw}px;height:${fh}px;border-radius:${ambient?6:0}px"><img src="${SCREEN}" alt=""></div>`;
+  if(dock){
+    const pad=12;
+    if(sideways){
+      const avail=band-2*pad, tile=Math.max(56,Math.min(120,avail-16,(H-2*pad-16-70-(people.length-1)*8)/people.length));
+      const narrow=avail<180, w=narrow?Math.min(avail,96):Math.min(avail,190);
+      html+=`<div class="info" style="left:${pad+Math.max(0,(avail-w)/2)}px;top:50%;transform:translateY(-50%);width:${w}px;align-items:${narrow?"center":"stretch"};padding:${narrow?"10px 8px":"12px"}">${infoBlock(narrow?"narrow":"full")}</div>`;
+      html+=`<div class="dock col" style="right:${pad}px;top:50%;transform:translateY(-50%);width:${avail}px"><div class="card">${people.map((p,i)=>face(p,tile,i)).join("")}${controls()}</div></div>`;
+    }else{
+      const avail=band-2*pad, n=people.length, ctrlW=4*28+3*4;
+      const tile=Math.max(44,Math.min(110,avail-16,(W-2*pad-16-ctrlW-6*n)/n));
+      html+=`<div class="info row" style="left:${pad}px;right:${pad}px;top:${pad}px;max-height:${avail}px;gap:8px;padding:8px">${infoBlock("row")}</div>`;
+      html+=`<div class="dock row" style="left:0;right:0;bottom:${pad}px;height:${avail}px"><div class="card" style="flex-direction:row">${people.map((p,i)=>face(p,tile,i)).join("")}${controls()}</div></div>`;
+    }
+  }else{
+    html+=pill(W<480);
+  }
+  tile.innerHTML=html;
+}
+function all(){
+  document.querySelectorAll(".desk").forEach(d=>{const t=d.firstElementChild;d.style.maxWidth=shape==="tall"?"420px":"";});
+  document.querySelectorAll(".tile").forEach(render)}
+const amb=document.getElementById("amb");
+amb.oninput=()=>{document.body.style.setProperty("--ambient",amb.value/100);document.getElementById("ambv").textContent=amb.value+"%"};
+document.querySelectorAll("[data-blur]").forEach(b=>b.onclick=()=>{blur=b.dataset.blur==="1";document.querySelectorAll("[data-blur]").forEach(x=>x.classList.toggle("on",x===b));all()});
+document.querySelectorAll("[data-shape]").forEach(b=>b.onclick=()=>{shape=b.dataset.shape;document.querySelectorAll("[data-shape]").forEach(x=>x.classList.toggle("on",x===b));document.querySelectorAll(".tile").forEach(t=>t.className="tile "+shape);requestAnimationFrame(all)});
+document.querySelectorAll("[data-people]").forEach(b=>b.onclick=()=>{count=+b.dataset.people;document.querySelectorAll("[data-people]").forEach(x=>x.classList.toggle("on",x===b));all()});
+new ResizeObserver(all).observe(document.body);
+document.querySelectorAll(".tile").forEach(t=>t.classList.add(shape));
+requestAnimationFrame(all);
+</script>
+</body>
+</html>

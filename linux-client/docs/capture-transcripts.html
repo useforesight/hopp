@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How Capture writes a transcript</title>
+<style>
+  :root {
+    --fg: var(--foreground, #1f2328);
+    --muted: var(--muted-foreground, #636c76);
+    --line: var(--border, #d8dee4);
+    --panel: var(--card, #f6f8fa);
+    --code-bg: var(--code-background, #eff2f5);
+    --mono: var(--font-mono, ui-monospace, "JetBrains Mono", monospace);
+    --sans: var(--font-sans, system-ui, sans-serif);
+    --r: var(--radius, 8px);
+    --alice: var(--chart-1, #2f81f7);
+    --bob: var(--chart-2, #bf3989);
+    --good: var(--success, #1a7f37);
+    --bad: var(--destructive, #cf222e);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --fg: var(--foreground, #e6edf3);
+      --muted: var(--muted-foreground, #8d96a0);
+      --line: var(--border, #30363d);
+      --panel: var(--card, #161b22);
+      --code-bg: var(--code-background, #1c2128);
+    }
+  }
+  body { margin: 0; font-family: var(--sans); color: var(--fg); line-height: 1.55; }
+  main { max-width: 860px; margin: 0 auto; padding: 8px 0 40px; }
+  h1 { font-size: 1.6rem; margin: 0 0 6px; }
+  h2 { font-size: 1.2rem; margin: 34px 0 8px; padding-top: 14px; border-top: 1px solid var(--line); }
+  p { margin: 8px 0; }
+  .lead { color: var(--muted); margin-bottom: 18px; }
+  code, pre { font-family: var(--mono); font-size: 0.86em; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+  pre { background: var(--code-bg); padding: 12px 14px; border-radius: var(--r); overflow-x: auto; line-height: 1.45; margin: 8px 0; }
+  pre code { background: none; padding: 0; font-size: 1em; }
+  ul { padding-left: 1.2em; margin: 8px 0; }
+  li { margin: 4px 0; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 0.93rem; }
+  th, td { text-align: left; padding: 6px 9px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-weight: 600; color: var(--muted); font-size: 0.85rem; }
+  .box { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 16px 18px; margin: 12px 0; }
+  .box h3 { margin: 0 0 6px; font-size: 1rem; }
+  .flow { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin: 14px 0; counter-reset: step; }
+  .step { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 10px 12px; font-size: 0.88rem; position: relative; }
+  .step b { display: block; font-size: 0.92rem; margin-bottom: 2px; }
+  .step::before { counter-increment: step; content: counter(step); position: absolute; top: 8px; right: 10px; color: var(--muted); font-family: var(--mono); font-size: 0.8rem; }
+  .step.read { border-color: var(--good); }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 0.85rem; color: var(--muted); margin: 4px 0 8px; }
+  .swatch { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -1px; margin-right: 5px; }
+  .alice { color: var(--alice); font-weight: 600; }
+  .bob { color: var(--bob); font-weight: 600; }
+  .bad { color: var(--bad); font-weight: 600; }
+  .good { color: var(--good); font-weight: 600; }
+  svg { width: 100%; height: auto; display: block; }
+  svg text { font-family: var(--sans); fill: var(--fg); }
+  svg .small { font-size: 11px; fill: var(--muted); }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 640px) { .two { grid-template-columns: 1fr; } }
+  .caption { font-size: 0.85rem; color: var(--muted); margin-top: 4px; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>How Capture writes a transcript</h1>
+<p class="lead">Capture turns each person's call audio into timed lines on this computer. It then shows those lines as messages, in the order things were said. This page follows a line from the microphone to the screen. It covers the changes of 15 October 2026 and the limits that remain.</p>
+
+<div class="box">
+  <h3>What changed on 15 October</h3>
+  <ul>
+    <li><b>Words stay with the person who said them.</b> Hopp places whole words, and it keeps each person's speech together when it batches audio for whisper.</li>
+    <li><b>Transcripts read in time order.</b> Lines are still stored as transcription finishes. Hopp sorts them by start time when you read them.</li>
+    <li><b>One person's consecutive lines become one message.</b> Nothing is reworded. The lines are joined with spaces.</li>
+    <li><b>Every speech line records when it ended.</b> The capture database moved to schema version 2. Existing captures upgrade on first open.</li>
+  </ul>
+</div>
+
+<h2>The path from audio to transcript</h2>
+<p>The first six steps run during the call. <b>Read</b> runs whenever something opens the transcript, so it also applies to older captures.</p>
+<div class="flow">
+  <div class="step"><b>Tracks</b>One audio track per person.</div>
+  <div class="step"><b>Utterances</b>Pauses cut each track into utterances.</div>
+  <div class="step"><b>Batch</b>Utterances wait, then share one whisper pass.</div>
+  <div class="step"><b>Transcribe</b><code>hopp-whisper</code> returns timed words.</div>
+  <div class="step"><b>Split back</b>Each word goes to the utterance it was said in.</div>
+  <div class="step"><b>Store</b>One line per utterance, in SQLite.</div>
+  <div class="step read"><b>Read</b>Sort by time, then join messages.</div>
+</div>
+<p class="caption"><code>hopp capture follow</code> and the MCP tool <code>capture_follow</code> skip <b>Read</b>. They return lines in the order they were stored, so an agent's cursor never skips a late line.</p>
+
+<h2>Each person is a separate track</h2>
+<p><b>Hopp knows who spoke from the audio track, not by guessing.</b> Each remote participant arrives as their own LiveKit track. Your own voice comes from the microphone after echo cancellation. So every utterance already has a speaker before whisper hears it.</p>
+<p><b>Times come from the audio itself.</b> Each speaker has a clock that advances by the length of the audio received. If that clock falls more than 200 ms behind real time, for example after a network gap, it jumps forward to real time. Every time is in milliseconds since the capture started.</p>
+
+<h2>Pauses cut speech into utterances</h2>
+<p>Hopp listens to each track separately. It treats a frame as speech when the frame is loud enough compared with that track's background. These rules come from <code>src/capture/vad.rs</code>:</p>
+<table>
+  <tr><th>Rule</th><th>Value</th></tr>
+  <tr><td>Counts as speech</td><td>12 dB above the quietest level of the last 2 s, and above &minus;50 dB</td></tr>
+  <tr><td>Ends an utterance</td><td><b>700 ms of silence</b></td></tr>
+  <tr><td>Audio kept before speech starts</td><td>200 ms, so first syllables aren't clipped</td></tr>
+  <tr><td>Silence kept at the end</td><td>200 ms</td></tr>
+  <tr><td>Shortest utterance</td><td>250 ms of speech. Shorter bursts are dropped as coughs and clicks.</td></tr>
+  <tr><td>Longest utterance</td><td>20 s. Longer speech continues in a new utterance.</td></tr>
+</table>
+<p><b>So a line's start time can be up to 0.2 s early</b>, because of the audio kept before speech. Its end time includes the 0.2 s kept afterwards.</p>
+<p><b>Natural pauses split one thought into several utterances.</b> A sentence with a 1 s pause becomes two lines. Reading joins them back together.</p>
+
+<h2>Batches share one whisper pass</h2>
+<p><b>Whisper always processes a 30 s window.</b> One 2 s utterance costs about as much as 28 s of speech. So Hopp queues utterances and sends several in one request. On LibriSpeech with large-v3-turbo, this used 2.5 times less GPU time than one utterance per request, with fewer word errors.</p>
+<p>A request goes to whisper when any of these happens:</p>
+<ul>
+  <li><b>The waiting utterances fill 24 s</b>, counting 1 s between them. A request holds at most 29 s.</li>
+  <li><b>The oldest utterance has waited 12 s.</b></li>
+  <li><b>The capture is stopping.</b></li>
+</ul>
+<p><b>So text arrives in batches, up to about half a minute after it was said.</b> That is the 12 s wait plus the time to transcribe.</p>
+<p><b>Inside a request, each person's utterances now sit together.</b> One second of silence separates a person's utterances. Three seconds separate one person from the next. The next section shows why.</p>
+
+<h2>Word timings split the batch back</h2>
+<p><code>hopp-whisper</code> returns each token with a time. Whisper.cpp's DTW alignment works out that time by matching the text against the audio. Hopp then does three things:</p>
+<ol>
+  <li><b>Joins tokens into whole words.</b> Whisper writes "It's" as <code> It</code> + <code>'s</code>. A token without a leading space continues the word before it.</li>
+  <li><b>Times each word by its last token with a letter or digit.</b> Trailing punctuation is often timed late, so it doesn't count.</li>
+  <li><b>Gives the word to the utterance that contains that time.</b> Each utterance's span is widened by 0.5 s on both sides. A word outside every span goes to the nearest utterance.</li>
+</ol>
+
+<h3>Why the layout matters</h3>
+<p><b>When whisper writes nothing for an utterance, it times the next words early, into that utterance.</b> This happens with a short "mm" or a word cut off. Before 15 October, people's utterances were interleaved in a request. An early word could land in someone else's slot.</p>
+<p>The test below reproduced it. Bob said "As for" (0.8 s) just as Alice started a turn. Whisper wrote nothing for Bob's clip and timed Alice's first word, "He", 1.3 s early.</p>
+
+<div class="legend">
+  <span><span class="swatch" style="background:var(--alice)"></span>Alice's utterances</span>
+  <span><span class="swatch" style="background:var(--bob)"></span>Bob's utterances</span>
+  <span>Positions in one 30 s whisper request</span>
+</div>
+<svg viewBox="0 0 720 210" role="img" aria-label="Two layouts of the same four utterances in one whisper request. Before: Alice, Bob, Bob's short clip, Alice, each 1 second apart; Alice's word He is timed inside Bob's short clip. After: Alice's two utterances 1 second apart, 3 seconds of silence, then Bob's two.">
+  <text x="0" y="16" font-weight="600">Before: interleaved, 1 s apart (from the debug log)</text>
+  <!-- scale: 1 s = 23 px, x0 = 20 -->
+  <rect x="20" y="28" width="121" height="30" rx="4" fill="var(--alice)" opacity="0.85"/>
+  <text x="26" y="48" font-size="12" style="fill:#fff">Alice 0–5.3 s</text>
+  <rect x="164" y="28" width="98" height="30" rx="4" fill="var(--bob)" opacity="0.85"/>
+  <text x="170" y="48" font-size="12" style="fill:#fff">Bob 6.3–10.5</text>
+  <rect x="285" y="28" width="23" height="30" rx="4" fill="var(--bob)" opacity="0.85"/>
+  <rect x="332" y="28" width="279" height="30" rx="4" fill="var(--alice)" opacity="0.85"/>
+  <text x="338" y="48" font-size="12" style="fill:#fff">Alice 13.6–25.7 s: "… tells us that …"</text>
+  <line x1="302" y1="22" x2="302" y2="64" stroke="var(--bad)" stroke-width="2"/>
+  <text x="246" y="82" class="small">"As for" (11.5–12.6), no text</text>
+  <text x="304" y="100" font-size="12" style="fill:var(--bad)" font-weight="600">"He" timed at 12.3 s, given to Bob</text>
+
+  <text x="0" y="136" font-weight="600">After: each person together, 3 s between people (same four utterances)</text>
+  <rect x="20" y="148" width="121" height="30" rx="4" fill="var(--alice)" opacity="0.85"/>
+  <text x="26" y="168" font-size="12" style="fill:#fff">Alice 0–5.3</text>
+  <rect x="164" y="148" width="279" height="30" rx="4" fill="var(--alice)" opacity="0.85"/>
+  <text x="170" y="168" font-size="12" style="fill:#fff">Alice 6.3–18.4: "He tells us …"</text>
+  <rect x="512" y="148" width="98" height="30" rx="4" fill="var(--bob)" opacity="0.85"/>
+  <text x="518" y="168" font-size="12" style="fill:#fff">Bob 21.4–25.7</text>
+  <rect x="633" y="148" width="23" height="30" rx="4" fill="var(--bob)" opacity="0.85"/>
+  <text x="446" y="198" class="small">3 s of silence between people</text>
+</svg>
+<p class="caption">The "before" positions come from Hopp's debug log of that request. The "after" positions are calculated from the same four durations with the new layout.</p>
+
+<p><b>With the new layout, an early word lands in the same person's previous utterance.</b> At worst it moves between two of their own lines, and reading usually joins those anyway. Reaching another person's audio would take a jump of more than 3 s.</p>
+
+<div class="two">
+  <div class="box">
+    <h3>Before</h3>
+<pre><code>[00:12] Alice: tells us that at this festive season …
+[00:16] Bob: He</code></pre>
+  </div>
+  <div class="box">
+    <h3>After</h3>
+<pre><code>[00:12] Alice: He tells us that at this festive season …</code></pre>
+  </div>
+</div>
+<p class="caption">Same audio, before and after the change. A real call showed the same fault as "Sam: It" followed by "Alex: 's better than …".</p>
+
+<h2>Lines are stored as they finish</h2>
+<p>Each utterance with text becomes one row in <code>~/.local/share/hopp/capture/index.db</code>:</p>
+<table>
+  <tr><th>Field</th><th>Meaning</th></tr>
+  <tr><td><code>id</code></td><td>Increases in the order lines are written</td></tr>
+  <tr><td><code>t_ms</code></td><td>When the utterance started</td></tr>
+  <tr><td><code>end_ms</code></td><td>When it ended. New in schema 2. Older lines have none.</td></tr>
+  <tr><td><code>speaker</code>, <code>speaker_id</code></td><td>Whose track it came from</td></tr>
+  <tr><td><code>text</code></td><td>Whisper's words, after removing its annotations and stock phrases such as "Thanks for watching!"</td></tr>
+</table>
+<p><b>Write order is not speaking order.</b> Hopp writes a request's lines when the whole request is transcribed, in the order of the request's layout. In this request Alice's utterances came first, so her 12.2 s line was written before Bob's 7.3 s line:</p>
+<table>
+  <tr><th><code>id</code></th><th>Start</th><th>End</th><th>Speaker</th><th>Text</th></tr>
+  <tr><td>64</td><td>0.9 s</td><td>6.1 s</td><td class="alice">Alice</td><td>Mr. Quilter is the apostle of the middle classes …</td></tr>
+  <tr><td>65</td><td><b>12.2 s</b></td><td>24.4 s</td><td class="alice">Alice</td><td>He tells us that at this festive season …</td></tr>
+  <tr><td>66</td><td><b>7.3 s</b></td><td>11.6 s</td><td class="bob">Bob</td><td>Nor is Mr. Quilter's manner less interesting than his matter.</td></tr>
+  <tr><td>67</td><td>25.1 s</td><td>34.7 s</td><td class="alice">Alice</td><td>he has grave doubts whether sir frederick leighton's work …</td></tr>
+  <tr><td>68</td><td>36.8 s</td><td>42.3 s</td><td class="alice">Alice</td><td>on the general principles of art mr quilter writes …</td></tr>
+</table>
+<p class="caption">From the two-person test. Line 66 was said before line 65 but written after it.</p>
+
+<h2>Reading sorts by time and joins messages</h2>
+<p>When something reads a transcript, Hopp sorts the lines by start time. It then joins one person's lines into a message when <b>all</b> of these hold:</p>
+<ul>
+  <li><b>Same speaker</b> as the message so far.</li>
+  <li><b>Nothing comes between them.</b> Another person speaking, an event such as a screen share, a bookmark, or a "not transcribed" gap each starts a new message.</li>
+  <li><b>The pause is 5 s or less.</b> Hopp measures from the end of one line to the start of the next. The audio kept around each utterance makes the actual silence about 0.4 s longer.</li>
+</ul>
+<p><b>The words are never changed.</b> Hopp joins line texts with a space. A joined message lists the ids of its lines in <code>joins</code>, so you can trace it back.</p>
+
+<div class="two">
+  <div class="box">
+    <h3>Stored lines (write order)</h3>
+<pre><code>#64 Alice  0.9  Mr. Quilter is the apostle …
+#65 Alice 12.2  He tells us that at this …
+#66 Bob    7.3  Nor is Mr. Quilter's manner …
+#67 Alice 25.1  he has grave doubts …
+#68 Alice 36.8  on the general principles …
+#69 Bob   42.5  it is obviously unnecessary …
+#70 Bob   54.1  Painting, he tells us, is …</code></pre>
+  </div>
+  <div class="box">
+    <h3>What you read</h3>
+<pre><code>[00:00] Alice: Mr. Quilter is the apostle …
+[00:07] Bob: Nor is Mr. Quilter's manner …
+[00:12] Alice: He tells us that at this …
+        he has grave doubts …
+        on the general principles …
+[00:42] Bob: it is obviously unnecessary …
+        Painting, he tells us, is …</code></pre>
+  </div>
+</div>
+<p class="caption">Alice's lines 65, 67 and 68 join. The pauses between them were 0.7 s and 2.1 s, and nobody else spoke. Bob's line 66 started before them, so it stays a separate message above.</p>
+
+<p><b>Captures from before 15 October have no end times.</b> For those, Hopp estimates each line's end at 400 ms per word, and at least 1 s. Their order and messages still work. Words that were split between people in those captures stay split, because the audio isn't kept.</p>
+
+<h2>Late lines during a call</h2>
+<p><b>The Captures window puts a late line where it was said.</b> It re-sorts the call's lines whenever new ones arrive, then rebuilds the messages. A message can therefore grow, or split when someone else's late line lands inside it.</p>
+<p><b>Agents following a call get raw lines in write order.</b> <code>capture_follow</code> returns lines after a cursor, the id of the last line seen. A line that lands earlier in the call still has a higher id, so the agent never misses it.</p>
+
+<h2>Where each view gets its order</h2>
+<table>
+  <tr><th>Where</th><th>Order</th><th>Messages</th></tr>
+  <tr><td>Captures window</td><td>Time</td><td>Yes</td></tr>
+  <tr><td><code>hopp capture show</code> and the <code>&lt;id&gt;.md</code> file</td><td>Time</td><td>Yes</td></tr>
+  <tr><td><code>hopp capture show --json</code></td><td>Time</td><td><code>messages</code>, plus every line in <code>lines</code></td></tr>
+  <tr><td>MCP <code>capture_transcript</code></td><td>Time</td><td>Yes (Markdown)</td></tr>
+  <tr><td>Hooks (<code>capture-complete</code>)</td><td>Time</td><td>Yes, in the Markdown file they receive</td></tr>
+  <tr><td><code>hopp capture follow</code>, MCP <code>capture_follow</code></td><td><b>Write order</b></td><td>No, raw lines with a cursor</td></tr>
+  <tr><td><code>hopp capture search</code>, MCP <code>capture_search</code></td><td>Best match</td><td>No, single lines</td></tr>
+</table>
+
+<h2>How it was tested</h2>
+<p><code>hopp capture transcribe</code> now accepts one recording per person. It plays them on one timeline, 100 ms at a time, the way call audio arrives:</p>
+<pre><code>XDG_DATA_HOME=/tmp/capture-test hopp capture transcribe Alice=alice.wav Bob=bob.wav</code></pre>
+<p><b>Use a separate <code>XDG_DATA_HOME</code>.</b> Otherwise test calls go into your own capture history. The test tracks were built from LibriSpeech clips, whose words are known. The score counts each person's own words that are missing from their lines, whether lost or given to the other person.</p>
+<table>
+  <tr><th>Test</th><th>Interleaved batches</th><th>Grouped batches</th></tr>
+  <tr><td>Short conversation (1 min, one interjection)</td><td class="bad">Alice's "He" given to Bob</td><td class="good">All 85 of Alice's words hers</td></tr>
+  <tr><td>Harder conversation (3 min 47 s, 24 turns, 9 interjections)</td><td>1.8% of words missing</td><td>2.0% missing</td></tr>
+  <tr><td>Time to transcribe the harder one (large-v3, GPU)</td><td>111 s (one run)</td><td>116 to 140 s (three runs)</td></tr>
+</table>
+<p><b>The missing words in the harder test are whisper mishearings, not misattributions.</b> Examples: "an adam" for "and at 'em", "mental board" for "mantel board". The time difference is within the spread between runs. The machine's load average was 9.5 to 11 from other work at the time.</p>
+
+<h2>Known limits</h2>
+<ul>
+  <li><b>Very short sounds often get no text.</b> Whisper wrote nothing for Bob's 0.8 s "As for". "Mm" and "yeah" can disappear the same way.</li>
+  <li><b>Mishearings stay as heard.</b> On a real call "Tuple" came out as "triple" and "Claude and Codex" as "cloud and codecs". Telling whisper the participants' names and a few product names may prevent some of these. That is untested.</li>
+  <li><b>Text arrives up to about 30 s late.</b> That is the cost of batching.</li>
+  <li><b>Start times can be up to 0.2 s early</b>, because of the audio kept before speech.</li>
+</ul>
+
+<h2>Next: a cleaned version</h2>
+<p><b>The raw transcript described here stays as the record.</b> A planned second version will fix mishearings and punctuation from context, using a model such as gpt-6-luna through Codex. It will keep restarts and filler as said. Each cleaned message will trace back to these lines.</p>
+
+</main>
+</body>
+</html>

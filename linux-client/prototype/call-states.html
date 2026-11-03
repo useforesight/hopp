@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hopp call windows · with and without a screen share</title>
+<style>
+:root{
+  --bg:#1a1b26;--inset:#13141c;--surface:#24283b;--sel:#292e42;--border:#414868;
+  --fg:#a9b1d6;--dim:#565f89;--bright:#c0caf5;--accent:#7aa2f7;--green:#9ece6a;--red:#f7768e;--magenta:#bb9af7;--orange:#eb927b;--cyan:#7dcfff;
+  --mono:"Iosevka Nerd Font Mono","JetBrains Mono",ui-monospace,monospace;
+  --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:transparent;color:var(--foreground,var(--fg));font:14px/1.5 var(--sans)}
+.top{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:14px}
+.lbl{font:600 11px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted-foreground,var(--dim));margin-right:2px}
+.chip{font:12px var(--mono);color:var(--fg);background:var(--surface);border:1px solid transparent;border-radius:999px;padding:4px 11px;cursor:pointer}
+.chip.on{background:var(--accent);color:var(--inset);font-weight:600}
+.state{margin:0 0 28px}
+.state .n{font:600 11px var(--mono);color:var(--accent);letter-spacing:.08em}
+.state h3{margin:0 0 2px;color:var(--foreground,var(--bright));font-size:15px}
+.state p{margin:0 0 10px;font-size:13px;color:var(--muted-foreground,var(--fg));max-width:760px}
+.state ul{margin:0 0 10px;padding-left:18px;font-size:13px;color:var(--muted-foreground,var(--fg))}
+
+/* desktop */
+.desk{position:relative;border-radius:14px;overflow:hidden;background:#0e0e14 url('wallpaper-sample.jpg') center/cover;color:var(--fg)}
+.desk.uw{aspect-ratio:1600/700}
+.desk.tall{aspect-ratio:640/900;max-width:420px}
+.bar{position:absolute;left:0;right:0;top:0;height:22px;display:flex;align-items:center;justify-content:space-between;padding:0 10px;font:10px var(--mono);color:var(--bright);background:rgba(14,14,20,.35)}
+.win{position:absolute;border:2px solid var(--border);border-radius:10px;overflow:hidden;background:var(--bg)}
+.win.active{border-color:var(--accent)}
+.term{padding:10px 12px;font:10px/1.6 var(--mono);white-space:pre;color:var(--fg)}
+.term .k{color:var(--magenta)} .term .s{color:var(--green)} .term .c{color:var(--dim)} .term .f{color:var(--accent)}
+
+/* viewer tile (see-through) */
+.viewer{background:transparent}
+.behind{position:absolute;inset:0}
+.blur .behind,.blur.callwin{backdrop-filter:blur(14px) saturate(1.1)}
+/* The shared screen itself, scaled up to cover the window and blurred, like TV's
+   background behind a portrait video. A quarter of the desktop shows through. */
+.ambient{position:absolute;inset:-24px;background-size:cover;background-position:center;filter:blur(9px) saturate(1.25) brightness(.8);opacity:.75}
+.vignette{position:absolute;inset:0;background:radial-gradient(ellipse at center,transparent 45%,rgba(10,10,16,.35) 100%)}
+.frame{position:absolute;overflow:hidden;border-radius:6px;box-shadow:0 10px 40px rgba(0,0,0,.55)}
+.frame img{width:100%;height:100%;display:block}
+.panel{position:absolute;z-index:3;display:flex;flex-direction:column;gap:9px;border-radius:12px;padding:12px;background:rgba(19,20,28,.55);border:1px solid rgba(192,202,245,.10)}
+.blur .panel{backdrop-filter:blur(8px)}
+.panel.row{flex-direction:row;align-items:center;flex-wrap:wrap;justify-content:center;gap:8px;padding:8px}
+.sep{height:1px;background:rgba(192,202,245,.10);margin:2px 0}
+.panel.row .sep{width:1px;height:22px;margin:0 2px}
+.who{display:flex;align-items:center;gap:8px}
+.who .t{display:flex;flex-direction:column;line-height:1.25}
+.who b{color:var(--bright);font-size:12.5px}
+.who small{color:var(--dim);font-size:10.5px}
+.seg{display:flex;padding:2px;gap:2px;border:1px solid rgba(65,72,104,.8);border-radius:7px}
+.seg span{padding:2px 7px;border-radius:5px;font-size:11px;color:var(--fg);text-align:center}
+.seg span.on{background:var(--sel);color:var(--bright);font-weight:600}
+.vseg{flex-direction:column;width:100%}
+.btn{display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 9px;border-radius:7px;border:1px solid var(--border);font-size:11.5px;color:var(--fg);white-space:nowrap}
+.btn.off{background:var(--sel);color:var(--bright)}
+.btn.ib{width:26px;padding:0;justify-content:center}
+.btns{display:flex;gap:6px}
+.btns.col{flex-direction:column}
+.icon{width:13px;height:13px;flex:none}
+.ctrls{display:flex;gap:4px;justify-content:center}
+.ctrls.grid{display:grid;grid-template-columns:repeat(2,28px)}
+.ctrl{width:28px;height:28px;border-radius:7px;display:grid;place-items:center;background:var(--surface);color:var(--bright)}
+.ctrl.leave{background:var(--red);color:var(--inset)}
+.ctrl.mute{background:rgba(247,118,142,.16);color:var(--red)}
+.faces{position:absolute;z-index:3;display:flex;gap:6px;padding:8px;border-radius:12px;background:rgba(19,20,28,.55);border:1px solid rgba(192,202,245,.10);align-items:center;justify-content:center}
+.blur .faces{backdrop-filter:blur(8px)}
+.faces.col{flex-direction:column}
+.av{border-radius:50%;display:grid;place-items:center;font-weight:600;flex:none}
+.face{position:relative;border-radius:10px;overflow:hidden;flex:none}
+.face svg{width:100%;height:100%;display:block}
+.face.speaking::after{content:"";position:absolute;inset:0;border-radius:inherit;box-shadow:inset 0 0 0 2px var(--green)}
+.face .badge{position:absolute;top:5px;right:5px;width:17px;height:17px;border-radius:50%;display:grid;place-items:center;background:var(--red)}
+.face .initials{position:absolute;inset:0;display:grid;place-items:center;font-weight:600}
+.face .name{position:absolute;left:5px;bottom:5px;font-size:9.5px;color:var(--bright);background:rgba(26,27,38,.78);border-radius:4px;padding:0 5px}
+
+/* the floating call window (video only) */
+.callwin{position:absolute;z-index:5;display:flex;flex-direction:column;gap:6px;padding:6px;border-radius:12px;border:2px solid var(--border);background:rgba(19,20,28,.62);box-shadow:0 14px 40px rgba(0,0,0,.5)}
+.callwin .ctrls{padding:2px 0}
+.tag{position:absolute;z-index:6;font:10px var(--mono);background:var(--accent);color:var(--inset);border-radius:4px;padding:1px 6px;white-space:nowrap}
+.note{font-size:12px;color:var(--muted-foreground,var(--dim))}
+</style>
+</head>
+<body>
+<div class="top">
+  <span class="lbl">Desktop</span>
+  <button class="chip on" data-shape="uw">Wide / ultrawide</button>
+  <button class="chip" data-shape="tall">Tall tile</button>
+  <span class="lbl" style="margin-left:10px">People</span>
+  <button class="chip" data-people="2">2</button><button class="chip on" data-people="3">3</button><button class="chip" data-people="4">4</button>
+  <span class="lbl" style="margin-left:10px">Hyprland blur</span>
+  <button class="chip on" data-blur="1">On</button><button class="chip" data-blur="0">Off</button>
+</div>
+
+<div class="state"><div class="n">STATE 1 · SOMEONE IS SHARING</div><h3>The shared screen, with the call around it</h3>
+<p>Option 3, revised: behind the sharp screen is the same screen, stretched to fill the window and blurred, like TV does with a portrait video, with a little of the desktop showing through. Everything you <em>do</em> is on the left: whose screen it is, how to view it, and your mic, camera, share and hang-up. The right side is only faces. The separate call window hides while this is open, so faces never appear twice.</p>
+<div class="desk" data-state="share"></div></div>
+
+<div class="state"><div class="n">STATE 2 · VIDEO ONLY, NOBODY SHARING</div><h3>Just the call window, floating over your tiles</h3>
+<p>No screen means no viewer. The call is the small faces window: pinned to the corner on every workspace, sized by the number of people, never tiled and never stretched. It uses the same frosted, see-through style, so it matches the viewer.</p>
+<ul>
+<li>When someone starts sharing, the viewer opens as a tile and this window tucks away; when the share ends, it comes back.</li>
+<li>In the viewer's default Follow mode there are no bands, so this window stays visible there too.</li>
+<li>Hover it for S / M / L and column / row / bubbles; drag it to any corner.</li>
+</ul>
+<div class="desk" data-state="video"></div></div>
+
+<p class="note">Synthetic people and screen. The see-through look needs Hyprland's <code>decoration:blur</code>; with it off, the desktop shows through unfrosted.</p>
+
+<script>
+const SCREEN="screen-sample.png", AR=2560/1600;
+const PEOPLE=[
+  {name:"Mira Chen",init:"MC",hue:"var(--magenta)",cam:true,speaking:true},
+  {name:"Jonas Weber",init:"JW",hue:"var(--orange)",cam:false,muted:true},
+  {name:"Ana Souza",init:"AS",hue:"var(--cyan)",cam:true},
+  {name:"You",init:"KG",hue:"var(--accent)",cam:true},
+];
+let shape="uw", count=3, blur=true;
+const svg=(d)=>`<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+const I={
+  mic:svg('<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4"/>'),
+  micoff:svg('<path d="M2 2l20 20M9 9v2a3 3 0 0 0 5 2M15 9.3V5a3 3 0 0 0-5.7-1.3M19 10v1a7 7 0 0 1-1.1 3.8M5 10v1a7 7 0 0 0 11.4 5.4M12 18v4"/>'),
+  cam:svg('<path d="M16 13l5.2 3.5a.5.5 0 0 0 .8-.4V7.9a.5.5 0 0 0-.8-.4L16 11"/><rect x="2" y="6" width="14" height="12" rx="2"/>'),
+  share:svg('<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4M9 10l3-3 3 3"/>'),
+  leave:svg('<path d="M22 2 2 22M10.7 13.3a16 16 0 0 0 2.4 2l1.3-1.3a2 2 0 0 1 2.1-.4 12.8 12.8 0 0 0 2.8.7A2 2 0 0 1 21 16.4v3a2 2 0 0 1-2.2 2A19.8 19.8 0 0 1 4.6 15M5.1 13.1A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.4 2.1L8.1 9.9"/>'),
+  pen:svg('<path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>'),
+  eye:svg('<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>'),
+  min:svg('<path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/>'),
+};
+const avatar=(p,d)=>`<div class="av" style="width:${d}px;height:${d}px;font-size:${Math.max(8,d*.38)}px;background:color-mix(in srgb,${p.hue} 22%,transparent);color:${p.hue}">${p.init}</div>`;
+function face(p,s,k,named){
+  const body=p.cam?`<svg viewBox="0 0 100 100" preserveAspectRatio="xMidYMid slice"><defs><radialGradient id="g${k}" cx="40%" cy="25%" r="90%"><stop offset="0" stop-color="${p.hue}" stop-opacity=".55"/><stop offset="1" stop-color="#13141c"/></radialGradient></defs><rect width="100" height="100" fill="url(#g${k})"/><ellipse cx="50" cy="106" rx="34" ry="30" fill="${p.hue}" opacity=".85"/><circle cx="50" cy="48" r="17" fill="${p.hue}" opacity=".9"/></svg>`
+    :`<div class="initials" style="background:color-mix(in srgb,${p.hue} 18%,#24283b);color:${p.hue};font-size:${s*.3}px">${p.init}</div>`;
+  const badge=p.muted?`<div class="badge">${I.micoff.replace('class="icon"','class="icon" style="width:10px;height:10px;color:#13141c"')}</div>`:"";
+  const name=named&&s>=90?`<div class="name">${p.name}</div>`:"";
+  return `<div class="face ${p.speaking?"speaking":""}" style="width:${s}px;height:${s}px">${body}${badge}${name}</div>`;
+}
+const callCtrls=(cls)=>`<div class="ctrls ${cls}"><div class="ctrl">${I.mic}</div><div class="ctrl">${I.cam}</div><div class="ctrl">${I.share}</div><div class="ctrl leave">${I.leave}</div></div>`;
+const people=()=>PEOPLE.slice(0,count-1).concat(PEOPLE[3]);
+const terminal=`<div class="term"><span class="c">~/hopp/linux-client</span> <span class="s">❯</span> cargo test --locked
+running 58 tests
+test ui::geometry::follow ... <span class="s">ok</span>
+test ui::faces::window_size ... <span class="s">ok</span>
+<span class="c">...</span>
+test result: <span class="s">ok</span>. 58 passed
+
+<span class="c">~/hopp/linux-client</span> <span class="s">❯</span> <span class="k">nvim</span> src/ui/viewer.rs</div>`;
+const editor=`<div class="term"><span class="k">impl</span> <span class="f">Render</span> <span class="k">for</span> ViewerView {
+    <span class="k">fn</span> <span class="f">render</span>(&amp;<span class="k">mut</span> self, window, cx) {
+        <span class="c">// bands: ambient copy + frosted panels</span>
+        <span class="k">let</span> image = self.viewport.<span class="f">image_bounds</span>(..);
+        ...
+    }
+}</div>`;
+
+function shareScene(d,W,H){
+  const top=28, g=10, vw=W-2*g, vh=H-top-g;
+  let fw=vw,fh=vw/AR; if(fh>vh){fh=vh;fw=vh*AR}
+  const fx=(vw-fw)/2, fy=(vh-fh)/2, band=Math.max(fx,fy), sideways=fx>=fy, pad=12, ps=people();
+  let inner=`<div class="behind"></div><div class="ambient" style="background-image:url('${SCREEN}')"></div><div class="vignette"></div>
+    <div class="frame" style="left:${fx}px;top:${fy}px;width:${fw}px;height:${fh}px"><img src="${SCREEN}" alt=""></div>`;
+  const sharer=PEOPLE[0];
+  if(band>=90 && sideways){
+    const avail=band-2*pad, narrow=avail<180, w=narrow?Math.min(avail,96):Math.min(avail,190);
+    const left=narrow
+      ?`<div class="who" style="flex-direction:column;text-align:center;gap:3px">${avatar(sharer,26)}<div class="t"><b>Mira</b></div></div>
+        <div class="seg vseg"><span>Follow</span><span>1:1</span><span class="on">Fit</span></div>
+        <div class="btns"><span class="btn ib">${I.pen}</span><span class="btn ib off">${I.eye}</span><span class="btn ib">${I.min}</span></div>
+        <div class="sep" style="align-self:stretch"></div>${callCtrls("grid")}`
+      :`<div class="who">${avatar(sharer,26)}<div class="t"><b>Mira's screen</b><small>2560×1600</small></div></div>
+        <div class="seg"><span>Follow</span><span>1:1</span><span class="on">Fit</span></div>
+        <div class="btns col"><span class="btn">${I.pen}Draw</span><span class="btn off">${I.eye}View only</span><span class="btn">${I.min}Back to tiles</span></div>
+        <div class="sep"></div>${callCtrls("")}`;
+    inner+=`<div class="panel" style="left:${pad+Math.max(0,(avail-w)/2)}px;top:50%;transform:translateY(-50%);width:${w}px;align-items:${narrow?"center":"stretch"};padding:${narrow?"8px 7px":"12px"};gap:${narrow?6:9}px">${left}</div>`;
+    const s=Math.max(52,Math.min(130,avail-16,(vh-2*pad-16-(ps.length-1)*6)/ps.length));
+    inner+=`<div class="faces col" style="right:${pad+Math.max(0,(avail-s-16)/2)}px;top:50%;transform:translateY(-50%)">${ps.map((p,i)=>face(p,s,"s"+i,true)).join("")}</div>`;
+  }else if(band>=90){
+    const avail=band-2*pad, n=ps.length;
+    const s=Math.max(44,Math.min(120,avail-16,(vw-2*pad-16-6*n)/n));
+    inner+=`<div class="panel row" style="left:${pad}px;right:${pad}px;top:${pad}px">
+      ${avatar(sharer,24)}<div class="seg"><span>Follow</span><span>1:1</span><span class="on">Fit</span></div>
+      <span class="btn ib">${I.pen}</span><span class="btn ib off">${I.eye}</span><span class="btn ib">${I.min}</span><div class="sep"></div>${callCtrls("")}</div>`;
+    inner+=`<div class="faces" style="left:50%;transform:translateX(-50%);bottom:${pad}px">${ps.map((p,i)=>face(p,s,"s"+i,true)).join("")}</div>`;
+  }
+  d.innerHTML=`<div class="bar"><span>󰣇 1 2 3</span><span>Tue 22:58</span><span>󰤨 󰁹</span></div>
+    <div class="win active viewer ${blur?"blur":""}" style="left:${g}px;top:${top}px;width:${vw}px;height:${vh}px">${inner}</div>`;
+}
+
+function videoScene(d,W,H){
+  const top=28, g=10, ps=people();
+  const tall=shape==="tall";
+  // Medium tiles, stepping down to small (72) when the screen is short, as the client would.
+  const room=H-top-2*g-28-(2*28+4)-12-6*ps.length;
+  const s=Math.max(44,Math.min(112,Math.floor(room/ps.length))), cw=s+12, ch=ps.length*s+(ps.length-1)*6+6+(2*28+4)+12+4;
+  // tiles under the floating window: terminal + editor (or stacked when tall)
+  let tiles;
+  if(tall){
+    const th=(H-top-3*g)/2;
+    tiles=`<div class="win active" style="left:${g}px;top:${top}px;width:${W-2*g}px;height:${th}px">${editor}</div>
+           <div class="win" style="left:${g}px;top:${top+th+g}px;width:${W-2*g}px;height:${th}px">${terminal}</div>`;
+  }else{
+    const lw=(W-3*g)*0.58;
+    tiles=`<div class="win active" style="left:${g}px;top:${top}px;width:${lw}px;height:${H-top-g}px">${editor}</div>
+           <div class="win" style="left:${2*g+lw}px;top:${top}px;width:${W-3*g-lw}px;height:${H-top-g}px">${terminal}</div>`;
+  }
+  const x=W-cw-g-14, y=Math.max(top+g,H-ch-g-14);
+  d.innerHTML=`<div class="bar"><span>󰣇 1 2 3</span><span>Tue 22:58</span><span>󰤨 󰁹</span></div>${tiles}
+    <div class="callwin ${blur?"blur":""}" style="left:${x}px;top:${y}px;width:${cw+4}px">
+      ${ps.map((p,i)=>face(p,s,"v"+i,true)).join("")}${callCtrls("grid")}
+    </div>
+    <div class="tag" style="right:${g+14}px;top:${y-20}px">float · pin · ${ps.length} people</div>`;
+}
+
+function all(){
+  document.querySelectorAll(".desk").forEach(d=>{
+    d.className="desk "+shape;
+    const W=d.clientWidth,H=d.clientHeight; if(!W||!H) return;
+    (d.dataset.state==="share"?shareScene:videoScene)(d,W,H);
+  });
+}
+document.querySelectorAll("[data-shape]").forEach(b=>b.onclick=()=>{shape=b.dataset.shape;document.querySelectorAll("[data-shape]").forEach(x=>x.classList.toggle("on",x===b));document.querySelectorAll(".desk").forEach(d=>d.className="desk "+shape);requestAnimationFrame(all)});
+document.querySelectorAll("[data-people]").forEach(b=>b.onclick=()=>{count=+b.dataset.people;document.querySelectorAll("[data-people]").forEach(x=>x.classList.toggle("on",x===b));all()});
+document.querySelectorAll("[data-blur]").forEach(b=>b.onclick=()=>{blur=b.dataset.blur==="1";document.querySelectorAll("[data-blur]").forEach(x=>x.classList.toggle("on",x===b));all()});
+document.querySelectorAll(".desk").forEach(d=>d.classList.add(shape));
+new ResizeObserver(all).observe(document.body);
+requestAnimationFrame(all);
+</script>
+</body>
+</html>

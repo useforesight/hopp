@@ -1,0 +1,136 @@
+<!doctype html>
+<!-- Mira's shared screen: a 3:2 laptop (1500×1000 CSS px, rendered at 3×) running
+     Omarchy with Catppuccin. Rendered once to build/screen.png; film.html reuses it. -->
+<html><head><meta charset="utf-8"><style>
+:root{--crust:#11111b;--mantle:#181825;--base:#1e1e2e;--s0:#313244;--s1:#45475a;--ov:#6c7086;
+  --sub:#a6adc8;--text:#cdd6f4;--mauve:#cba6f7;--blue:#89b4fa;--peach:#fab387;--green:#a6e3a1;
+  --yellow:#f9e2af;--teal:#94e2d5;--red:#f38ba8;--sky:#89dceb;--lav:#b4befe;--pink:#f5c2e7}
+html,body{margin:0;width:1500px;height:1000px;overflow:hidden;font-family:"Iosevka Nerd Font Mono",monospace;
+  background:radial-gradient(120% 90% at 70% 10%,#3b2d5c 0%,#1d1a33 45%,#11111b 100%);color:var(--text)}
+.bar{position:absolute;left:0;right:0;top:0;height:24px;background:rgba(17,17,27,.92);display:flex;align-items:center;
+  font-size:12px;color:var(--sub);padding:0 12px;box-sizing:border-box}
+.bar .ws{display:flex;gap:12px}.bar .ws b{color:var(--mauve)}
+.bar .clock{position:absolute;left:50%;transform:translateX(-50%)}
+.bar .right{margin-left:auto;display:flex;gap:12px}
+.win{position:absolute;background:var(--base);border:2px solid var(--s1);border-radius:0;box-sizing:border-box;overflow:hidden}
+.win.active{border-color:var(--mauve)}
+#nvim{left:8px;top:32px;width:1032px;height:960px}
+#term{left:1048px;top:32px;width:444px;height:960px;background:rgba(30,30,46,.96)}
+.tree{position:absolute;left:0;top:0;bottom:22px;width:226px;background:var(--mantle);font-size:14px;line-height:22px;padding-top:8px}
+.tree div{padding-left:12px;white-space:pre;color:var(--sub)}
+.tree .dir{color:var(--blue)}.tree .sel{background:var(--s0);color:var(--text)}
+.tabs{position:absolute;left:226px;right:0;top:0;height:30px;background:var(--mantle);display:flex;font-size:13px}
+.tabs div{padding:0 16px;line-height:30px;color:var(--ov)}.tabs .on{background:var(--base);color:var(--text)}
+.code{position:absolute;left:226px;right:0;top:38px;font-size:15px;line-height:22px}
+.ln{display:flex;white-space:pre}.ln .n{width:52px;text-align:right;padding-right:16px;color:var(--s1);flex:none}
+.ln.cur{background:rgba(69,71,90,.45)}.ln.cur .n{color:var(--lav)}
+.k{color:var(--mauve)}.t{color:var(--yellow)}.f{color:var(--blue)}.num{color:var(--peach)}.s{color:var(--green)}
+.c{color:var(--ov);font-style:italic}.m{color:var(--teal)}.p{color:var(--sky)}.self{color:var(--red)}
+.status{position:absolute;left:0;right:0;bottom:0;height:22px;background:var(--mantle);font-size:12px;display:flex;align-items:center}
+.status .mode{background:var(--mauve);color:var(--crust);padding:0 10px;line-height:22px;font-weight:700}
+.status span{padding:0 10px;color:var(--sub)}.status .r{margin-left:auto}
+.term{padding:12px 14px;font-size:13.5px;line-height:21px;white-space:pre;color:var(--sub)}
+.term .pr{color:var(--green)}.term .ok{color:var(--green)}.term .dim{color:var(--ov)}.term b{color:var(--text);font-weight:600}
+</style></head><body>
+<div class="bar"><div class="ws"><b>1</b><span>2</span><span>3</span></div><div class="clock">Thu 14:32</div>
+  <div class="right"><span>󰂯</span><span>󰖩</span><span>󰁹 82%</span></div></div>
+<div class="win active" id="nvim">
+  <div class="tree">
+<div class="dir"> linux-client</div><div class="dir">   src</div><div class="dir">     ui</div><div>        ambient.rs</div><div>        faces.rs</div><div class="sel">        geometry.rs</div><div>        home.rs</div><div>        hypr.rs</div><div>        mod.rs</div><div>        session.rs</div><div>        viewer.rs</div><div>      capture.rs</div><div>      engine.rs</div><div>      main.rs</div><div class="dir">   packaging</div><div class="dir">   omarchy-plugin</div><div>    Cargo.toml</div><div>    README.md</div>
+  </div>
+  <div class="tabs"><div class="on"> geometry.rs</div><div> viewer.rs</div><div> hypr.rs</div></div>
+  <div class="code" id="code"></div>
+  <div class="status"><div class="mode">NORMAL</div><span> main</span><span>geometry.rs</span><div class="r"><span>rust</span><span>214:21</span></div></div>
+</div>
+<div class="win" id="term"><div class="term"><span class="pr">❯</span> <b>cargo test geometry</b>
+<span class="dim">   Compiling hopp-omarchy v0.4.0</span>
+<span class="dim">    Finished test [unoptimized] in 3.81s</span>
+<span class="dim">     Running unittests src/main.rs</span>
+
+running 9 tests
+test ui::geometry::contain_letterboxes ... <span class="ok">ok</span>
+test ui::geometry::cover_crops_center  ... <span class="ok">ok</span>
+test ui::geometry::follow_dead_zone    ... <span class="ok">ok</span>
+test ui::geometry::follow_crop_clicks  ... <span class="ok">ok</span>
+test ui::geometry::jump_recentres      ... <span class="ok">ok</span>
+test ui::geometry::zoom_keeps_focus    ... <span class="ok">ok</span>
+test ui::geometry::docks_only_into_bands
+                     wide_enough       ... <span class="ok">ok</span>
+test ui::geometry::rejects_letterbox   ... <span class="ok">ok</span>
+test ui::geometry::actual_is_1_to_1    ... <span class="ok">ok</span>
+
+test result: <span class="ok">ok</span>. 9 passed; 0 failed
+
+<span class="pr">❯</span> <b>hyprctl configerrors</b>
+
+<span class="pr">❯</span> <b>make install</b>
+<span class="dim">installed ~/.config/hypr/hopp.lua</span>
+<span class="dim">enabled  local.hopp bar plugin</span>
+
+<span class="pr">❯</span> <span style="background:var(--text);color:var(--base)"> </span></div></div>
+<script>
+const src = `    /// Pan towards the sharer's cursor, keeping it inside a dead zone.
+    pub fn follow(
+        &mut self,
+        focus: Point,
+        view: Bounds<Pixels>,
+        source: [u32; 2],
+        scale_factor: f32,
+    ) {
+        let scale = self.scale(view, source, scale_factor);
+        let visible_w = f32::from(view.size.width) / (source[0] as f32 * scale);
+        let visible_h = f32::from(view.size.height) / (source[1] as f32 * scale);
+        let axis = |target: f32, focus: f32, visible: f32| {
+            let margin = visible * 0.3;
+            if focus < target - margin {
+                focus + margin
+            } else if focus > target + margin {
+                focus - margin
+            } else {
+                target
+            }
+        };
+        self.target = [
+            axis(self.target[0], focus.x as f32, visible_w),
+            axis(self.target[1], focus.y as f32, visible_h),
+        ];
+    }
+
+/// Bands around \`source\` fitted into \`view\`, if they are wide enough to dock into.
+pub fn dock_bands(view: Bounds<Pixels>, source: [u32; 2]) -> Option<Bands> {
+    let image = contain(view, source);
+    let x = f32::from(image.origin.x - view.origin.x);
+    let y = f32::from(image.origin.y - view.origin.y);
+    let bands = Bands {
+        sideways: x >= y,
+        size: x.max(y),
+    };
+    (bands.size >= MIN_DOCK).then_some(bands)
+}
+
+#[test]
+fn docks_only_into_bands_wide_enough_for_faces() {
+    let view = bounds(0., 0., 1900., 1030.);
+    assert!(dock_bands(view, [2256, 1504]).is_some());
+    assert!(dock_bands(view, [2560, 1440]).is_none());
+}`;
+const KW = /\b(pub|fn|let|mut|if|else|as|self|Self|impl|for|return|struct|enum|use|mod|match)\b/;
+function hl(line){
+  if (/^\s*\/\/\//.test(line) || /^\s*\/\//.test(line)) return `<span class="c">${esc(line)}</span>`;
+  let out = '', rest = line;
+  const rules = [
+    [/^#\[[^\]]*\]/, 'm'], [/^\s+/, null], [/^"[^"]*"/, 's'], [/^\d+(\.\d*)?/, 'num'],
+    [/^(self)\b/, 'self'], [/^(pub|fn|let|mut|if|else|as|impl|for|return|struct|enum|use|mod|match)\b/, 'k'],
+    [/^[a-z_][a-z0-9_]*!/, 'm'], [/^[a-z_][a-z0-9_]*(?=\()/, 'f'], [/^[A-Z][A-Za-z0-9_]*/, 't'],
+    [/^(u32|f32|f64|usize|bool)\b/, 't'], [/^[a-z_][a-z0-9_]*/, null], [/^(->|=>|&|::|\|)/, 'p'], [/^./, null]];
+  while (rest.length) {
+    for (const [re, cls] of rules) { const m = rest.match(re); if (m) {
+      out += cls ? `<span class="${cls}">${esc(m[0])}</span>` : esc(m[0]); rest = rest.slice(m[0].length); break; } }
+  }
+  return out;
+}
+function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+document.getElementById('code').innerHTML = src.split('\n').map((l,i)=>
+  `<div class="ln${i===13?' cur':''}"><span class="n">${i+202}</span><span>${hl(l)||' '}</span></div>`).join('');
+</script>
+</body></html>
