@@ -7,6 +7,8 @@ on:
 
 jobs:
   trigger-sync:
+    # Deploys upstream's production, so a fork must not run it.
+    if: github.repository == 'gethopp/hopp'
     runs-on: ubuntu-latest
     steps:
       - name: Trigger building workflow

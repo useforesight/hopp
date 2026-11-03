@@ -2,7 +2,7 @@
 # https://git-cliff.org/docs/configuration
 
 [remote.github]
-owner = "gethopp"
+owner = "useforesight"
 repo = "hopp"
 
 [changelog]

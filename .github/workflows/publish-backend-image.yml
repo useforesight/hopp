@@ -13,6 +13,8 @@ on:
 
 jobs:
   publish:
+    # Pushes to upstream's Docker Hub account, so a release tag in a fork must not run it.
+    if: github.repository == 'gethopp/hopp'
     runs-on: ubuntu-latest
     environment: Backend image
     permissions:

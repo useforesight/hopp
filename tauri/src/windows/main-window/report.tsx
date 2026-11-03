@@ -11,7 +11,7 @@ import { Clipboard } from "lucide-react";
 import { PageHeader } from "@/components/ui/page-header";
 import failGif from "@/assets/fail.gif";
 
-const OWNER = "gethopp";
+const OWNER = "useforesight";
 const REPO = "hopp";
 const TEMPLATE = "bug_report.yml";
 

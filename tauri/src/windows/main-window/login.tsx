@@ -7,6 +7,7 @@ import { motion } from "framer-motion";
 import { CopiableInput } from "@/components/ui/copiable-input";
 import { usePostHog } from "posthog-js/react";
 import useStore from "@/store/store";
+import { tauriUtils } from "@/windows/window-utils";
 
 export const Login = () => {
   const posthog = usePostHog();
@@ -88,6 +89,14 @@ export const Login = () => {
             posthog.capture("user_click_custom_url_sign");
           }}
         />
+        <Button
+          variant="link"
+          size="sm"
+          className="mt-1.5 h-auto p-0 text-[11px] leading-4 font-normal text-faint-foreground"
+          onClick={() => tauriUtils.openSettingsWindow()}
+        >
+          Using your own server? Set it in Settings, under General.
+        </Button>
       </div>
     </div>
   );

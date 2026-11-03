@@ -1,4 +1,5 @@
 import useStore from "@/store/store";
+import { tauriUtils } from "@/windows/window-utils";
 
 // @ts-ignore
 export const URLS = {
@@ -11,6 +12,17 @@ export const OS = import.meta.env.VITE_OS as string;
 export const SENTRY_DSN = import.meta.env.VITE_SENTRY_DSN_JS as string;
 export const POSTHOG_API_KEY = import.meta.env.VITE_POSTHOG_API_KEY as string;
 export const POSTHOG_HOST = import.meta.env.VITE_POSTHOG_HOST as string;
+
+/**
+ * Loads the saved server into this window's store. Every window has its own store, so call this
+ * before sending a token, or it goes to the default server.
+ */
+export const restoreCustomServerUrl = async (): Promise<void> => {
+  const customUrl = await tauriUtils.loadCustomServerUrl();
+  if (customUrl) {
+    useStore.getState().setCustomServerUrl(customUrl);
+  }
+};
 
 /**
  * Constants class providing access to URLs with custom server URL support.
