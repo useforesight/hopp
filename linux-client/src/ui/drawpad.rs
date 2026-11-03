@@ -4,16 +4,18 @@
 //! while others draw. To draw yourself (Draw on the sharing pill, Super+Alt+D, or
 //! `hopp draw`), this pad covers the same monitor and turns the pointer into ink: your
 //! strokes go to everyone in the call as Hopp's usual draw messages, and the overlay
-//! underneath paints them for you. It takes the keyboard while it is up: Escape stops,
+//! underneath paints them for you. It takes the keyboard when it opens: Escape stops,
 //! right-click or C clears your ink, Ctrl+Z undoes your last stroke and K keeps your ink
 //! instead of letting it fade (the Mac app's drawing rules). Closing it gives focus back
 //! to your app.
 //!
 //! The pad shows nothing itself: the sharing pill turns into the drawing bar, so there's
-//! one overlay to look at. The pill stays clickable through a hole in the pad's input
-//! region, placed where layer-shell puts the pill: under the bar, which the pad (drawn
-//! over the bar, as the share sees it) has to allow for. Like the overlay it is left out
-//! of the screen share: viewers paint your ink themselves.
+//! one overlay to look at. The pad takes the pointer only over the usable area minus the
+//! pill, so the pill and the bars (Omarchy's included) stay clickable while you draw.
+//! It asks for the keyboard on demand, not exclusively: while any exclusive layer is up,
+//! Hyprland sends every click to it, gaps in its input region included, so the pill's
+//! buttons would draw instead. Like the overlay it is left out of the screen share:
+//! viewers paint your ink themselves.
 
 use gpui_kit::{
     AppContext, Bounds, Context, Entity, FocusHandle, InteractiveElement, IntoElement, MouseButton,
@@ -57,9 +59,17 @@ fn pill_box(width: f32, [left, top, right, _]: [f32; 4]) -> Bounds<Pixels> {
     }
 }
 
-/// The pad takes input everywhere except over the sharing pill (`pill`), so the
-/// drawing bar on it still works while you draw: four bands around the pill's box.
-fn input_region(width: f32, height: f32, pill: Bounds<Pixels>) -> Vec<Bounds<Pixels>> {
+/// Where the pad takes the pointer on a monitor `width` × `height` with `reserved` space
+/// (left, top, right, bottom) taken by bars: the usable area minus the sharing pill
+/// (`pill`), as four bands around the pill, so the pill's buttons and the bars still work.
+fn input_region(
+    width: f32,
+    height: f32,
+    [reserved_left, reserved_top, reserved_right, reserved_bottom]: [f32; 4],
+    pill: Bounds<Pixels>,
+) -> Vec<Bounds<Pixels>> {
+    let (area_left, area_top) = (reserved_left, reserved_top);
+    let (area_right, area_bottom) = (width - reserved_right, height - reserved_bottom);
     let (left, top) = (f32::from(pill.origin.x), f32::from(pill.origin.y));
     let (right, bottom) = (
         left + f32::from(pill.size.width),
@@ -70,10 +80,15 @@ fn input_region(width: f32, height: f32, pill: Bounds<Pixels>) -> Vec<Bounds<Pix
         size: size(px(w.max(0.)), px(h.max(0.))),
     };
     vec![
-        band(0., 0., width, top),
-        band(0., top, left, bottom - top),
-        band(right, top, width - right, bottom - top),
-        band(0., bottom, width, height - bottom),
+        band(area_left, area_top, area_right - area_left, top - area_top),
+        band(area_left, top, left - area_left, bottom - top),
+        band(right, top, area_right - right, bottom - top),
+        band(
+            area_left,
+            bottom,
+            area_right - area_left,
+            area_bottom - bottom,
+        ),
     ]
 }
 
@@ -191,7 +206,10 @@ pub fn open(
             exclusive_zone: Some(px(-1.)),
             exclusive_edge: None,
             margin: None,
-            keyboard_interactivity: KeyboardInteractivity::Exclusive,
+            // On demand, not exclusive: Hyprland gives an exclusive layer every click,
+            // even through the hole left for the pill. On demand still takes the
+            // keyboard when the pad opens, for Escape and the other keys.
+            keyboard_interactivity: KeyboardInteractivity::OnDemand,
         }),
         display_id,
         app_id: Some("hopp.draw".into()),
@@ -225,7 +243,7 @@ pub fn open(
         .as_deref()
         .map(super::hypr::reserved)
         .unwrap_or_default();
-    let region = input_region(width, height, pill_box(width, reserved));
+    let region = input_region(width, height, reserved, pill_box(width, reserved));
     let _ = handle.update(cx, |_, window, _| window.set_input_region(Some(&region)));
     Some(handle)
 }
@@ -240,7 +258,7 @@ mod tests {
         let pill = pill_box(1_728., [0., 37., 0., 0.]);
         assert_eq!(f32::from(pill.origin.y), 37. + sharing::MARGIN);
         assert_eq!(f32::from(pill.origin.x), (1_728. - sharing::WIDTH) / 2.);
-        let region = input_region(1_728., 1_117., pill);
+        let region = input_region(1_728., 1_117., [0., 37., 0., 0.], pill);
         let inside = |x: f32, y: f32| {
             region.iter().any(|band| {
                 let (left, top) = (f32::from(band.origin.x), f32::from(band.origin.y));
@@ -253,9 +271,10 @@ mod tests {
         let middle = 1_728. / 2.;
         assert!(!inside(middle, 80.), "the pill takes its own clicks");
         assert!(!inside(middle, 110.), "all the way down the pill");
+        assert!(!inside(5., 5.), "the bar takes its own clicks");
+        assert!(!inside(middle, 20.), "the bar takes its own clicks");
         for (x, y) in [
-            (5., 5.),
-            (middle, 20.),
+            (middle, 40.),
             (middle, 60.),
             (5., 90.),
             (1_720., 90.),
@@ -267,7 +286,10 @@ mod tests {
             .iter()
             .map(|band| f32::from(band.size.width) * f32::from(band.size.height))
             .sum();
-        assert_eq!(total, 1_728. * 1_117. - sharing::WIDTH * sharing::HEIGHT);
+        assert_eq!(
+            total,
+            1_728. * (1_117. - 37.) - sharing::WIDTH * sharing::HEIGHT
+        );
     }
 
     #[test]
