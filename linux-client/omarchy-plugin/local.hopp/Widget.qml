@@ -53,8 +53,7 @@ Ui.Panel {
             share: String.fromCodePoint(0xF1483),
             faces: String.fromCodePoint(0xF0849),
             peek: String.fromCodePoint(0xF0293),
-            hangUp: String.fromCodePoint(0xF03F5),
-            transcript: String.fromCodePoint(0xF09ED)
+            hangUp: String.fromCodePoint(0xF03F5)
         })
     property int cursor: 0
     readonly property var people: (service.teammates || [])
@@ -485,20 +484,11 @@ Ui.Panel {
                 }
 
                 // Transcripts: every captured call, in a call or not.
-                Ui.Button {
+                TranscriptsRow {
                     visible: app.service.signedIn
                     Layout.fillWidth: true
-                    leftAlign: true
-                    iconText: app.glyph.transcript
-                    text: app.capturing ? "Transcripts · this call is live" : "Transcripts"
-                    tooltipText: "Every captured call, with drawings and screens"
-                    focusable: true
-                    bordered: true
-                    foreground: Color.popups.text
-                    accent: Color.accent
-                    fontFamily: Style.font.family
-                    fontSize: Style.font.body
-                    onClicked: {
+                    liveLines: app.capturing ? (app.call.capture.lines || 0) : -1
+                    onOpenRequested: {
                         app.send("captures");
                         app.close();
                     }
