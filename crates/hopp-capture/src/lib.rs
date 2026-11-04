@@ -8,6 +8,8 @@ pub mod batch;
 pub mod commands;
 pub mod config;
 pub mod draft;
+pub mod follow;
+pub mod frame_files;
 pub mod helper;
 pub mod liveness;
 pub mod logger;
@@ -17,6 +19,7 @@ pub mod recorder;
 pub mod resample;
 pub mod store;
 pub mod text;
+pub mod timeline;
 pub mod vad;
 pub mod wav;
 
