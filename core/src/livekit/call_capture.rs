@@ -81,6 +81,14 @@ fn people(snapshot: &[CoreParticipantState]) -> People {
         .collect()
 }
 
+/// Add who's here to who has been. A name that arrives late replaces its placeholder.
+fn remember(been_here: &mut BTreeMap<String, String>, here: &People) -> Vec<String> {
+    for (id, person) in here {
+        been_here.insert(id.clone(), person.name.clone());
+    }
+    been_here.values().cloned().collect()
+}
+
 /// What changed, as lines for the transcript.
 fn changes(before: &People, after: &People) -> Vec<String> {
     let mut lines = Vec::new();
@@ -207,6 +215,8 @@ impl MicTap {
 struct State {
     recorder: Option<Recorder>,
     seen: People,
+    /// Everyone who has been in the call, by person, for its heading. `seen` is who's here now.
+    been_here: BTreeMap<String, String>,
     own_identity: String,
 }
 
@@ -461,7 +471,8 @@ impl CallCapture {
         log::info!("Capture {id}: started");
         let feed = recorder.feed();
         let seen = people(snapshot);
-        let participants: Vec<String> = seen.values().map(|p| p.name.clone()).collect();
+        let mut been_here = BTreeMap::new();
+        let participants = remember(&mut been_here, &seen);
         feed.participants(participants.clone());
         for sharer in seen.values().filter(|p| p.sharing) {
             feed.event(format!("{} is sharing their screen", sharer.name));
@@ -476,6 +487,7 @@ impl CallCapture {
         }
         let mut state = self.state();
         state.seen = seen;
+        state.been_here = been_here;
         state.own_identity = own_identity.to_string();
         state.recorder = Some(recorder);
         drop(state);
@@ -509,7 +521,7 @@ impl CallCapture {
         for line in changes(&state.seen, &now) {
             feed.event(line);
         }
-        feed.participants(now.values().map(|p| p.name.clone()).collect());
+        feed.participants(remember(&mut state.been_here, &now));
         if let Some(moments) = self.moments().as_mut() {
             moments.people(everyone(&state.own_identity, &now));
         }
@@ -548,6 +560,7 @@ impl CallCapture {
         self.tap.set(None);
         self.stills.watching.store(false, Ordering::Relaxed);
         state.seen.clear();
+        state.been_here.clear();
         let moments = self.moments().take();
         let Some(recorder) = state.recorder.take() else {
             return;
@@ -913,6 +926,19 @@ mod tests {
             everyone("room:r1:user-alex:audio", &seen),
             vec!["room:r1:user-alex:audio", "user-sam"]
         );
+    }
+
+    #[test]
+    fn a_call_keeps_the_names_of_everyone_who_was_in_it() {
+        let mut been_here = BTreeMap::new();
+        let both = people(&[
+            participant("local", "", false),
+            participant(SAM, "Sam", false),
+        ]);
+        assert_eq!(remember(&mut been_here, &both), vec!["You", "Sam"]);
+
+        let sam_left = people(&[participant("local", "Alex", false)]);
+        assert_eq!(remember(&mut been_here, &sam_left), vec!["Alex", "Sam"]);
     }
 
     /// A still screen sends one frame, so it must be told about the share first.

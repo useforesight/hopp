@@ -857,15 +857,7 @@ impl<'a> Application<'a> {
 
         #[cfg(target_os = "macos")]
         if let Some(display_id) = pill_display {
-            let told = self.event_loop_proxy.clone();
-            self.sharing_pill = SharingPill::new(
-                display_id,
-                target_process_id.filter(|_| !is_display_share),
-                move |click| {
-                    let _ = told.send_event(UserEvent::SharingPillClicked(click));
-                },
-            );
-            self.sync_sharing_pill();
+            self.show_sharing_pill(display_id, target_process_id.filter(|_| !is_display_share));
         }
 
         self.set_screensharing_active(true);
@@ -1053,6 +1045,15 @@ impl<'a> Application<'a> {
         if let Err(e) = self.socket.send(Message::DrawingDisabled) {
             log::error!("Failed to send DrawingDisabled: {e:?}");
         }
+        self.sync_sharing_pill();
+    }
+
+    #[cfg(target_os = "macos")]
+    fn show_sharing_pill(&mut self, display_id: u32, window_owner: Option<i32>) {
+        let told = self.event_loop_proxy.clone();
+        self.sharing_pill = SharingPill::new(display_id, window_owner, move |click| {
+            let _ = told.send_event(UserEvent::SharingPillClicked(click));
+        });
         self.sync_sharing_pill();
     }
 
@@ -1386,6 +1387,9 @@ impl<'a> Application<'a> {
             return;
         };
 
+        #[cfg(target_os = "macos")]
+        let pill_display = ScreenshareFunctions::capture_content_id_for_monitor(&target_monitor);
+
         if let Err(error) = self.create_overlay_window(
             target_monitor,
             remote_control_enabled,
@@ -1396,6 +1400,15 @@ impl<'a> Application<'a> {
             log::error!("repair_overlay_monitor: failed to recreate overlay: {error:?}");
             self.stop_screenshare();
             return;
+        }
+
+        // The pill goes where the share went.
+        #[cfg(target_os = "macos")]
+        if let Some(display_id) = pill_display {
+            self.show_sharing_pill(
+                display_id,
+                target_process_id.filter(|_| target_window_id.is_some()),
+            );
         }
 
         for (identity, drawing_mode) in participant_drawing_modes {
@@ -1769,6 +1782,10 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                     self.stop_screenshare();
                 } else {
                     log::warn!("user_event: CallEnd: screen capturer is not valid");
+                    #[cfg(target_os = "macos")]
+                    {
+                        self.sharing_pill = None;
+                    }
                     self.destroy_overlay_window();
 
                     self.screen_capturer =
@@ -2832,6 +2849,11 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                                 if let Some(room_service) = &self.room_service {
                                     room_service
                                         .publish_drawing_mode(room_service::DrawingMode::Disabled);
+                                }
+
+                                // The app thinks it's on, until it hears otherwise.
+                                if let Err(e) = self.socket.send(Message::DrawingDisabled) {
+                                    log::error!("Failed to send DrawingDisabled: {e:?}");
                                 }
                             }
                         }

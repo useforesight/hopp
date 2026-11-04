@@ -710,6 +710,7 @@ mod tests {
                 start_mic_on_call: None,
                 start_camera_on_call: None,
                 capture_by_hand: CaptureByHand::Nothing,
+                room_name: None,
             }))
             .unwrap();
         client_sender.send(Message::CallEnd).unwrap();

@@ -7,7 +7,9 @@
 use std::cell::Cell;
 
 use objc2::{
-    rc::Retained, runtime::AnyObject, AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly,
+    rc::{Retained, Weak},
+    runtime::AnyObject,
+    AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly,
 };
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua,
@@ -72,7 +74,8 @@ enum Look {
 
 struct ButtonIvars {
     clicked: Box<dyn Fn()>,
-    background: Retained<NSBox>,
+    /// Weak, because it holds this button through its content view.
+    background: Weak<NSBox>,
     look: Cell<Look>,
     hovered: Cell<bool>,
 }
@@ -128,7 +131,7 @@ impl PillButton {
 
         let this = Self::alloc(mtm).set_ivars(ButtonIvars {
             clicked,
-            background: background.clone(),
+            background: Weak::from_retained(&background),
             look: Cell::new(look),
             hovered: Cell::new(false),
         });
@@ -182,7 +185,9 @@ impl PillButton {
             (Look::Danger, false) => color(ColorToken::Red500),
             (Look::Danger, true) => color(ColorToken::Red400),
         };
-        ivars.background.setFillColor(&fill);
+        if let Some(background) = ivars.background.load() {
+            background.setFillColor(&fill);
+        }
     }
 }
 

@@ -62,13 +62,17 @@ async fn get_available_content(app: tauri::AppHandle) -> Result<(), String> {
     let data = app.state::<Mutex<AppData>>();
     let data = data.lock().unwrap();
 
-    let remote_control_enabled = data.app_state.user_settings().remote_control_enabled;
-    data.sender
-        .send(Message::ControllerCursorEnabled(remote_control_enabled))
-        .map_err(|e| {
-            log::error!("get_available_content: failed to apply remote control setting: {e:?}");
-            "Failed to apply remote control setting".to_string()
-        })?;
+    // Not while sharing, when this is someone changing what they share: control they took back
+    // from the pill stays taken back for the whole share.
+    if !data.is_screensharing {
+        let remote_control_enabled = data.app_state.user_settings().remote_control_enabled;
+        data.sender
+            .send(Message::ControllerCursorEnabled(remote_control_enabled))
+            .map_err(|e| {
+                log::error!("get_available_content: failed to apply remote control setting: {e:?}");
+                "Failed to apply remote control setting".to_string()
+            })?;
+    }
 
     data.sender.send(Message::GetAvailableContent).map_err(|e| {
         log::error!("get_available_content: failed to send message: {e:?}");

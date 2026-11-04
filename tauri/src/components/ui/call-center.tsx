@@ -117,20 +117,24 @@ export function CallCenter() {
     toast.success("Room link copied to clipboard");
   };
 
+  // On what the setting says rather than the settings object: refetching them mustn't undo
+  // taking back control from the sharing pill, which lasts for the share.
+  const settingsLoaded = !!userSettings;
+  const remoteControlSetting = userSettings?.remote_control_enabled;
   useEffect(() => {
     const fetchAccessibilityPermission = async () => {
       const permission = await tauriUtils.getControlPermission();
       setAccessibilityPermission(permission);
-      const enabled = permission && (userSettings?.remote_control_enabled ?? true);
+      const enabled = permission && (remoteControlSetting ?? true);
       setControllerCursorState(enabled);
 
-      if (callTokens?.role === ParticipantRole.SHARER && userSettings) {
+      if (callTokens?.role === ParticipantRole.SHARER && settingsLoaded) {
         tauriUtils.setControllerCursor(enabled);
       }
     };
 
     fetchAccessibilityPermission();
-  }, [callTokens?.role, userSettings]);
+  }, [callTokens?.role, settingsLoaded, remoteControlSetting]);
 
   useEffect(() => {
     const unlisten = listen("core_call_ended", () => {
