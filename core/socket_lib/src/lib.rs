@@ -292,6 +292,9 @@ pub enum Message {
     /// Start capturing this call: nothing else starts one once it was stopped by hand.
     CaptureStart,
     CaptureStop,
+    /// The capture recording this call now, if any. Its last words may still be finishing
+    /// after this says none.
+    CaptureChanged(Option<String>),
 }
 
 impl Message {

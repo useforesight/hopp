@@ -31,24 +31,25 @@ fn complained(output: &Output) -> String {
 
 /// An app with this state, saying yes to everything it's asked after that.
 fn running_app(home: &Path, state: Value) -> Arc<Mutex<Vec<AppRequest>>> {
-    running_app_doing(home, state, |_| {})
+    running_app_doing(home, state, |_, _| {})
 }
 
 fn running_app_doing(
     home: &Path,
     state: Value,
-    does: impl Fn(&AppRequest) + Send + 'static,
+    does: impl Fn(&AppRequest, Arc<Mutex<Value>>) + Send + 'static,
 ) -> Arc<Mutex<Vec<AppRequest>>> {
     let asked = Arc::new(Mutex::new(Vec::new()));
     let told = asked.clone();
+    let state = Arc::new(Mutex::new(state));
     let socket = home.join("run/hopp.sock");
     let listening = socket.clone();
     std::thread::spawn(move || {
         let _ = serve(&listening, |request| {
             if request == AppRequest::Snapshot {
-                return AppReply::state(state.clone());
+                return AppReply::state(state.lock().unwrap().clone());
             }
-            does(&request);
+            does(&request, state.clone());
             told.lock().unwrap().push(request);
             AppReply::done()
         });
@@ -100,7 +101,7 @@ fn without_the_app_it_says_so() -> Result<()> {
 }
 
 #[test]
-fn status_reads_the_app_and_the_store() -> Result<()> {
+fn status_says_what_the_app_says() -> Result<()> {
     let home = tempfile::tempdir()?;
     running_app(home.path(), in_a_call());
 
@@ -111,14 +112,7 @@ fn status_reads_the_app_and_the_store() -> Result<()> {
     assert!(text.contains("○ Jonas Berg"), "{text}");
     assert!(!text.contains("Capturing"), "{text}");
 
-    // Started just now: nobody holds its lock here, and an older call would be an orphan.
-    let store = Store::open(&home.path().join("capture/index.db"))?;
-    store.begin_call("c_live", "Core", now_ms(), "parakeet-en")?;
-    let text = said(&hopp(home.path(), &["status"])?);
-    assert!(text.contains("Capturing c_live"), "{text}");
-
     let state: Value = serde_json::from_str(&said(&hopp(home.path(), &["status", "--json"])?))?;
-    assert_eq!(state["capture"]["id"], "c_live");
     assert_eq!(state["call"]["microphone"], true);
     Ok(())
 }
@@ -137,7 +131,6 @@ fn commands_reach_the_app_by_name() -> Result<()> {
         vec!["share"],
         vec!["open"],
         vec!["settings"],
-        vec!["capture", "stop"],
         vec!["capture", "window"],
     ] {
         let output = hopp(home.path(), &command)?;
@@ -158,7 +151,6 @@ fn commands_reach_the_app_by_name() -> Result<()> {
             AppRequest::Share,
             AppRequest::Open,
             AppRequest::Settings,
-            AppRequest::CaptureStop,
             AppRequest::CaptureWindow(None),
         ]
     );
@@ -220,18 +212,25 @@ fn a_capture_is_started_opened_and_marked() -> Result<()> {
     let home = tempfile::tempdir()?;
     // The recorder appears a moment after it's asked for, as the real one does.
     let database = home.path().join("capture/index.db");
-    let asked = running_app_doing(home.path(), in_a_call(), move |request| {
-        if *request == AppRequest::CaptureStart {
-            let database = database.clone();
+    let store = Store::open(&database)?;
+    store.begin_call("c_live", "Core", now_ms(), "parakeet-en")?;
+    let asked = running_app_doing(home.path(), in_a_call(), |request, state| match request {
+        AppRequest::CaptureStart => {
             std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_millis(300));
-                let store = Store::open(&database).expect("store");
-                store
-                    .begin_call("c_live", "Core", now_ms(), "parakeet-en")
-                    .expect("call");
+                state.lock().unwrap()["capture"] = json!({ "id": "c_live" });
             });
         }
+        AppRequest::CaptureStop => state.lock().unwrap()["capture"] = Value::Null,
+        _ => {}
     });
+
+    let nothing = hopp(home.path(), &["capture", "stop"])?;
+    assert!(
+        said(&nothing).contains("Nothing is being captured"),
+        "{}",
+        said(&nothing)
+    );
 
     let started = hopp(home.path(), &["capture", "start"])?;
     assert!(started.status.success(), "{}", complained(&started));
@@ -247,11 +246,14 @@ fn a_capture_is_started_opened_and_marked() -> Result<()> {
         "{}",
         said(&again)
     );
+    let text = said(&hopp(home.path(), &["status"])?);
+    assert!(text.contains("Capturing c_live"), "{text}");
 
     for command in [
         vec!["capture", "bookmark", "the", "flood"],
         vec!["capture", "bookmark"],
         vec!["capture", "window", "live"],
+        vec!["capture", "stop"],
     ] {
         let output = hopp(home.path(), &command)?;
         assert!(
@@ -260,6 +262,19 @@ fn a_capture_is_started_opened_and_marked() -> Result<()> {
             complained(&output)
         );
     }
+
+    // Stopped, its last words are still finishing and its row is still open: this call isn't
+    // being captured any more, whatever the store says, and it can be started again.
+    assert!(store.call("current")?.is_some());
+    let text = said(&hopp(home.path(), &["status"])?);
+    assert!(!text.contains("Capturing"), "{text}");
+    let restarted = hopp(home.path(), &["capture", "start"])?;
+    assert!(
+        said(&restarted).contains("Capturing (c_live)"),
+        "{}",
+        said(&restarted)
+    );
+
     assert_eq!(
         *asked.lock().unwrap(),
         vec![
@@ -267,6 +282,8 @@ fn a_capture_is_started_opened_and_marked() -> Result<()> {
             AppRequest::CaptureBookmark(Some("the flood".into())),
             AppRequest::CaptureBookmark(None),
             AppRequest::CaptureWindow(Some("c_live".into())),
+            AppRequest::CaptureStop,
+            AppRequest::CaptureStart,
         ]
     );
     Ok(())

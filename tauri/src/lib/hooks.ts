@@ -1,6 +1,6 @@
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { once } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import hotkeys from "hotkeys-js";
 import toast from "react-hot-toast";
 import useStore, { ParticipantRole } from "@/store/store";
@@ -153,12 +153,12 @@ export function useJoinRoom() {
   const endCall = useEndCall();
   const { useMutation } = useAPI();
   const { mutateAsync: getRoomTokens } = useMutation("get", "/api/auth/room/{id}", undefined);
-  const [isJoiningRoom, setIsJoiningRoom] = useState(false);
+  const setIsJoiningRoom = useStore((state) => state.setIsJoiningRoom);
   const joiningToastTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const joinRoom = useCallback(
+  return useCallback(
     async (room: components["schemas"]["Room"]) => {
-      const { callTokens } = useStore.getState();
+      const { callTokens, isJoiningRoom } = useStore.getState();
       if (callTokens?.room?.id === room.id) {
         setTab("call");
         return;
@@ -223,10 +223,8 @@ export function useJoinRoom() {
         setIsJoiningRoom(false);
       }
     },
-    [getRoomTokens, setCallTokens, setTab, endCall, isJoiningRoom],
+    [getRoomTokens, setCallTokens, setIsJoiningRoom, setTab, endCall],
   );
-
-  return { joinRoom, isJoiningRoom };
 }
 
 export function useJoinCall() {

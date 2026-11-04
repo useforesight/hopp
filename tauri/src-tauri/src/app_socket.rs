@@ -60,9 +60,20 @@ fn answer(app: &AppHandle, request: AppRequest) -> AppReply {
     let socket = app.state::<AppSocket>();
     match request {
         AppRequest::Snapshot => {
+            let capture = {
+                let data = app.state::<Mutex<AppData>>();
+                let data = data.lock().unwrap_or_else(PoisonError::into_inner);
+                data.capture_id.clone()
+            };
             let state = socket.state.lock().unwrap_or_else(PoisonError::into_inner);
             match state.as_ref() {
-                Some(state) => AppReply::state(state.clone()),
+                Some(state) => {
+                    let mut state = state.clone();
+                    if let Some(id) = capture {
+                        state["capture"] = serde_json::json!({ "id": id });
+                    }
+                    AppReply::state(state)
+                }
                 None => AppReply::done(),
             }
         }
@@ -120,7 +131,9 @@ fn draw(app: &AppHandle) -> AppReply {
     if !sharing {
         return AppReply::refused("You're not sharing your screen");
     }
-    crate::toggle_pen(app);
+    if !crate::toggle_pen(app) {
+        return AppReply::refused("Couldn't reach the call");
+    }
     AppReply::done()
 }
 

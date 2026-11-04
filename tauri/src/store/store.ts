@@ -54,6 +54,8 @@ type State = {
   callbackUserId: string | null;
   // Teammate to invite as soon as their row in the list picks this up
   inviteUserId: string | null;
+  // A room is being joined, by whichever way it was asked for
+  isJoiningRoom: boolean;
   // Newest first. Kept until the user deals with them, and across restarts.
   missedCalls: MissedCall[];
   // Call tokens for LiveKit
@@ -83,6 +85,7 @@ type Actions = {
   updateCallTokens: (tokens: Partial<CallState>) => void;
   setCallbackUserId: (userId: string | null) => void;
   setInviteUserId: (userId: string | null) => void;
+  setIsJoiningRoom: (joining: boolean) => void;
   setMissedCalls: (missedCalls: MissedCall[]) => void;
   setCustomServerUrl: (url: string | null) => void;
   setLivekitUrl: (url: string | null) => void;
@@ -103,6 +106,7 @@ const initialState: State = {
   incomingInviteInviterId: null,
   callbackUserId: null,
   inviteUserId: null,
+  isJoiningRoom: false,
   missedCalls: [],
   callTokens: null,
   customServerUrl: null,
@@ -157,6 +161,10 @@ const useStore = create<State & Actions>()(
     setIncomingInviteInviterId: (inviterId) =>
       set((state) => {
         state.incomingInviteInviterId = inviterId;
+      }),
+    setIsJoiningRoom: (joining) =>
+      set((state) => {
+        state.isJoiningRoom = joining;
       }),
     setInviteUserId: (userId) =>
       set((state) => {

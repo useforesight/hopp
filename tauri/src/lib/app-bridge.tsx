@@ -85,7 +85,7 @@ export const AppBridge = () => {
     typedInvoke("app_publish_state", { state }).catch((error) => console.error("Publishing state:", error));
   }, [state]);
 
-  const { joinRoom } = useJoinRoom();
+  const joinRoom = useJoinRoom();
   const onRequest = useRef<(request: AppRequest) => void>(() => {});
   onRequest.current = (request) => {
     switch (request.type) {

@@ -390,13 +390,18 @@ fn get_drawing_enabled(app: tauri::AppHandle) -> bool {
 
 #[tauri::command(async)]
 fn set_drawing_enabled(app: tauri::AppHandle, enabled: bool, permanent: bool, stamp: bool) {
+    change_drawing(&app, enabled, permanent, stamp);
+}
+
+/// Returns false if the core couldn't be told, and nothing changed.
+fn change_drawing(app: &tauri::AppHandle, enabled: bool, permanent: bool, stamp: bool) -> bool {
     log::info!("set_drawing_enabled: enabled={enabled} permanent={permanent} stamp={stamp}");
     let data = app.state::<Mutex<AppData>>();
     let mut data = data.lock().unwrap();
 
     // Going from drawing to stamps, it stays enabled but the tool changes.
     if data.drawing_enabled == enabled && (!enabled || data.drawing_stamp == stamp) {
-        return;
+        return true;
     }
 
     if let Err(e) = data
@@ -404,7 +409,7 @@ fn set_drawing_enabled(app: tauri::AppHandle, enabled: bool, permanent: bool, st
         .send(Message::DrawingEnabled(DrawingEnabled { permanent, stamp }))
     {
         log::error!("set_drawing_enabled: failed to send message: {e:?}");
-        return;
+        return false;
     }
 
     data.drawing_enabled = enabled;
@@ -421,10 +426,11 @@ fn set_drawing_enabled(app: tauri::AppHandle, enabled: bool, permanent: bool, st
             let _ = window.minimize();
         }
     }
+    true
 }
 
 /// `hopp draw`: the pen on or off, whichever tool is in hand. The window's button follows it.
-fn toggle_pen(app: &tauri::AppHandle) {
+fn toggle_pen(app: &tauri::AppHandle) -> bool {
     let (enabled, permanent) = {
         let data = app.state::<Mutex<AppData>>();
         let data = data.lock().unwrap();
@@ -433,10 +439,13 @@ fn toggle_pen(app: &tauri::AppHandle) {
             data.app_state.sharer_draw_persist(),
         )
     };
-    set_drawing_enabled(app.clone(), enabled, permanent, false);
+    if !change_drawing(app, enabled, permanent, false) {
+        return false;
+    }
     if let Err(e) = app.emit_to("main", "drawing_pen_changed", enabled) {
         log::error!("toggle_pen: failed to emit: {e:?}");
     }
+    true
 }
 
 #[tauri::command(async)]
@@ -512,6 +521,11 @@ fn call_started(
     let data = app.state::<Mutex<AppData>>();
     #[allow(unused_mut)]
     let mut data = data.lock().unwrap();
+    // Only rejoining says what was on or off. Anything else is a new call, whatever a call
+    // that's still ending left here.
+    if mic_on.is_none() {
+        data.capture_by_hand = CaptureByHand::Nothing;
+    }
     let user_settings = data.app_state.user_settings();
     #[cfg(target_os = "macos")]
     {
@@ -1391,6 +1405,14 @@ fn forward_core_events(events_rx: std_mpsc::Receiver<Message>, app: tauri::AppHa
             }
             Message::StartScreenShareResult(Ok(())) => {
                 log::info!("forward_core_events: screen share started");
+            }
+            Message::CaptureChanged(id) => {
+                log::info!("forward_core_events: capture {id:?}");
+                let data = app.state::<Mutex<AppData>>();
+                data.lock().unwrap().capture_id = id.clone();
+                if let Err(e) = app.emit("core_capture_changed", id) {
+                    log::error!("forward_core_events: failed to emit core_capture_changed: {e:?}");
+                }
             }
             Message::DrawingDisabled => {
                 log::info!("forward_core_events: drawing disabled");

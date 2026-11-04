@@ -2310,6 +2310,12 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                     room_service.start_capture();
                 }
             }
+            UserEvent::CaptureChanged(id) => {
+                log::info!("user_event: CaptureChanged: {id:?}");
+                if let Err(e) = self.socket.send(Message::CaptureChanged(id)) {
+                    log::error!("Failed to send CaptureChanged: {e:?}");
+                }
+            }
             UserEvent::CaptureStop => {
                 log::info!("user_event: CaptureStop");
                 if let Some(room_service) = self.room_service.as_ref() {
@@ -3411,6 +3417,7 @@ pub enum UserEvent {
     CaptureBookmark(Option<String>),
     CaptureStart,
     CaptureStop,
+    CaptureChanged(Option<String>),
     ListCameras,
     StartCamera {
         msg: CameraStartMessage,

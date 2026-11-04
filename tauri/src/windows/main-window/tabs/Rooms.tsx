@@ -146,7 +146,8 @@ export const Rooms = () => {
   const [isUpdateDialogOpen, setIsUpdateDialogOpen] = useState(false);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [selectedRoom, setSelectedRoom] = useState<Room | null>(null);
-  const { joinRoom, isJoiningRoom } = useJoinRoom();
+  const joinRoom = useJoinRoom();
+  const isJoiningRoom = useStore((state) => state.isJoiningRoom);
 
   const { useQuery } = useAPI();
 

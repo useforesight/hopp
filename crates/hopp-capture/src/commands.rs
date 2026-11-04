@@ -140,25 +140,26 @@ pub enum ModelCommand {
 }
 
 /// A recorder's first moments, opening the store and starting its helper.
-const CAPTURE_START_WAITS: Duration = Duration::from_secs(5);
+const CAPTURE_START_WAITS: Duration = Duration::from_secs(10);
 
 fn ask_app(request: AppRequest) -> Result<()> {
     app_socket::request(&request).map(|_| ())
 }
 
 fn start() -> Result<()> {
-    if cli::in_call(&app_socket::snapshot()?).is_err() {
+    let state = app_socket::snapshot()?;
+    if cli::in_call(&state).is_err() {
         bail!("Join a call first; Capture records the call you're in");
     }
-    if let Some(id) = cli::current_capture()? {
+    if let Some(id) = cli::capture_id(&state) {
         println!("Already capturing ({id})");
         return Ok(());
     }
     ask_app(AppRequest::CaptureStart)?;
-    // The recorder starts in another process, and the store is where it shows.
+    // The recorder starts in another process, and the app hears when it has.
     let asked = Instant::now();
     while asked.elapsed() < CAPTURE_START_WAITS {
-        if let Some(id) = cli::current_capture()? {
+        if let Some(id) = cli::capture_id(&app_socket::snapshot()?) {
             println!(
                 "Capturing ({id}). Saved only on this computer; `hopp capture stop` to finish."
             );
@@ -167,6 +168,14 @@ fn start() -> Result<()> {
         std::thread::sleep(Duration::from_millis(100));
     }
     bail!("Hopp didn't start capturing; its log says why")
+}
+
+fn stop() -> Result<()> {
+    if cli::capture_id(&app_socket::snapshot()?).is_none() {
+        println!("Nothing is being captured");
+        return Ok(());
+    }
+    ask_app(AppRequest::CaptureStop)
 }
 
 fn window(call: Option<String>) -> Result<()> {
@@ -179,7 +188,7 @@ fn window(call: Option<String>) -> Result<()> {
 }
 
 fn bookmark(label: Vec<String>) -> Result<()> {
-    if cli::current_capture()?.is_none() {
+    if cli::capture_id(&app_socket::snapshot()?).is_none() {
         bail!("Nothing is being captured");
     }
     let label = Some(label.join(" ")).filter(|label| !label.is_empty());
@@ -189,7 +198,7 @@ fn bookmark(label: Vec<String>) -> Result<()> {
 pub fn run(command: CaptureCommand) -> Result<()> {
     match command {
         CaptureCommand::Start => return start(),
-        CaptureCommand::Stop => return ask_app(AppRequest::CaptureStop),
+        CaptureCommand::Stop => return stop(),
         CaptureCommand::Window { call } => return window(call),
         CaptureCommand::Bookmark { label } => return bookmark(label),
         CaptureCommand::Path => {

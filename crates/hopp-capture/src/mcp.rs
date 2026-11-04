@@ -308,7 +308,7 @@ fn call_tool_inner(name: &str, arguments: &Value) -> Result<Reply> {
     }
     if name == "call_status" {
         // Not an error for an agent to be told: it can still read past calls.
-        return Ok(match crate::cli::state_with_capture() {
+        return Ok(match crate::app_socket::snapshot() {
             Ok(state) => crate::cli::describe(&state),
             Err(error) => format!("{error:#}."),
         }

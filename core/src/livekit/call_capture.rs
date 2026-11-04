@@ -237,7 +237,10 @@ pub struct CallCapture {
     tap: Tap,
     state: Arc<Mutex<State>>,
     stills: Arc<Stills>,
+    changed: Arc<Mutex<Option<Changed>>>,
 }
+
+type Changed = Box<dyn Fn(Option<String>) + Send>;
 
 impl std::fmt::Debug for CallCapture {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -246,6 +249,18 @@ impl std::fmt::Debug for CallCapture {
 }
 
 impl CallCapture {
+    /// Be told which capture is recording, whenever that changes.
+    pub fn on_change(&self, changed: impl Fn(Option<String>) + Send + 'static) {
+        *self.changed.lock().unwrap_or_else(PoisonError::into_inner) = Some(Box::new(changed));
+    }
+
+    fn announce(&self, id: Option<String>) {
+        let changed = self.changed.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(changed) = changed.as_ref() {
+            changed(id);
+        }
+    }
+
     pub fn tap(&self) -> Tap {
         self.tap.clone()
     }
@@ -457,6 +472,7 @@ impl CallCapture {
         state.own_identity = own_identity.to_string();
         state.recorder = Some(recorder);
         drop(state);
+        self.announce(Some(id.clone()));
         // From here, because the recorder hasn't necessarily written them down yet.
         let mut payload = hooks::payload("capture-started", &id);
         payload["participants"] = participants.into();
@@ -530,6 +546,8 @@ impl CallCapture {
             return;
         };
         let id = recorder.id();
+        drop(state);
+        self.announce(None);
         let finishing = std::thread::Builder::new()
             .name("hopp-capture-finish".into())
             .spawn(move || {

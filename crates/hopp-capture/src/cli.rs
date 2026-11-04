@@ -3,13 +3,9 @@
 
 use anyhow::{Result, bail};
 use clap::Subcommand;
-use serde_json::{Value, json};
+use serde_json::Value;
 
-use crate::{
-    app_socket::{self, AppRequest},
-    liveness,
-    store::Store,
-};
+use crate::app_socket::{self, AppRequest};
 
 #[derive(Subcommand, Clone, Debug, PartialEq, Eq)]
 pub enum AppCommand {
@@ -52,7 +48,7 @@ pub enum AppCommand {
 pub fn run(command: AppCommand) -> Result<()> {
     match command {
         AppCommand::Status { json } => {
-            let state = state_with_capture()?;
+            let state = app_socket::snapshot()?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&state)?);
             } else {
@@ -151,23 +147,11 @@ fn start_app() -> Result<()> {
     bail!(app_socket::NOT_RUNNING)
 }
 
-/// The app's state, and whether this call is being captured. That's in the store: the
-/// recorder lives in another process, and the store is what's true if it died.
-pub fn state_with_capture() -> Result<Value> {
-    let mut state = app_socket::snapshot()?;
-    if let Some(id) = current_capture()? {
-        state["capture"] = json!({ "id": id });
-    }
-    Ok(state)
-}
-
-/// The capture running now, closing any whose recorder is gone.
-pub fn current_capture() -> Result<Option<String>> {
-    let store = Store::open_default()?;
-    if let Err(error) = liveness::close_orphans(&store) {
-        eprintln!("Could not close an abandoned capture: {error:#}");
-    }
-    Ok(store.call("current")?.map(|call| call.id))
+/// The capture recording this call, if any. The app has this from the core, which is the
+/// only one who knows: a capture that was stopped stays open in the store while its last
+/// words finish.
+pub fn capture_id(state: &Value) -> Option<&str> {
+    state["capture"]["id"].as_str()
 }
 
 fn named<'a>(items: &'a [Value], wanted: &str, what: &str) -> Result<&'a Value> {
@@ -292,7 +276,7 @@ pub fn describe(state: &Value) -> String {
         out.push_str(&parts.join(" · "));
         out.push('\n');
     }
-    if let Some(id) = state["capture"]["id"].as_str() {
+    if let Some(id) = capture_id(state) {
         out.push_str(&format!("Capturing {id}\n"));
     }
     if let Some(teammates) = state["teammates"].as_array()
@@ -332,6 +316,7 @@ pub fn describe(state: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn finds_teammates_and_rooms_by_name_or_id() -> Result<()> {

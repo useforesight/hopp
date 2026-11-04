@@ -1052,6 +1052,10 @@ async fn room_service_commands(
                 capture_by_hand,
             }) => {
                 log::info!("room_service_commands: CreateRoom");
+                let told = event_loop_proxy.clone();
+                inner.call_capture.on_change(move |id| {
+                    let _ = told.send_event(UserEvent::CaptureChanged(id));
+                });
                 let total_connect_start = Instant::now();
 
                 // Create two oneshot channels so destroy_room() can cancel both

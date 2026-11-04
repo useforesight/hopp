@@ -124,6 +124,9 @@ pub struct AppData {
     /// What the user did to this call's capture. Kept here so that it outlives a core restart.
     pub capture_by_hand: CaptureByHand,
 
+    /// The capture recording this call now, as the core last said.
+    pub capture_id: Option<String>,
+
     /// Whether the local camera is currently on (pushed from frontend snapshots).
     pub is_camera_on: bool,
 
@@ -180,6 +183,7 @@ impl AppData {
             drawing_stamp: false,
             call_active: false,
             capture_by_hand: CaptureByHand::Nothing,
+            capture_id: None,
             is_camera_on: false,
             is_screensharing: false,
             pending_call_end_acks: 0,
@@ -334,6 +338,9 @@ fn restart_core_process(app: &AppHandle, exit_reason: String) {
     data.call_active = false;
     data.is_camera_on = false;
     data.is_screensharing = false;
+    data.drawing_enabled = false;
+    data.drawing_stamp = false;
+    data.capture_id = None;
     data.pending_call_end_acks = 0;
     data.stale_call_ended_events = 0;
     let core_events_forwarder = data.core_events_forwarder;
