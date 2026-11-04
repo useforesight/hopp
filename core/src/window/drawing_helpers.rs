@@ -279,8 +279,10 @@ pub(crate) struct StampHint {
     pub(crate) hearing: bool,
     /// You're holding it down.
     pub(crate) held: bool,
-    /// The call is captured, so holding one down can hear you.
+    /// The call is captured, so a stamp can hear you.
     pub(crate) capturing: bool,
+    /// You clicked with your microphone muted, so this stamp can't hear you.
+    pub(crate) muted: bool,
 }
 
 impl StampHint {
@@ -290,13 +292,15 @@ impl StampHint {
         } else if self.typing && self.hearing && self.held {
             "Listening  ·  let go to stamp it"
         } else if self.typing && self.hearing {
-            "Writing down what you said…"
+            "Listening  ·  Enter or a pause finishes it  ·  Esc removes it"
+        } else if self.typing && self.muted {
+            "You're muted: type your note, or hold a spot to say it  ·  Esc removes it"
         } else if self.typing {
             "Type your note  ·  Enter to finish  ·  Esc removes it"
         } else if self.capturing {
-            "Hold on a spot and say your note, or click and type  ·  Right-click clears yours"
+            "Click a spot and say your note, or type it  ·  Right-click one removes it, elsewhere clears all yours"
         } else {
-            "Click a spot and type your note  ·  Right-click clears yours"
+            "Click a spot and type your note  ·  Right-click one removes it, elsewhere clears all yours"
         }
     }
 
@@ -642,26 +646,32 @@ mod tests {
     #[test]
     fn the_stamp_hint_says_what_you_can_do_right_now() {
         let waiting = StampHint::default();
-        assert!(!waiting.text().contains("Hold"));
-        assert!(waiting.text().contains("Right-click clears yours"));
+        assert!(!waiting.text().contains("say"));
+        assert!(waiting.text().contains("Right-click one removes it"));
 
-        // Holding one down only hears you if the call is captured.
+        // It only hears you if the call is captured.
         let captured = StampHint {
             capturing: true,
             ..waiting
         };
-        assert!(captured.text().starts_with("Hold on a spot"));
+        assert!(captured.text().contains("say your note"));
+        assert!(captured.text().contains("Right-click one removes it"));
 
         let typing = StampHint {
             typing: true,
             ..captured
         };
         assert!(typing.text().starts_with("Type your note"));
+        let muted = StampHint {
+            muted: true,
+            ..typing
+        };
+        assert!(muted.text().starts_with("You're muted"));
         let hearing = StampHint {
             hearing: true,
             ..typing
         };
-        assert!(hearing.text().starts_with("Writing down"));
+        assert!(hearing.text().contains("Enter or a pause finishes it"));
         let held = StampHint {
             held: true,
             ..hearing

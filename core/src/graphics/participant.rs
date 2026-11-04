@@ -8,6 +8,7 @@ use hopp_marks::colours::{self, Colours};
 use hopp_marks::stamps::{Stamp, StampInput, StampMessage, Stamps};
 use iced::widget::canvas::{Frame, Geometry};
 use iced::{Rectangle, Renderer};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::Instant;
 use thiserror::Error;
@@ -25,7 +26,7 @@ pub use cursor::CursorMode;
 
 #[path = "stamp.rs"]
 mod stamp;
-use stamp::{StampKey, StampVisual};
+use stamp::{StampKey, StampTargets, StampUnder, StampVisual};
 
 use crate::room_service::DrawingMode;
 
@@ -179,6 +180,8 @@ pub struct ParticipantsManager {
     /// The note you're typing over someone's screen, under your pointer.
     note_ghost: Option<Stamp>,
     stamp_visuals: HashMap<StampKey, StampVisual>,
+    /// Where stamps were last drawn. Only drawing can know.
+    stamp_targets: RefCell<StampTargets>,
 }
 
 impl ParticipantsManager {
@@ -203,6 +206,17 @@ impl ParticipantsManager {
         let messages = self.stamps.apply(input, YOUR_STAMP_NAME, Instant::now());
         self.refresh_stamp_visuals();
         messages
+    }
+
+    /// What a right click at this point on the shared screen means: that stamp of yours, or all
+    /// of yours if it's on none. On someone else's stamp it means nothing, since theirs isn't
+    /// yours to take away and nor should a miss take yours.
+    pub fn stamp_right_click(&self, point: (f64, f64)) -> Option<StampInput> {
+        match self.stamp_targets.borrow().under(point) {
+            Some(StampUnder::Yours(id)) => Some(StampInput::Remove { id }),
+            Some(StampUnder::Theirs) => None,
+            None => Some(StampInput::ClearMine),
+        }
     }
 
     /// A stamp message from someone else in the call.
@@ -573,7 +587,7 @@ impl ParticipantsManager {
         }
 
         let now = Instant::now();
-        stamp::paint_stamps(
+        *self.stamp_targets.borrow_mut() = stamp::paint_stamps(
             &mut in_progress_frame,
             self.stamps.iter().chain(self.note_ghost.iter()),
             &self.stamp_visuals,
