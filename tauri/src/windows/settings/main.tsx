@@ -587,6 +587,8 @@ function CaptureModelRow({
         <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{model.downloading}%</span>
       : model.shared ?
         <span className="shrink-0 text-xs text-muted-foreground">From Hex</span>
+      : chosen && model.installed ?
+        null
       : model.installed ?
         <Button
           variant={confirming ? "destructive-transparent" : "outline"}

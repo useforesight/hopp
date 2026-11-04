@@ -92,12 +92,24 @@ pub fn prune_in(store: &store::Store) -> Result<usize> {
         return Ok(0);
     };
     let cutoff = store::now_ms() - i64::from(days) * 24 * 3600 * 1000;
-    let ids = store.prune(cutoff)?;
-    for id in &ids {
-        let _ = fs::remove_file(markdown_path(id)?);
-        moments::remove(id);
+    let mut deleted = 0;
+    for id in store.expired(cutoff)? {
+        // The files first. Stopping halfway leaves the row, so the next prune finishes the
+        // job; the other way round, nothing would ever lead back to these private files.
+        match fs::remove_file(markdown_path(&id)?) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                logger::line(format!("Pruning {id}: {error}"));
+                continue;
+            }
+            _ => moments::remove(&id),
+        }
+        // Another process's prune can get there first.
+        match store.delete(&id) {
+            Ok(()) => deleted += 1,
+            Err(error) => logger::line(format!("Pruning {id}: {error:#}")),
+        }
     }
-    Ok(ids.len())
+    Ok(deleted)
 }
 
 /// Bytes used by captures, with their pictures, and by downloaded models.

@@ -5,10 +5,10 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use hopp_capture::{
     browse::{self, Listed, Reading, Update},
-    config, disk_usage, models,
+    config, disk_usage, liveness, models,
     paths::{data_dir, private_dir},
     prune_in,
-    store::Store,
+    store::{self, Store},
 };
 use serde::{Deserialize, Serialize};
 use tauri::{ipc::Response, State};
@@ -32,11 +32,33 @@ impl Open {
         }
         self.store.as_ref().ok_or_else(String::new)
     }
+
+    /// The store, unless nothing has been captured yet, when there's no reason to create it.
+    fn existing_store(&mut self) -> Result<Option<&Store>, String> {
+        let exists = self.store.is_some() || store::default_path().map_err(describe)?.exists();
+        if exists {
+            self.store().map(Some)
+        } else {
+            Ok(None)
+        }
+    }
 }
 
 impl Captures {
     fn open(&self) -> MutexGuard<'_, Open> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Close what a crash left open and apply `keep_days`, for someone who doesn't capture
+    /// often: otherwise old captures only go when another one finishes.
+    pub fn tidy(&self) -> Result<(), String> {
+        let mut open = self.open();
+        let Some(store) = open.existing_store()? else {
+            return Ok(());
+        };
+        liveness::close_orphans(store).map_err(describe)?;
+        prune_in(store).map_err(describe)?;
+        Ok(())
     }
 }
 
@@ -248,8 +270,10 @@ pub fn capture_model_download(name: String) -> Result<(), String> {
 }
 
 #[tauri::command(async)]
-pub fn capture_model_delete(name: String) -> Result<(), String> {
-    models::delete(models::find(&name).map_err(describe)?).map_err(describe)
+pub fn capture_model_delete(captures: State<'_, Captures>, name: String) -> Result<(), String> {
+    let model = models::find(&name).map_err(describe)?;
+    let mut open = captures.open();
+    models::delete(open.existing_store()?, model).map_err(describe)
 }
 
 #[tauri::command(async)]
