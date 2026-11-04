@@ -47,6 +47,12 @@ impl AppActivationObserver {
                     return;
                 }
 
+                // The same for a card from an agent.
+                if crate::cards::took_a_click(&app_handle) {
+                    log::info!("app_activation: cursor is over a card, skipping");
+                    return;
+                }
+
                 // If the user directly clicked the main
                 if app_handle
                     .get_webview_window("main")

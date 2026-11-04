@@ -272,6 +272,18 @@ export interface CoreRoleEvent {
  * This is a map of all the commands that can be invoked from the Tauri side.
  * It is used to generate the type-safe invoke function.
  */
+/** A notice or a question from an agent or script. */
+export type AgentCard = {
+  id: string;
+  title: string;
+  body?: string;
+  sender?: string;
+  question?: { accept: string; reject: string };
+  ephemeral: boolean;
+};
+
+export type AgentCardAnswer = "accepted" | "rejected" | "dismissed";
+
 export interface CommandMap {
   stop_sharing: { args: void; return: void };
   get_available_content: { args: void; return: void };
@@ -346,6 +358,8 @@ export interface CommandMap {
   captures_stop: { args: void; return: void };
   captures_requested_call: { args: void; return: string | null };
   app_publish_state: { args: { state: AppState }; return: void };
+  cards_showing: { args: void; return: AgentCard[] };
+  cards_settle: { args: { id: string; state: AgentCardAnswer }; return: void };
   capture_settings: { args: void; return: CaptureSettings };
   capture_settings_change: { args: { change: CaptureChange }; return: void };
   capture_model_download: { args: { name: string }; return: void };

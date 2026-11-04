@@ -8,7 +8,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::paths;
+use crate::{cards::CardRequest, paths};
 
 /// Nothing asked of the app is long, and a client can't make it hold more than this.
 #[cfg(unix)]
@@ -41,6 +41,8 @@ pub enum AppRequest {
     CaptureBookmark(Option<String>),
     Open,
     Settings,
+    Card(CardRequest),
+    CancelCard(String),
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]

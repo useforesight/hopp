@@ -21,7 +21,7 @@ own, from the Linux client's source: both clients run one program.
 
 The Mac app ships it as `Hopp.app/Contents/MacOS/hopp-cli` (the name `hopp` there is the app
 itself), and Settings offers to link it as `hopp`. `hopp capture list|show|search|follow|annotate|delete`
-and `hopp mcp` read the store with the app closed. `hopp status|call|join|accept|decline|leave|mute|camera|share|draw|open|settings`
+and `hopp mcp` read the store with the app closed. `hopp status|call|join|accept|decline|leave|mute|camera|share|draw|open|settings|notify|ask`
 and `hopp capture start|stop|window|bookmark` ask the running app, over `app_socket`: one JSON
 line each way on `<config>/run/hopp.sock`, in a folder only this user can open.
 
@@ -29,6 +29,11 @@ line each way on `<config>/run/hopp.sock`, in a folder only this user can open.
 told why in your terminal; the app answers once it has passed the request on. `hopp draw` works
 on a screen you're sharing, and not yet on someone else's: its tools are in the viewer's window.
 Agents can't start a capture: `mcp` has no tool for it.
+
+`hopp notify` and `hopp ask` show a card in the app (`cards`), and the MCP tools `notify_user`,
+`request_user_decision`, `wait_for_decision` and `cancel_card` do the same for agents. `hopp ask`
+exits 0 on accept, 1 on reject or close, and 2 on timeout, when it also withdraws the card.
+Anything but 0 means don't go ahead: an error, such as the app not running, exits 1.
 
 ## Moving Hopp for Linux onto this crate
 

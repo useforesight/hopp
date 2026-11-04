@@ -48,6 +48,7 @@ export default defineConfig(async () => {
           settings: resolve(__dirname, "settings.html"),
           callAlert: resolve(__dirname, "callAlert.html"),
           captures: resolve(__dirname, "captures.html"),
+          cards: resolve(__dirname, "cards.html"),
         },
       },
     },
