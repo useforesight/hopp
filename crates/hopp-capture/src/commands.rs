@@ -4,10 +4,15 @@
 use anyhow::{Context, Result, bail};
 use clap::Subcommand;
 use serde_json::json;
-use std::{io::Read, path::PathBuf, time::Duration};
+use std::{
+    io::Read,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use super::{
-    config,
+    app_socket::{self, AppRequest},
+    cli, config,
     follow::{Follower, Wake},
     models,
     recorder::{Input, Options, Recorder, Speaker},
@@ -18,6 +23,20 @@ use super::{
 
 #[derive(Subcommand, Clone, Debug, PartialEq, Eq)]
 pub enum CaptureCommand {
+    /// Start capturing the call you're in. Everyone in the call is told.
+    Start,
+    /// Stop capturing. Nothing starts it again in this call but you.
+    Stop,
+    /// Open the captures window: the live transcript and every past call.
+    Window {
+        /// A call to open: its id, `last` or `live`. Default: the live call, else the newest.
+        call: Option<String>,
+    },
+    /// Mark this moment in the capture.
+    Bookmark {
+        /// What it's about.
+        label: Vec<String>,
+    },
     /// List captured calls, newest first.
     List {
         #[arg(long)]
@@ -120,8 +139,68 @@ pub enum ModelCommand {
     Delete { name: String },
 }
 
+/// A recorder's first moments, opening the store and starting its helper.
+const CAPTURE_START_WAITS: Duration = Duration::from_secs(10);
+
+fn ask_app(request: AppRequest) -> Result<()> {
+    app_socket::request(&request).map(|_| ())
+}
+
+fn start() -> Result<()> {
+    let state = app_socket::snapshot()?;
+    if cli::in_call(&state).is_err() {
+        bail!("Join a call first; Capture records the call you're in");
+    }
+    if let Some(id) = cli::capture_id(&state) {
+        println!("Already capturing ({id})");
+        return Ok(());
+    }
+    ask_app(AppRequest::CaptureStart)?;
+    // The recorder starts in another process, and the app hears when it has.
+    let asked = Instant::now();
+    while asked.elapsed() < CAPTURE_START_WAITS {
+        if let Some(id) = cli::capture_id(&app_socket::snapshot()?) {
+            println!(
+                "Capturing ({id}). Saved only on this computer; `hopp capture stop` to finish."
+            );
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    bail!("Hopp didn't start capturing; its log says why")
+}
+
+fn stop() -> Result<()> {
+    if cli::capture_id(&app_socket::snapshot()?).is_none() {
+        println!("Nothing is being captured");
+        return Ok(());
+    }
+    ask_app(AppRequest::CaptureStop)
+}
+
+fn window(call: Option<String>) -> Result<()> {
+    // Named here: an unknown call is better said in the terminal than to a window.
+    let call = match call {
+        Some(which) => Some(Store::open_default()?.require(&which)?.id),
+        None => None,
+    };
+    ask_app(AppRequest::CaptureWindow(call))
+}
+
+fn bookmark(label: Vec<String>) -> Result<()> {
+    if cli::capture_id(&app_socket::snapshot()?).is_none() {
+        bail!("Nothing is being captured");
+    }
+    let label = Some(label.join(" ")).filter(|label| !label.is_empty());
+    ask_app(AppRequest::CaptureBookmark(label))
+}
+
 pub fn run(command: CaptureCommand) -> Result<()> {
     match command {
+        CaptureCommand::Start => return start(),
+        CaptureCommand::Stop => return stop(),
+        CaptureCommand::Window { call } => return window(call),
+        CaptureCommand::Bookmark { label } => return bookmark(label),
         CaptureCommand::Path => {
             println!("{}", store::default_path()?.display());
             return Ok(());
@@ -140,7 +219,13 @@ pub fn run(command: CaptureCommand) -> Result<()> {
         eprintln!("Could not close an abandoned capture: {error:#}");
     }
     match command {
-        CaptureCommand::Path | CaptureCommand::Model { .. } | CaptureCommand::Transcribe { .. } => {
+        CaptureCommand::Start
+        | CaptureCommand::Stop
+        | CaptureCommand::Window { .. }
+        | CaptureCommand::Bookmark { .. }
+        | CaptureCommand::Path
+        | CaptureCommand::Model { .. }
+        | CaptureCommand::Transcribe { .. } => {
             unreachable!()
         }
         CaptureCommand::List { json, limit } => {

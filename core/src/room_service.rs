@@ -152,7 +152,7 @@ pub struct CreateRoomParams {
     pub noise_cancellation_enabled: Arc<AtomicBool>,
     pub start_mic_on_call: bool,
     pub start_camera_on_call: bool,
-    pub capture_stopped_by_hand: bool,
+    pub capture_by_hand: socket_lib::CaptureByHand,
 }
 
 enum RoomServiceCommand {
@@ -184,6 +184,7 @@ enum RoomServiceCommand {
     PublishClickAnimation(ClientPoint),
     PublishStamp(StampMessage),
     CaptureBookmark(Option<String>),
+    CaptureStart,
     CaptureStop,
     PublishAppVeilSnapshot { force: bool },
 }
@@ -223,6 +224,7 @@ impl std::fmt::Debug for RoomServiceCommand {
             Self::PublishClickAnimation(..) => write!(f, "PublishClickAnimation"),
             Self::PublishStamp(..) => write!(f, "PublishStamp"),
             Self::CaptureBookmark(..) => write!(f, "CaptureBookmark"),
+            Self::CaptureStart => write!(f, "CaptureStart"),
             Self::CaptureStop => write!(f, "CaptureStop"),
             Self::PublishAppVeilSnapshot { force } => {
                 write!(f, "PublishAppVeilSnapshot {{ force: {force} }}")
@@ -612,7 +614,14 @@ impl RoomService {
             .send(RoomServiceCommand::CaptureBookmark(label));
     }
 
-    /// Stop capturing this call and tell the call. Nothing starts it again until the next one.
+    /// Start capturing this call and tell the call. Only the user asks for this.
+    pub fn start_capture(&self) {
+        let _ = self
+            .service_command_tx
+            .send(RoomServiceCommand::CaptureStart);
+    }
+
+    /// Stop capturing this call and tell the call. Only starting it by hand brings it back.
     pub fn stop_capture(&self) {
         let _ = self
             .service_command_tx
@@ -1040,9 +1049,13 @@ async fn room_service_commands(
                 noise_cancellation_enabled,
                 start_mic_on_call,
                 start_camera_on_call,
-                capture_stopped_by_hand,
+                capture_by_hand,
             }) => {
                 log::info!("room_service_commands: CreateRoom");
+                let told = event_loop_proxy.clone();
+                inner.call_capture.on_change(move |id| {
+                    let _ = told.send_event(UserEvent::CaptureChanged(id));
+                });
                 let total_connect_start = Instant::now();
 
                 // Create two oneshot channels so destroy_room() can cancel both
@@ -1408,10 +1421,17 @@ async fn room_service_commands(
                     tokio::spawn(drain_video_room_events(video_rx));
                     log::info!("room_service_commands: Spawned video_room event drainer");
                 }
-                if !capture_stopped_by_hand {
+                let wanted = match capture_by_hand {
+                    socket_lib::CaptureByHand::Started => true,
+                    socket_lib::CaptureByHand::Stopped => false,
+                    socket_lib::CaptureByHand::Nothing => {
+                        crate::livekit::call_capture::wanted_by_default()
+                    }
+                };
+                if wanted {
                     inner
                         .call_capture
-                        .auto_start(
+                        .start(
                             room_name,
                             local_participant,
                             inner.snapshot_sender.build_snapshot(),
@@ -1965,6 +1985,22 @@ async fn room_service_commands(
             RoomServiceCommand::CaptureBookmark(label) => {
                 let capture = inner.call_capture.clone();
                 tokio::task::spawn_blocking(move || capture.bookmark(label));
+            }
+            RoomServiceCommand::CaptureStart => {
+                let started = inner
+                    .room
+                    .lock()
+                    .await
+                    .as_ref()
+                    .map(|room| (room.name(), room.local_participant()));
+                let Some((name, local)) = started else {
+                    log::warn!("room_service_commands: CaptureStart without a call");
+                    continue;
+                };
+                inner
+                    .call_capture
+                    .start(name, local, inner.snapshot_sender.build_snapshot())
+                    .await;
             }
             RoomServiceCommand::CaptureStop => {
                 let local = inner

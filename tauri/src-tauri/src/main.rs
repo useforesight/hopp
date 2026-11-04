@@ -4,8 +4,8 @@
 use hopp::sounds::{self, SoundConfig};
 use log::LevelFilter;
 use socket_lib::{
-    AudioCaptureMessage, AudioDevice, CameraDevice, DrawingEnabled, Message, ScreenSharePickerMode,
-    ScreenShareResolution, SentryMetadata,
+    AudioCaptureMessage, AudioDevice, CameraDevice, CaptureByHand, DrawingEnabled, Message,
+    ScreenSharePickerMode, ScreenShareResolution, SentryMetadata,
 };
 use std::sync::mpsc as std_mpsc;
 use tauri::Manager;
@@ -24,6 +24,7 @@ use hopp::{
     create_core_process, get_log_level, get_log_path, get_sentry_dsn, permissions, ping_frontend,
     recv_expected_response, setup_start_on_launch, setup_tray_icon, AppData,
 };
+mod app_socket;
 mod shortcuts;
 #[cfg(target_os = "macos")]
 use hopp::{disable_app_nap, set_window_corner_radius_and_decorations, CORNER_RADIUS};
@@ -389,13 +390,18 @@ fn get_drawing_enabled(app: tauri::AppHandle) -> bool {
 
 #[tauri::command(async)]
 fn set_drawing_enabled(app: tauri::AppHandle, enabled: bool, permanent: bool, stamp: bool) {
+    change_drawing(&app, enabled, permanent, stamp);
+}
+
+/// Returns false if the core couldn't be told, and nothing changed.
+fn change_drawing(app: &tauri::AppHandle, enabled: bool, permanent: bool, stamp: bool) -> bool {
     log::info!("set_drawing_enabled: enabled={enabled} permanent={permanent} stamp={stamp}");
     let data = app.state::<Mutex<AppData>>();
     let mut data = data.lock().unwrap();
 
     // Going from drawing to stamps, it stays enabled but the tool changes.
     if data.drawing_enabled == enabled && (!enabled || data.drawing_stamp == stamp) {
-        return;
+        return true;
     }
 
     if let Err(e) = data
@@ -403,7 +409,7 @@ fn set_drawing_enabled(app: tauri::AppHandle, enabled: bool, permanent: bool, st
         .send(Message::DrawingEnabled(DrawingEnabled { permanent, stamp }))
     {
         log::error!("set_drawing_enabled: failed to send message: {e:?}");
-        return;
+        return false;
     }
 
     data.drawing_enabled = enabled;
@@ -420,6 +426,26 @@ fn set_drawing_enabled(app: tauri::AppHandle, enabled: bool, permanent: bool, st
             let _ = window.minimize();
         }
     }
+    true
+}
+
+/// `hopp draw`: the pen on or off, whichever tool is in hand. The window's button follows it.
+fn toggle_pen(app: &tauri::AppHandle) -> bool {
+    let (enabled, permanent) = {
+        let data = app.state::<Mutex<AppData>>();
+        let data = data.lock().unwrap();
+        (
+            !data.drawing_enabled || data.drawing_stamp,
+            data.app_state.sharer_draw_persist(),
+        )
+    };
+    if !change_drawing(app, enabled, permanent, false) {
+        return false;
+    }
+    if let Err(e) = app.emit_to("main", "drawing_pen_changed", enabled) {
+        log::error!("toggle_pen: failed to emit: {e:?}");
+    }
+    true
 }
 
 #[tauri::command(async)]
@@ -495,6 +521,11 @@ fn call_started(
     let data = app.state::<Mutex<AppData>>();
     #[allow(unused_mut)]
     let mut data = data.lock().unwrap();
+    // Only rejoining says what was on or off. Anything else is a new call, whatever a call
+    // that's still ending left here.
+    if mic_on.is_none() {
+        data.capture_by_hand = CaptureByHand::Nothing;
+    }
     let user_settings = data.app_state.user_settings();
     #[cfg(target_os = "macos")]
     {
@@ -539,7 +570,7 @@ fn call_started(
             audio_device_name,
             start_mic_on_call: Some(mic_on.unwrap_or(user_settings.start_mic_on_call)),
             start_camera_on_call: Some(camera_on.unwrap_or(user_settings.start_camera_on_call)),
-            capture_stopped_by_hand: data.capture_stopped_by_hand,
+            capture_by_hand: data.capture_by_hand,
         }))
     {
         log::error!("call_started: failed to send: {e:?}");
@@ -698,9 +729,25 @@ fn captures_stop(app: tauri::AppHandle) {
     log::info!("captures_stop");
     let data = app.state::<Mutex<AppData>>();
     let mut data = data.lock().unwrap();
-    data.capture_stopped_by_hand = data.call_active;
+    if data.call_active {
+        data.capture_by_hand = CaptureByHand::Stopped;
+    }
     if let Err(e) = data.sender.send(Message::CaptureStop) {
         log::error!("captures_stop: failed to send message: {e:?}");
+    }
+}
+
+#[tauri::command(async)]
+fn captures_start(app: tauri::AppHandle) {
+    log::info!("captures_start");
+    let data = app.state::<Mutex<AppData>>();
+    let mut data = data.lock().unwrap();
+    if !data.call_active {
+        return;
+    }
+    data.capture_by_hand = CaptureByHand::Started;
+    if let Err(e) = data.sender.send(Message::CaptureStart) {
+        log::error!("captures_start: failed to send message: {e:?}");
     }
 }
 
@@ -1179,7 +1226,7 @@ fn end_call(app: tauri::AppHandle) {
         log::error!("end_call: failed to send: {e:?}");
     }
     data.call_active = false;
-    data.capture_stopped_by_hand = false;
+    data.capture_by_hand = CaptureByHand::Nothing;
     data.is_camera_on = false;
     data.is_screensharing = false;
     #[cfg(target_os = "macos")]
@@ -1251,7 +1298,7 @@ fn forward_core_events(events_rx: std_mpsc::Receiver<Message>, app: tauri::AppHa
                     continue;
                 }
                 data.call_active = false;
-                data.capture_stopped_by_hand = false;
+                data.capture_by_hand = CaptureByHand::Nothing;
                 data.is_camera_on = false;
                 data.is_screensharing = false;
                 #[cfg(target_os = "macos")]
@@ -1358,6 +1405,14 @@ fn forward_core_events(events_rx: std_mpsc::Receiver<Message>, app: tauri::AppHa
             }
             Message::StartScreenShareResult(Ok(())) => {
                 log::info!("forward_core_events: screen share started");
+            }
+            Message::CaptureChanged(id) => {
+                log::info!("forward_core_events: capture {id:?}");
+                let data = app.state::<Mutex<AppData>>();
+                data.lock().unwrap().capture_id = id.clone();
+                if let Err(e) = app.emit("core_capture_changed", id) {
+                    log::error!("forward_core_events: failed to emit core_capture_changed: {e:?}");
+                }
             }
             Message::DrawingDisabled => {
                 log::info!("forward_core_events: drawing disabled");
@@ -1526,6 +1581,8 @@ fn main() {
                 forward_core_events,
             ));
             app.manage(data);
+
+            app_socket::start(app.handle().clone());
 
             // Background thread to forward core events to the frontend
             let event_app_handle = app.handle().clone();
@@ -1774,8 +1831,12 @@ fn main() {
             }
         })
         .manage(hopp::captures::Captures::default())
+        .manage(app_socket::AppSocket::default())
         .invoke_handler(tauri::generate_handler![
             create_captures_window,
+            captures_start,
+            app_socket::app_publish_state,
+            app_socket::captures_requested_call,
             captures_bookmark,
             captures_stop,
             hopp::captures::captures_list,

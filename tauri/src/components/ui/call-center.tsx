@@ -576,6 +576,16 @@ function DrawingEnableButton() {
     };
   }, []);
 
+  // `hopp draw`
+  useEffect(() => {
+    const unlisten = listen<boolean>("drawing_pen_changed", (event) => {
+      setActiveTool(event.payload ? "draw" : null);
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
   const handlePermanentToggle = async (checked: boolean) => {
     setDrawingPermanent(checked);
     try {

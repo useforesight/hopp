@@ -119,6 +119,13 @@ fn tools() -> Value {
     });
     json!([
         {
+            "name": "call_status",
+            "title": "Hopp call status",
+            "annotations": { "readOnlyHint": true, "openWorldHint": false },
+            "description": "Who is online, who you're in a call with, and whether the call is being captured.",
+            "inputSchema": { "type": "object", "properties": {} },
+        },
+        {
             "name": "capture_list",
             "title": "List captured calls",
             "annotations": { "readOnlyHint": true, "openWorldHint": false },
@@ -298,6 +305,14 @@ fn call_tool_inner(name: &str, arguments: &Value) -> Result<Reply> {
         .is_some_and(|tools| tools.iter().any(|tool| tool["name"] == name))
     {
         anyhow::bail!("Unknown tool {name}");
+    }
+    if name == "call_status" {
+        // Not an error for an agent to be told: it can still read past calls.
+        return Ok(match crate::app_socket::snapshot() {
+            Ok(state) => crate::cli::describe(&state),
+            Err(error) => format!("{error:#}."),
+        }
+        .into());
     }
     let store = Store::open_default()?;
     match name {

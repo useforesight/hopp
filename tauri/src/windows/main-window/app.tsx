@@ -7,6 +7,7 @@ import { Sidebar } from "@/components/sidebar/Sidebar";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Debug } from "./tabs/Debug";
 import { Login } from "./login";
+import { AppBridge } from "@/lib/app-bridge";
 import { Report } from "./report";
 import { useAPI } from "@/services/query";
 import { isTauri } from "@tauri-apps/api/core";
@@ -324,6 +325,7 @@ function App() {
 
   return (
     <div className="container flex flex-row" id="app-body">
+      <AppBridge />
       {/* Action Sidebar */}
       <Sidebar />
       <div className="relative h-full min-w-0 flex-1">

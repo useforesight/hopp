@@ -245,6 +245,14 @@ export const ParticipantRow = (props: {
     } as TInviteRequestMessage);
   }, [props.user, setInviting, posthog]);
 
+  // `hopp call` during a call
+  const inviteUserId = useStore((state) => state.inviteUserId);
+  useEffect(() => {
+    if (inviteUserId !== props.user.id) return;
+    useStore.getState().setInviteUserId(null);
+    if (inACall) inviteUser();
+  }, [inviteUserId, props.user.id, inACall, inviteUser]);
+
   // Add a useEffect to listen for call responses
   // that will unsubscribe from the socket when the component unmounts
   useEffect(() => {

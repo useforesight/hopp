@@ -187,6 +187,34 @@ export interface CameraStartMessage {
   device_name: string;
 }
 
+/** What the `hopp` command is told about the app. Read by `crates/hopp-capture/src/cli.rs`. */
+export type AppState = {
+  signed_in: boolean;
+  user?: { name: string };
+  ringing: { name: string; kind: "call" | "invite" } | null;
+  dialing: { name: string } | null;
+  call: {
+    room: string | null;
+    participants: { name: string }[];
+    /** Unix seconds. */
+    started: number;
+    microphone: boolean;
+    camera: boolean;
+    sharing: boolean;
+    viewing: string | null;
+  } | null;
+  teammates: { id: string; name: string; online: boolean; room: string | null }[];
+  rooms: { id: string; name: string; members: string[] }[];
+};
+
+/** What the `hopp` command asks only the main window to do. */
+export type AppRequest =
+  | { type: "call"; value: string }
+  | { type: "join_room"; value: string }
+  | { type: "accept" }
+  | { type: "decline" }
+  | { type: "open" };
+
 export interface CoreParticipantState {
   identity: string;
   name: string;
@@ -316,6 +344,8 @@ export interface CommandMap {
   captures_open_markdown: { args: { callId: string }; return: void };
   captures_bookmark: { args: void; return: void };
   captures_stop: { args: void; return: void };
+  captures_requested_call: { args: void; return: string | null };
+  app_publish_state: { args: { state: AppState }; return: void };
   capture_settings: { args: void; return: CaptureSettings };
   capture_settings_change: { args: { change: CaptureChange }; return: void };
   capture_model_download: { args: { name: string }; return: void };

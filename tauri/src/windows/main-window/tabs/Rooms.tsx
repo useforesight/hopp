@@ -1,5 +1,4 @@
 import { components } from "@/openapi";
-import { sounds } from "@/constants/sounds";
 import { useAPI } from "@/services/query";
 import { Input } from "@/components/ui/input";
 import Fuse from "fuse.js";
@@ -23,9 +22,8 @@ import {
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { RoomButton } from "@/components/ui/room-button";
-import useStore, { ParticipantRole } from "@/store/store";
-import { tauriUtils } from "@/windows/window-utils";
-import { useCallback, useEffect, useRef } from "react";
+import useStore from "@/store/store";
+import { useCallback, useEffect } from "react";
 import toast from "react-hot-toast";
 import { Button } from "@/components/ui/button";
 import { avatarGradient } from "@/components/ui/hopp-avatar";
@@ -35,7 +33,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { HiMagnifyingGlass, HiOutlinePencil, HiOutlineTrash } from "react-icons/hi2";
 import { useState } from "react";
 import doorImage from "@/assets/door.png";
-import { endCallAndWait, useEndCall } from "@/lib/hooks";
+import { useJoinRoom } from "@/lib/hooks";
 
 type Room = components["schemas"]["Room"];
 
@@ -50,8 +48,6 @@ const fuseSearch = (rooms: Room[], searchQuery: string) => {
 
 // Maximum number of avatars to display before showing +N overflow. More won't fit beside the Live label.
 const MAX_VISIBLE_AVATARS = 3;
-
-const CONNECTING_TOAST_ID = "connecting-to-room";
 
 const presenceTileClass =
   "flex size-5 shrink-0 items-center justify-center overflow-hidden rounded-[6px] ring-1 ring-inset ring-white/15";
@@ -143,16 +139,15 @@ const RoomPresenceAvatars = ({
 };
 
 export const Rooms = () => {
-  const { authToken, callTokens, setCallTokens, setTab, teammates, user } = useStore();
+  const { authToken, callTokens, teammates, user } = useStore();
   const [searchQuery, setSearchQuery] = useState("");
   const [filteredRooms, setFilteredRooms] = useState<Room[]>([]);
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [isUpdateDialogOpen, setIsUpdateDialogOpen] = useState(false);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [selectedRoom, setSelectedRoom] = useState<Room | null>(null);
-  const [isJoiningRoom, setIsJoiningRoom] = useState(false);
-  const joiningToastTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const endCall = useEndCall();
+  const joinRoom = useJoinRoom();
+  const isJoiningRoom = useStore((state) => state.isJoiningRoom);
 
   const { useQuery } = useAPI();
 
@@ -201,7 +196,6 @@ export const Rooms = () => {
   );
 
   const { useMutation } = useAPI();
-  const { mutateAsync: getRoomTokens } = useMutation("get", "/api/auth/room/{id}", undefined);
 
   const { mutateAsync: createRoom } = useMutation("post", "/api/auth/room", undefined);
 
@@ -269,75 +263,6 @@ export const Rooms = () => {
       toast.error("Failed to rename room");
     }
   };
-
-  const handleJoinRoom = useCallback(
-    async (room: Room) => {
-      if (callTokens?.room?.id === room.id) {
-        setTab("call");
-        return;
-      }
-      if (isJoiningRoom) return;
-
-      setIsJoiningRoom(true);
-      joiningToastTimeout.current = setTimeout(() => {
-        toast.loading("Connecting to room", { id: CONNECTING_TOAST_ID });
-      }, 300);
-
-      try {
-        if (callTokens) {
-          await endCallAndWait(endCall);
-        }
-
-        const tokens = await getRoomTokens({
-          params: {
-            path: {
-              id: room.id,
-            },
-          },
-        });
-
-        if (!tokens) {
-          toast.error("Error joining room");
-          return;
-        }
-
-        sounds.callAccepted.play();
-        const { startMic, startCamera } = await tauriUtils.getCallStartPreferences();
-        setCallTokens({
-          ...tokens,
-          isRoomCall: true,
-          timeStarted: new Date(),
-          hasAudioEnabled: startMic,
-          hasCameraEnabled: startCamera,
-          role: ParticipantRole.NONE,
-          isRemoteControlEnabled: true,
-          room: room,
-          participants: [],
-          isInitialisingCall: true,
-          micLevel: 0,
-        });
-
-        try {
-          await tauriUtils.callStarted(tokens.audioToken, tokens.videoToken);
-        } catch {
-          setCallTokens(null);
-          toast.error("Failed to start call");
-          return;
-        }
-      } catch (error: any) {
-        if (error?.error === "trial-ended") {
-          toast.error("Trial has expired, contact us if you want to extend it");
-        } else {
-          toast.error("Error joining room");
-        }
-      } finally {
-        if (joiningToastTimeout.current) clearTimeout(joiningToastTimeout.current);
-        toast.dismiss(CONNECTING_TOAST_ID);
-        setIsJoiningRoom(false);
-      }
-    },
-    [getRoomTokens, callTokens, setCallTokens, setTab, endCall, isJoiningRoom],
-  );
 
   useEffect(() => {
     if (searchQuery == "") {
@@ -432,7 +357,7 @@ export const Rooms = () => {
               return (
                 <RoomButton
                   key={room.id}
-                  onClick={() => handleJoinRoom(room)}
+                  onClick={() => joinRoom(room)}
                   disabled={!!callTokens?.isInitialisingCall || isJoiningRoom}
                   title={room.name}
                   isCurrentRoom={callTokens?.room?.id === room.id}
