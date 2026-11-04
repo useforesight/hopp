@@ -4,14 +4,17 @@
 //! still frame of the shared screen with everyone's ink drawn on it, saved beside the
 //! transcript and listed in it as a numbered frame line:
 //!
-//! - **A stroke ends** (anyone's, yours included): the frame is taken 250 ms later, so
-//!   the screen has settled and the whole stroke is on it.
-//! - **A pin**, Hopp's click animation, the same.
+//! - **A drawing is finished**: someone stopped drawing for [`DRAW_PAUSE`], just before
+//!   Hopp's clients fade their ink, so the frame shows the whole drawing, not each stroke
+//!   as it ends. A long drawing still gets one every [`BURST`].
+//! - **A pin**, Hopp's click animation, or a finished stamp: 250 ms later.
 //! - **A bookmark**, at once.
 //! - **The screen changes** and then holds still for [`QUIET`]: a new scene the viewer
 //!   would want to see. A new scene (most of the screen different: another app, window
 //!   or file) may follow the last frame after [`SCENE_GAP`]; anything smaller (a scroll,
 //!   some typing) waits [`SCREEN_GAP`], and then the frame shows where it ended up.
+//!   Hopp's own windows on a screen you share (the transcript growing, the call window)
+//!   don't count as changes.
 //!
 //! Strokes or pins close together in time share one frame. The ideas, and the scene
 //! detector's numbers, come from Kit Langton's Scrawl (MIT): a 64×36 luma thumbnail,
@@ -42,7 +45,7 @@ use std::{
 };
 
 use super::recorder::Feed;
-use crate::{frames::VideoFrame, protocol::InputEvent};
+use crate::{frames::VideoFrame, protocol::InputEvent, screencast::CaptureTarget};
 
 /// How often the engine hands over a copy of the shared screen.
 pub const SAMPLE_EVERY: Duration = Duration::from_millis(500);
@@ -50,11 +53,22 @@ pub const SAMPLE_EVERY: Duration = Duration::from_millis(500);
 const SETTLE: Duration = Duration::from_millis(250);
 /// With no newer frame by then (a still screen sends none), use the last one.
 const STALE: Duration = Duration::from_millis(1_500);
+/// A drawing is a frame once its strokes pause this long. Hopp's clients fade a drawing
+/// all together 3 s after its last stroke (the Mac app's rule), so this is the drawing
+/// as everyone last saw it whole.
+const DRAW_PAUSE: Duration = Duration::from_millis(2_500);
 /// A burst of marks shares one frame, taken once they pause, but no later than this
 /// after the first.
-const BURST: Duration = Duration::from_secs(3);
-/// Strokes stay on frames this long after they end; Hopp's clients fade them at 3 s.
-const VISIBLE: Duration = Duration::from_secs(4);
+const BURST: Duration = Duration::from_secs(20);
+/// A drawing stays on frames until this long after its owner's last stroke: the 3 s
+/// before Hopp's clients fade it, and the fade.
+const VISIBLE: Duration = Duration::from_millis(3_500);
+/// Pins stay on frames this long.
+const PIN_VISIBLE: Duration = Duration::from_secs(4);
+/// A stroke cleared this soon after it ended was undone, not faded: it leaves frames.
+const UNDONE: Duration = Duration::from_secs(2);
+/// How often to look again at where Hopp's own windows are on a screen you share.
+const OWN_WINDOWS_EVERY: Duration = Duration::from_secs(2);
 /// The screen has settled once no sample has changed more than a cursor for this long.
 /// One still sample isn't enough: scrolling or typing pauses that long all the time.
 const QUIET: Duration = Duration::from_secs(2);
@@ -68,11 +82,11 @@ const SCREEN_GAP: Duration = Duration::from_secs(10);
 /// A screen that never settles (tests streaming output, a log, a video, a long scroll)
 /// still gets a frame this often, rather than none for minutes.
 const BUSY: Duration = Duration::from_secs(30);
-/// A new scene: at least this many of the thumbnail's 2,304 cells (30%) differ from the
+/// A new scene: at least this share of the thumbnail's 2,304 cells differ from the
 /// last frame. Dark windows share dark backgrounds, so a window opening over half a dark
 /// screen changes only about 35%; scrolling a chat or transcript beside other windows
 /// stayed under 21% over 25 s on a real call.
-const SCENE_CELLS: usize = 2_304 * 3 / 10;
+const SCENE_SHARE: f32 = 0.3;
 /// Scrawl's thresholds: a frame whose difference passes this is a change.
 const SCENE_DELTA: f32 = 0.08;
 /// Scrawl's measure ignores anything as small as a cursor, and so also a one-line code
@@ -121,7 +135,8 @@ enum Message {
     },
     Sample(VideoFrame),
     /// The shared screen changed hands or stopped: older frames and ink no longer apply.
-    Screen,
+    /// With what you share, when it's yours.
+    Screen(Option<CaptureTarget>),
     Stop,
 }
 
@@ -230,10 +245,11 @@ impl Moments {
         });
     }
 
-    /// The shared screen started, stopped or changed hands.
-    pub fn screen_changed(&mut self) {
+    /// The shared screen started, stopped or changed hands; `own` is what you share, when
+    /// the screen is yours.
+    pub fn screen_changed(&mut self, own: Option<&CaptureTarget>) {
         self.last_sample = None;
-        self.send(Message::Screen);
+        self.send(Message::Screen(own.cloned()));
     }
 
     /// Whether to copy the next frame of the shared screen for [`Moments::sample`].
@@ -360,6 +376,13 @@ struct Worker {
     saved_thumb: Option<Vec<f32>>,
     /// Colours given out in this call: one each, different where the palette allows.
     colours: Colours,
+    /// When each person last changed their drawing: a stroke drawn or undone.
+    drew: HashMap<String, Instant>,
+    /// The monitor you share, when the screen is yours.
+    own: Option<CaptureTarget>,
+    /// Thumbnail cells covered by Hopp's own windows there, and when that was checked.
+    mask: Vec<bool>,
+    mask_checked: Option<Instant>,
 }
 
 impl Worker {
@@ -379,6 +402,10 @@ impl Worker {
             stamps: HashMap::new(),
             saved_thumb: None,
             colours: Colours::default(),
+            drew: HashMap::new(),
+            own: None,
+            mask: Vec::new(),
+            mask_checked: None,
         }
     }
 
@@ -406,10 +433,14 @@ impl Worker {
                     t_ms,
                 }) => self.stamp(owner, name, message, t_ms),
                 Ok(Message::Sample(frame)) => self.sample(frame),
-                Ok(Message::Screen) => {
+                Ok(Message::Screen(own)) => {
+                    self.own = own;
+                    self.mask.clear();
+                    self.mask_checked = None;
                     self.latest = None;
                     self.scene = Scene::default();
                     self.strokes.clear();
+                    self.drew.clear();
                     self.active.clear();
                     self.pins.clear();
                     self.pending
@@ -428,6 +459,12 @@ impl Worker {
 
     fn draw(&mut self, owner: String, name: String, event: InputEvent, t_ms: i64) {
         let now = Instant::now();
+        if matches!(
+            event,
+            InputEvent::DrawStart(_) | InputEvent::DrawAddPoint(_) | InputEvent::DrawEnd(_)
+        ) {
+            self.drew.insert(owner.clone(), now);
+        }
         match event {
             InputEvent::DrawStart(start) => {
                 self.strokes
@@ -464,19 +501,28 @@ impl Worker {
                 }
                 if ending {
                     self.active.remove(&owner);
-                    self.marked(now, t_ms);
+                    self.marked(now, t_ms, DRAW_PAUSE);
                 }
             }
             InputEvent::DrawClearPath { path_id } => {
-                // Hopp's clients clear a stroke as it fades. A stroke not yet in a frame
-                // stays until it is; only its owner can clear it.
-                for stroke in &mut self.strokes {
-                    if stroke.owner == owner && stroke.id == path_id && stroke.ended.is_none() {
-                        stroke.ended = Some(now);
-                    }
+                // Hopp's clients clear a drawing as it fades: a stroke not yet in a frame
+                // stays until it is. One cleared while drawn, or soon after, was undone
+                // and goes. Only its owner can clear it.
+                let undone = self.strokes.iter().any(|s| {
+                    s.owner == owner
+                        && s.id == path_id
+                        && s.ended
+                            .is_none_or(|ended| now.duration_since(ended) < UNDONE)
+                });
+                if undone {
+                    // Undoing is drawing: the rest stays up as long again.
+                    self.drew.insert(owner.clone(), now);
                 }
                 self.strokes
-                    .retain(|s| s.owner != owner || s.id != path_id || !s.reported);
+                    .retain(|s| s.owner != owner || s.id != path_id || (!s.reported && !undone));
+                if self.active.get(&owner) == Some(&path_id) {
+                    self.active.remove(&owner);
+                }
             }
             InputEvent::DrawClearAllPaths => {
                 self.strokes.retain(|s| s.owner != owner || !s.reported);
@@ -497,24 +543,25 @@ impl Worker {
                 if self.pins.len() > 64 {
                     self.pins.remove(0);
                 }
-                self.marked(now, t_ms);
+                self.marked(now, t_ms, SETTLE);
             }
             _ => {}
         }
     }
 
-    /// A mark ended: take a frame once marks pause for [`SETTLE`].
-    fn marked(&mut self, now: Instant, t_ms: i64) {
+    /// A mark ended: take a frame once marks pause for `wait` ([`DRAW_PAUSE`] after a
+    /// stroke, [`SETTLE`] after a pin or stamp).
+    fn marked(&mut self, now: Instant, t_ms: i64, wait: Duration) {
         for pending in &mut self.pending {
             if let Pending::Marks { due, since, .. } = pending
                 && now.duration_since(*since) < BURST
             {
-                *due = (now + SETTLE).min(*since + BURST);
+                *due = (*due).max(now + wait).min(*since + BURST);
                 return;
             }
         }
         self.pending.push(Pending::Marks {
-            due: now + SETTLE,
+            due: now + wait,
             since: now,
             t_ms,
         });
@@ -559,7 +606,7 @@ impl Worker {
                 if self.pins.len() > 64 {
                     self.pins.remove(0);
                 }
-                self.marked(now, t_ms);
+                self.marked(now, t_ms, SETTLE);
             }
             StampMessage::StampRemove { id } => {
                 self.stamps.remove(&(owner, id));
@@ -568,13 +615,50 @@ impl Worker {
         }
     }
 
+    /// When each person last changed their drawing: now for anyone drawing a stroke.
+    fn last_drawn(&self, now: Instant) -> HashMap<String, Instant> {
+        let mut last = self.drew.clone();
+        for owner in self.active.keys() {
+            last.insert(owner.clone(), now);
+        }
+        last
+    }
+
+    /// Whether a stroke is still on screen at `now`: its owner's drawing hasn't faded.
+    fn showing(stroke: &Stroke, last: &HashMap<String, Instant>, now: Instant) -> bool {
+        last.get(&stroke.owner)
+            .is_none_or(|at| now.duration_since(*at) < VISIBLE)
+    }
+
     fn forget_old(&mut self, now: Instant) {
-        self.strokes.retain(|s| {
-            s.ended
-                .is_none_or(|ended| !s.reported || now.duration_since(ended) < VISIBLE)
-        });
+        let last = self.last_drawn(now);
+        self.strokes
+            .retain(|s| !s.reported || Self::showing(s, &last, now));
         self.pins
-            .retain(|p| !p.reported || now.duration_since(p.at) < VISIBLE);
+            .retain(|p| !p.reported || now.duration_since(p.at) < PIN_VISIBLE);
+    }
+
+    /// Look again, now and then, at where Hopp's own windows are on the screen you share.
+    fn refresh_mask(&mut self, now: Instant) {
+        let Some(target) = &self.own else {
+            self.mask.clear();
+            return;
+        };
+        if self
+            .mask_checked
+            .is_some_and(|checked| now.duration_since(checked) < OWN_WINDOWS_EVERY)
+        {
+            return;
+        }
+        self.mask_checked = Some(now);
+        let (Some(clients), Some(monitors)) = (
+            crate::screencast::hypr_json("clients"),
+            crate::screencast::hypr_json("monitors"),
+        ) else {
+            return;
+        };
+        let rects = own_windows(&clients, &monitors, std::process::id(), target);
+        self.mask = cells_under(&rects);
     }
 
     fn sample(&mut self, frame: VideoFrame) {
@@ -584,8 +668,16 @@ impl Worker {
         {
             return;
         }
-        let thumb = thumbnail(&frame);
         let at = Instant::now();
+        self.refresh_mask(at);
+        let mut thumb = thumbnail(&frame);
+        // Hopp's own windows changing (the transcript you're sharing, the call window)
+        // isn't the screen changing.
+        for (cell, masked) in thumb.iter_mut().zip(&self.mask) {
+            if *masked {
+                *cell = f32::NAN;
+            }
+        }
         if let Some(previous) = &self.latest {
             self.scene.sampled(&previous.thumb, &thumb, at);
         } else {
@@ -688,20 +780,18 @@ impl Worker {
             _ => None,
         });
 
-        // What's showing, and what's new since the last frame.
+        // What's showing, and what's new since the last frame. A drawing shows whole
+        // until it fades, not each stroke for a while after it ends.
+        let last = self.last_drawn(now);
         let visible: Vec<&Stroke> = self
             .strokes
             .iter()
-            .filter(|s| {
-                s.points.len() > 1
-                    && s.ended
-                        .is_none_or(|ended| now.duration_since(ended) < VISIBLE)
-            })
+            .filter(|s| s.points.len() > 1 && Self::showing(s, &last, now))
             .collect();
         let visible_pins: Vec<&Pin> = self
             .pins
             .iter()
-            .filter(|p| now.duration_since(p.at) < VISIBLE)
+            .filter(|p| now.duration_since(p.at) < PIN_VISIBLE)
             .collect();
         let mut marks = Vec::new();
         let mut ink = Vec::new();
@@ -902,19 +992,26 @@ fn thumbnail(frame: &VideoFrame) -> Vec<f32> {
 
 /// Scrawl's frame difference: the larger of the mean absolute difference and 1.4× the
 /// fourth most changed block of an 8×6 grid.
+/// Cells masked (NaN, under Hopp's own windows) in either are left out.
 fn difference(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 1.;
     }
-    let mean = a.iter().zip(b).map(|(a, b)| (a - b).abs()).sum::<f32>() / a.len() as f32;
     let mut blocks = [0f32; 48];
     let mut counts = [0f32; 48];
-    for (i, (a, b)) in a.iter().zip(b).enumerate() {
+    let (mut sum, mut n) = (0f32, 0f32);
+    for (i, change) in changes(a, b) {
         let (x, y) = (i % 64, i / 64);
         let block = (y * 6 / 36) * 8 + x * 8 / 64;
-        blocks[block] += (a - b).abs();
+        blocks[block] += change;
         counts[block] += 1.;
+        sum += change;
+        n += 1.;
     }
+    if n == 0. {
+        return 0.;
+    }
+    let mean = sum / n;
     let mut means: Vec<f32> = blocks
         .iter()
         .zip(counts)
@@ -985,7 +1082,17 @@ fn moved(a: &[f32], b: &[f32]) -> bool {
 
 /// Most of the screen differs: another app, window or file, not a scroll.
 fn new_scene(a: &[f32], b: &[f32]) -> bool {
-    changed_cells(a, b) >= SCENE_CELLS
+    let compared = changes(a, b).count();
+    a.len() != b.len() || changed_cells(a, b) as f32 >= SCENE_SHARE * compared as f32
+}
+
+/// Each cell's change in brightness, leaving out cells masked in either.
+fn changes<'a>(a: &'a [f32], b: &'a [f32]) -> impl Iterator<Item = (usize, f32)> + 'a {
+    a.iter()
+        .zip(b)
+        .enumerate()
+        .filter(|(_, (a, b))| !a.is_nan() && !b.is_nan())
+        .map(|(i, (a, b))| (i, (a - b).abs()))
 }
 
 /// Thumbnail cells whose brightness changed by more than [`CELL_DELTA`].
@@ -993,10 +1100,83 @@ fn changed_cells(a: &[f32], b: &[f32]) -> usize {
     if a.len() != b.len() {
         return usize::MAX;
     }
-    a.iter()
-        .zip(b)
-        .filter(|(a, b)| (*a - *b).abs() > CELL_DELTA)
+    changes(a, b)
+        .filter(|(_, change)| *change > CELL_DELTA)
         .count()
+}
+
+/// Where this process's windows are on the monitor you share (`target`), as `[left,
+/// top, right, bottom]` fractions of it: those on a workspace showing there, from
+/// `hyprctl -j clients` and `hyprctl -j monitors`.
+fn own_windows(
+    clients: &serde_json::Value,
+    monitors: &serde_json::Value,
+    pid: u32,
+    target: &CaptureTarget,
+) -> Vec<[f64; 4]> {
+    let (Some(name), Some((left, top))) = (&target.output_name, target.logical_origin) else {
+        return Vec::new();
+    };
+    let (width, height) = (
+        f64::from(target.logical_width.max(1)),
+        f64::from(target.logical_height.max(1)),
+    );
+    let Some(monitor) = monitors
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|monitor| monitor["name"].as_str() == Some(name))
+    else {
+        return Vec::new();
+    };
+    let shown = [
+        monitor["activeWorkspace"]["id"].as_i64(),
+        monitor["specialWorkspace"]["id"]
+            .as_i64()
+            .filter(|id| *id != 0),
+    ];
+    let number = |value: &serde_json::Value, i: usize| value[i].as_f64().unwrap_or(0.);
+    clients
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|client| {
+            client["pid"].as_u64() == Some(u64::from(pid))
+                && client["mapped"] != false
+                && client["hidden"] != true
+                && shown.contains(&client["workspace"]["id"].as_i64())
+        })
+        .map(|client| {
+            let (x, y) = (number(&client["at"], 0), number(&client["at"], 1));
+            let (w, h) = (number(&client["size"], 0), number(&client["size"], 1));
+            [
+                (x - left) / width,
+                (y - top) / height,
+                (x + w - left) / width,
+                (y + h - top) / height,
+            ]
+        })
+        .filter(|[l, t, r, b]| r > l && b > t && *r > 0. && *b > 0. && *l < 1. && *t < 1.)
+        .collect()
+}
+
+/// Which of the 64×36 thumbnail's cells `rects` (fractions of the screen) cover at all.
+fn cells_under(rects: &[[f64; 4]]) -> Vec<bool> {
+    const W: usize = 64;
+    const H: usize = 36;
+    if rects.is_empty() {
+        return Vec::new();
+    }
+    (0..W * H)
+        .map(|cell| {
+            let (cx, cy) = ((cell % W) as f64, (cell / W) as f64);
+            let (l, t) = (cx / W as f64, cy / H as f64);
+            let (r, b) = ((cx + 1.) / W as f64, (cy + 1.) / H as f64);
+            rects.iter().any(|[left, top, right, bottom]| {
+                l < *right && r > *left && t < *bottom && b > *top
+            })
+        })
+        .collect()
 }
 
 /// `[left, top, right, bottom]` of a stroke, in screen fractions.
@@ -1450,10 +1630,10 @@ mod tests {
             "Alex",
             &InputEvent::ClickAnimation(Point { x: 0.25, y: 0.75 }),
         );
-        // The screen keeps sending frames; one after the marks settle is used.
-        std::thread::sleep(Duration::from_millis(300));
+        // The screen keeps sending frames; one after the drawing pauses is used.
+        std::thread::sleep(DRAW_PAUSE + Duration::from_millis(200));
         moments.sample(flat(800, 500, 90));
-        let marked = frames(&receiver, Duration::from_millis(2_500));
+        let marked = frames(&receiver, Duration::from_millis(1_500));
         assert_eq!(marked.len(), 1, "{marked:?}");
         let (_, who, caption) = &marked[0];
         assert_eq!(who.as_deref(), Some("Lee"));
@@ -1494,6 +1674,111 @@ mod tests {
         );
         moments.finish();
         Ok(())
+    }
+
+    /// One stroke of a drawing, from `from` to `to`.
+    fn stroke(moments: &mut Moments, owner: &str, id: u64, from: (f64, f64), to: (f64, f64)) {
+        moments.draw(
+            owner,
+            "Lee",
+            &InputEvent::DrawStart(PathPoint {
+                point: Point {
+                    x: from.0,
+                    y: from.1,
+                },
+                path_id: id,
+            }),
+        );
+        for i in 1..=10 {
+            let t = f64::from(i) / 10.;
+            let point = Point {
+                x: from.0 + (to.0 - from.0) * t,
+                y: from.1 + (to.1 - from.1) * t,
+            };
+            let event = if i == 10 {
+                InputEvent::DrawEnd(point)
+            } else {
+                InputEvent::DrawAddPoint(point)
+            };
+            moments.draw(owner, "Lee", &event);
+        }
+    }
+
+    /// A house drawn a stroke at a time, a second apart (longer than a stroke used to
+    /// stay on frames), is one frame with every stroke on it; an undone stroke isn't.
+    #[test]
+    fn a_drawing_is_one_frame_with_all_of_it() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let (feed, receiver) = Feed::for_tests();
+        let mut moments = Moments::start_in(directory.path().into(), feed)?;
+        moments.sample(flat(800, 500, 90));
+        assert_eq!(frames(&receiver, Duration::from_millis(800)).len(), 1);
+        let lee = "room:r:lee:audio";
+        let walls = [
+            ((0.4, 0.4), (0.4, 0.7)),
+            ((0.4, 0.7), (0.6, 0.7)),
+            ((0.6, 0.7), (0.6, 0.4)),
+            ((0.4, 0.4), (0.5, 0.25)),
+            ((0.5, 0.25), (0.6, 0.4)),
+        ];
+        for (i, (from, to)) in walls.into_iter().enumerate() {
+            stroke(&mut moments, lee, i as u64 + 1, from, to);
+            moments.sample(flat(800, 500, 90));
+            // Each stroke would have been its own frame; none is taken while drawing.
+            assert!(frames(&receiver, Duration::from_millis(1_100)).is_empty());
+        }
+        // A stray line, undone at once.
+        stroke(&mut moments, lee, 9, (0.1, 0.1), (0.2, 0.1));
+        moments.draw(lee, "Lee", &InputEvent::DrawClearPath { path_id: 9 });
+        std::thread::sleep(DRAW_PAUSE + Duration::from_millis(200));
+        moments.sample(flat(800, 500, 90));
+        let taken = frames(&receiver, Duration::from_millis(1_500));
+        assert_eq!(taken.len(), 1, "{taken:?}");
+        let info: FrameInfo =
+            serde_json::from_slice(&std::fs::read(directory.path().join("frame-002.json"))?)?;
+        assert_eq!(info.ink.len(), 5, "{:?}", info.ink);
+        assert_eq!(info.marks.len(), 5);
+        moments.finish();
+        Ok(())
+    }
+
+    #[test]
+    fn hopp_s_own_windows_on_your_screen_are_not_changes() {
+        let target = CaptureTarget {
+            output_name: Some("DP-2".into()),
+            logical_width: 2000,
+            logical_height: 1000,
+            logical_origin: Some((1000., 0.)),
+        };
+        let monitors = serde_json::json!([
+            {"name": "eDP-1", "activeWorkspace": {"id": 1}, "specialWorkspace": {"id": 0}},
+            {"name": "DP-2", "activeWorkspace": {"id": 2}, "specialWorkspace": {"id": 0}},
+        ]);
+        let clients = serde_json::json!([
+            // The transcript, over the right quarter of the shared monitor.
+            {"pid": 42, "at": [2500, 0], "size": [500, 1000], "workspace": {"id": 2}},
+            // Someone else's window there, and one of ours on another workspace.
+            {"pid": 7, "at": [1000, 0], "size": [1500, 1000], "workspace": {"id": 2}},
+            {"pid": 42, "at": [1000, 0], "size": [800, 500], "workspace": {"id": 5}},
+        ]);
+        let rects = own_windows(&clients, &monitors, 42, &target);
+        assert_eq!(rects, vec![[0.75, 0., 1., 1.]]);
+        let mask = cells_under(&rects);
+        let masked = |frame: &VideoFrame| {
+            let mut thumb = thumbnail(frame);
+            for (cell, hidden) in thumb.iter_mut().zip(&mask) {
+                if *hidden {
+                    *cell = f32::NAN;
+                }
+            }
+            thumb
+        };
+        // The chat in the right quarter scrolls: a change, unless it is Hopp's.
+        let (before, after) = (desktop(0, false), desktop(3, false));
+        assert!(moved(&thumbnail(&before), &thumbnail(&after)));
+        assert!(!moved(&masked(&before), &masked(&after)));
+        // Another app over the rest is still a new scene.
+        assert!(new_scene(&masked(&before), &masked(&desktop(0, true))));
     }
 
     #[test]

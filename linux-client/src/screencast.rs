@@ -33,6 +33,17 @@ pub struct CaptureTarget {
 /// The pointer's global logical position, read straight from Hyprland's IPC socket
 /// (cheap enough to poll while sharing, unlike spawning `hyprctl`).
 pub fn cursor_position() -> Option<(f64, f64)> {
+    let value = hypr_request("cursorpos", 4096)?;
+    Some((value["x"].as_f64()?, value["y"].as_f64()?))
+}
+
+/// `hyprctl -j <what>` (`clients`, `monitors`, …) from Hyprland's IPC socket, without
+/// spawning `hyprctl`.
+pub fn hypr_json(what: &str) -> Option<serde_json::Value> {
+    hypr_request(what, 4 << 20)
+}
+
+fn hypr_request(what: &str, limit: u64) -> Option<serde_json::Value> {
     use std::io::{Read, Write};
     let runtime = std::env::var_os("XDG_RUNTIME_DIR")?;
     let signature = std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE")?;
@@ -44,11 +55,10 @@ pub fn cursor_position() -> Option<(f64, f64)> {
     socket
         .set_read_timeout(Some(std::time::Duration::from_millis(50)))
         .ok()?;
-    socket.write_all(b"j/cursorpos").ok()?;
-    let mut reply = Vec::with_capacity(64);
-    socket.take(4096).read_to_end(&mut reply).ok()?;
-    let value: serde_json::Value = serde_json::from_slice(&reply).ok()?;
-    Some((value["x"].as_f64()?, value["y"].as_f64()?))
+    socket.write_all(format!("j/{what}").as_bytes()).ok()?;
+    let mut reply = Vec::with_capacity(4096);
+    socket.take(limit).read_to_end(&mut reply).ok()?;
+    serde_json::from_slice(&reply).ok()
 }
 
 /// A global pointer position as a point on the shared monitor, or `None` when the

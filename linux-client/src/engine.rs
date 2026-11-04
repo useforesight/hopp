@@ -1391,7 +1391,7 @@ impl Worker {
                     let target = capture.target.clone();
                     self.capture = Some(capture);
                     if let Some(moments) = self.moments.as_mut() {
-                        moments.screen_changed();
+                        moments.screen_changed(Some(&target));
                     }
                     let screen = target.output_name.clone();
                     self.capture_event(|own| match screen {
@@ -1724,7 +1724,7 @@ impl Worker {
                     }
                     self.remote_host = Some(audio_identity.clone());
                     if let Some(moments) = self.moments.as_mut() {
-                        moments.screen_changed();
+                        moments.screen_changed(None);
                     }
                 } else if self.remote_host.as_deref() == Some(audio_identity.as_str()) {
                     if let Ok(mut preview) = self.shared.remote.lock() {
@@ -1732,7 +1732,7 @@ impl Worker {
                     }
                     self.remote_host = None;
                     if let Some(moments) = self.moments.as_mut() {
-                        moments.screen_changed();
+                        moments.screen_changed(None);
                     }
                     self.peer_control = false;
                     self.clipboard_epoch.fetch_add(1, Ordering::AcqRel);
@@ -2282,7 +2282,7 @@ impl Worker {
         self.capture_frames = convert::screen_slot();
         self.revoke().await;
         if let Some(moments) = self.moments.as_mut() {
-            moments.screen_changed();
+            moments.screen_changed(None);
         }
         if let Some(mut capture) = self.capture.take() {
             capture.stop().await;
@@ -2447,7 +2447,13 @@ impl Worker {
             feed.event(format!("{sharer} is sharing their screen"));
         }
         match crate::capture::moments::Moments::start(&recorder.id(), feed.clone()) {
-            Ok(moments) => self.moments = Some(moments),
+            Ok(mut moments) => {
+                // Already sharing: Hopp's own windows on it don't count as changes.
+                if let Some(capture) = &self.capture {
+                    moments.screen_changed(Some(&capture.target));
+                }
+                self.moments = Some(moments);
+            }
             Err(error) => crate::logger::line(format!("Capture: no keyframes: {error:#}")),
         }
         self.tap.set(Some(feed));
