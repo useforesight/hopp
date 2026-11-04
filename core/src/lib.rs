@@ -17,6 +17,7 @@ pub mod livekit {
 
 pub mod room_service;
 mod snapshot_sender;
+mod stamp_voice;
 
 #[path = "app_veil/state.rs"]
 pub mod app_veil_state;
@@ -89,6 +90,7 @@ use socket_lib::{
     CallStartMessage, CameraStartMessage, Content, ContentType, Message, ScreenShareMessage,
     ScreenSharePickerMode, ScreenShareResolution, SentryMetadata, SocketSender,
 };
+use stamp_voice::{StampHolder, StampVoice};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -420,6 +422,10 @@ pub struct Application<'a> {
     screensharing_window: Option<ScreensharingWindow>,
     drawing_window: Option<DrawingWindow>,
     stats_window: Option<StatsWindow>,
+    /// You're holding a stamp down to say its note, or it's being written down.
+    stamp_voice: StampVoice,
+    /// The call is captured, so holding a stamp down can hear you.
+    capturing: bool,
     hang_protection_counter: Arc<AtomicU64>,
     start_camera_on_call: bool,
     screen_share_resolution: ScreenShareResolution,
@@ -513,6 +519,8 @@ impl<'a> Application<'a> {
             screensharing_window: None,
             drawing_window: None,
             stats_window: None,
+            stamp_voice: StampVoice::default(),
+            capturing: false,
             hang_protection_counter,
             start_camera_on_call: false,
             screen_share_resolution: ScreenShareResolution::P4K,
@@ -934,7 +942,10 @@ impl<'a> Application<'a> {
                 event_loop_proxy: self.event_loop_proxy.clone(),
             },
         ) {
-            Ok(win) => self.screensharing_window = Some(win),
+            Ok(mut win) => {
+                win.set_capturing(self.capturing);
+                self.screensharing_window = Some(win);
+            }
             Err(e) => {
                 log::error!("Failed to open screensharing window: {e:?}");
             }
@@ -1039,8 +1050,12 @@ impl<'a> Application<'a> {
     fn close_screensharing_window(&mut self) {
         log::info!("close_screensharing_window");
         if let Some(window) = &mut self.screensharing_window {
+            window.drop_note();
             window.hide();
             window.stop_redraw_thread();
+        }
+        if self.stamp_voice.holder() == StampHolder::Viewer {
+            self.end_stamp_voice();
         }
     }
 
@@ -1091,13 +1106,121 @@ impl<'a> Application<'a> {
             return;
         };
         let messages = gfx.stamp_input(input);
-        let typing = gfx.participants_manager_mut().is_stamp_typing();
+        let participants = gfx.participants_manager_mut();
+        let (typing, hearing) = (
+            participants.is_stamp_typing(),
+            participants.is_stamp_hearing(),
+        );
         if let Some(window) = &mut self.drawing_window {
-            window.set_typing_stamp(typing);
+            window.set_stamp_state(typing, hearing);
         }
         if let Some(room_service) = &self.room_service {
             for message in messages {
                 room_service.publish_stamp(message);
+            }
+        }
+        self.sync_stamp_voice();
+    }
+
+    /// You pressed or let go of a stamp you just placed. Held down, it records what you say
+    /// while the call is captured, so you're heard: it unmutes you until you let go.
+    fn stamp_hold_changed(&mut self, held: bool, holder: StampHolder) {
+        if !held {
+            let click = self.stamp_voice.release(Instant::now());
+            self.give_back_microphone();
+            if click {
+                self.input_for_held_stamp(hopp_marks::stamps::StampInput::StopListening);
+            }
+            return;
+        }
+        let press = self.stamp_voice.press(holder, Instant::now());
+        let Some(room_service) = &self.room_service else {
+            return;
+        };
+        let told = self.event_loop_proxy.clone();
+        let listener = room_service.call_capture().listen_for_stamp(
+            hopp_capture::store::now_ms(),
+            move |heard| {
+                let _ = told.send_event(UserEvent::StampHeard(press, heard));
+            },
+        );
+        let Some(listener) = listener else {
+            return;
+        };
+        self.stamp_voice.hear_with(listener);
+        if room_service.is_audio_muted() {
+            room_service.unmute_audio_track();
+            self.stamp_voice.set_unmuted();
+        }
+        self.input_for_held_stamp(hopp_marks::stamps::StampInput::Listen);
+    }
+
+    /// What's been heard for the stamp pressed as number `press`.
+    fn stamp_heard(&mut self, press: u64, heard: hopp_capture::heard::Heard) {
+        use hopp_capture::heard::Heard;
+        use hopp_marks::stamps::StampInput;
+        if !self.stamp_voice.is_hearing(press) {
+            return;
+        }
+        let input = match heard {
+            Heard::Words { said, draft } => StampInput::Heard { said, draft },
+            Heard::Finished => StampInput::Finish,
+            Heard::NothingSaid => StampInput::StopListening,
+        };
+        if !matches!(input, StampInput::Heard { .. }) {
+            self.stamp_voice.stop_hearing();
+        }
+        self.input_for_held_stamp(input);
+    }
+
+    fn input_for_held_stamp(&mut self, input: hopp_marks::stamps::StampInput) {
+        match self.stamp_voice.holder() {
+            StampHolder::Viewer => {
+                let Some(window) = &mut self.screensharing_window else {
+                    return;
+                };
+                let messages = window.stamp_messages(input);
+                if let Some(room_service) = &self.room_service {
+                    for message in messages {
+                        room_service.publish_stamp(message);
+                    }
+                }
+                self.sync_stamp_voice();
+            }
+            StampHolder::Sharer => self.your_stamp_input(input),
+        }
+    }
+
+    /// A stamp that's finished, however that happened, has nothing left to hear.
+    fn sync_stamp_voice(&mut self) {
+        if !self.stamp_voice.is_on() {
+            return;
+        }
+        let typing = match self.stamp_voice.holder() {
+            StampHolder::Viewer => self
+                .screensharing_window
+                .as_ref()
+                .is_some_and(|window| window.is_stamp_typing()),
+            StampHolder::Sharer => self
+                .window_manager
+                .as_mut()
+                .and_then(|wm| wm.active_gfx_mut())
+                .is_some_and(|gfx| gfx.participants_manager_mut().is_stamp_typing()),
+        };
+        if !typing {
+            self.end_stamp_voice();
+        }
+    }
+
+    fn end_stamp_voice(&mut self) {
+        self.stamp_voice.end();
+        self.give_back_microphone();
+    }
+
+    fn give_back_microphone(&mut self) {
+        if self.stamp_voice.take_unmuted() {
+            if let Some(room_service) = &self.room_service {
+                room_service.mute_audio_track();
             }
         }
     }
@@ -2415,9 +2538,20 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
             }
             UserEvent::CaptureChanged(id) => {
                 log::info!("user_event: CaptureChanged: {id:?}");
+                self.capturing = id.is_some();
+                if let Some(window) = &mut self.screensharing_window {
+                    window.set_capturing(self.capturing);
+                }
+                if let Some(window) = &mut self.drawing_window {
+                    window.set_capturing(self.capturing);
+                }
                 if let Err(e) = self.socket.send(Message::CaptureChanged(id)) {
                     log::error!("Failed to send CaptureChanged: {e:?}");
                 }
+            }
+            UserEvent::StampHeard(press, heard) => {
+                log::debug!("user_event: StampHeard: {press}");
+                self.stamp_heard(press, heard);
             }
             UserEvent::CaptureStop => {
                 log::info!("user_event: CaptureStop");
@@ -2758,12 +2892,10 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
             }
             UserEvent::SharerDrawPersistChanged(persist) => {
                 log::info!("user_event: SharerDrawPersistChanged: {persist}");
-                let mut stamping = false;
                 if let Some(drawing_window) = &mut self.drawing_window {
                     drawing_window.set_draw_persist(persist);
-                    stamping = drawing_window.is_stamping();
                 }
-                if let (Some(room_service), false) = (&self.room_service, stamping) {
+                if let Some(room_service) = &self.room_service {
                     room_service.publish_drawing_mode(room_service::DrawingMode::Draw(
                         room_service::DrawSettings { permanent: persist },
                     ));
@@ -2793,7 +2925,6 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                         win.set_stamping(drawing_enabled.stamp);
                     }
                     if let Some(room_service) = &self.room_service {
-                        room_service.publish_draw_clear_all_paths();
                         room_service.publish_drawing_mode(local_tool_mode(&drawing_enabled));
                     }
                 } else if self.drawing_window.as_ref().is_none_or(|w| !w.is_visible()) {
@@ -2839,6 +2970,7 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                             capture_frame,
                         ) {
                             Ok(mut win) => {
+                                win.set_capturing(self.capturing);
                                 win.set_stamping(drawing_enabled.stamp);
                                 self.drawing_window = Some(win);
                                 self.sync_call_colours();
@@ -2959,6 +3091,24 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                         self.your_stamp_input(input);
                         continue;
                     }
+                    if let window::drawing_window::DrawingWindowInputEvent::StampHold(held) = event
+                    {
+                        self.stamp_hold_changed(held, StampHolder::Sharer);
+                        continue;
+                    }
+                    if let window::drawing_window::DrawingWindowInputEvent::SwitchTool(stamp) =
+                        event
+                    {
+                        // The same as the sharing pill, so the app stays right about the tool.
+                        let _ = self
+                            .event_loop_proxy
+                            .send_event(UserEvent::AppAction(if stamp {
+                                socket_lib::AppAction::ToggleStamp
+                            } else {
+                                socket_lib::AppAction::ToggleDraw
+                            }));
+                        continue;
+                    }
                     if matches!(
                         event,
                         window::drawing_window::DrawingWindowInputEvent::Escape
@@ -3005,6 +3155,8 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                                 rs.publish_draw_clear_paths(ids);
                             }
                             window::drawing_window::DrawingWindowInputEvent::Stamp(_)
+                            | window::drawing_window::DrawingWindowInputEvent::StampHold(_)
+                            | window::drawing_window::DrawingWindowInputEvent::SwitchTool(_)
                             | window::drawing_window::DrawingWindowInputEvent::Escape => {}
                         }
                     }
@@ -3026,6 +3178,10 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
             if screen_sharing_window.window_id() == window_id {
                 let input_events = screen_sharing_window.handle_window_event(event);
                 for event in input_events {
+                    if let ScreenShareInputEvent::StampHold(held) = event {
+                        self.stamp_hold_changed(held, StampHolder::Viewer);
+                        continue;
+                    }
                     if let Some(rs) = &self.room_service {
                         match event {
                             ScreenShareInputEvent::CursorMoved { x, y } => {
@@ -3069,6 +3225,10 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                             }
                             ScreenShareInputEvent::Stamp(message) => {
                                 rs.publish_stamp(message);
+                            }
+                            ScreenShareInputEvent::StampHold(_) => {}
+                            ScreenShareInputEvent::StampTabSelected(mode) => {
+                                rs.publish_drawing_mode(mode);
                             }
                             ScreenShareInputEvent::AddToClipboard { is_copy } => {
                                 rs.publish_add_to_clipboard(
@@ -3144,6 +3304,7 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                         }
                     }
                 }
+                self.sync_stamp_voice();
                 return;
             }
         }
@@ -3458,15 +3619,12 @@ pub struct ParticipantData {
     pub identity: String,
 }
 
-/// What everyone else is told you're doing with the sharer's drawing tools.
+/// What everyone else is told you're doing with the sharer's drawing tools. Stamping is drawing
+/// to them, so your ink stays up.
 fn local_tool_mode(enabled: &socket_lib::DrawingEnabled) -> room_service::DrawingMode {
-    if enabled.stamp {
-        room_service::DrawingMode::Disabled
-    } else {
-        room_service::DrawingMode::Draw(room_service::DrawSettings {
-            permanent: enabled.permanent,
-        })
-    }
+    room_service::DrawingMode::Draw(room_service::DrawSettings {
+        permanent: enabled.permanent,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -3510,6 +3668,8 @@ pub enum UserEvent {
     DrawClearAllPaths(String),
     ClickAnimationFromParticipant(room_service::ClientPoint, String),
     StampReceived(hopp_marks::stamps::StampMessage, String),
+    /// What's been heard for the stamp you pressed as this number.
+    StampHeard(u64, hopp_capture::heard::Heard),
     LocalDrawingEnabled(socket_lib::DrawingEnabled),
     #[cfg(target_os = "macos")]
     SharingPillClicked(SharingPillClick),

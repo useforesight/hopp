@@ -380,19 +380,42 @@ pub(crate) enum ScreenShareTab {
 
 #[derive(Debug)]
 pub(crate) enum ScreenShareInputEvent {
-    CursorMoved { x: f64, y: f64 },
+    CursorMoved {
+        x: f64,
+        y: f64,
+    },
     MouseClick(crate::room_service::MouseClickData),
     Scroll(crate::room_service::WheelDelta),
     KeyInput(crate::room_service::KeystrokeData),
-    DrawStart { x: f64, y: f64, path_id: u64 },
-    DrawAddPoint { x: f64, y: f64 },
-    DrawEnd { x: f64, y: f64 },
+    DrawStart {
+        x: f64,
+        y: f64,
+        path_id: u64,
+    },
+    DrawAddPoint {
+        x: f64,
+        y: f64,
+    },
+    DrawEnd {
+        x: f64,
+        y: f64,
+    },
     DrawClearAllPaths,
     DrawClearPaths(Vec<u64>),
-    ClickAnimation { x: f64, y: f64 },
+    ClickAnimation {
+        x: f64,
+        y: f64,
+    },
     Stamp(StampMessage),
+    /// You pressed the left button on a stamp you just placed, or let it go.
+    StampHold(bool),
     DrawingModeChanged(crate::room_service::DrawingMode),
-    AddToClipboard { is_copy: bool },
+    /// You picked up the stamp tool. Everyone hears this as drawing, so your ink stays up, but
+    /// it's not your last mode: the next screen doesn't open with the pencil because of it.
+    StampTabSelected(crate::room_service::DrawingMode),
+    AddToClipboard {
+        is_copy: bool,
+    },
     PasteFromClipboard(Option<String>),
 }
 
@@ -423,7 +446,17 @@ struct ScreensharingState {
     /// The stroke being drawn while the left mouse button is held in draw mode.
     local_stroke: drawing_helpers::LocalStroke,
     drawing_hint: drawing_helpers::DrawingHint,
-    stamp_hint: drawing_helpers::DrawingHint,
+    /// A note you've started typing over this screen, not yet stamped down: it follows the
+    /// pointer, and a click puts it there.
+    note: Option<String>,
+    /// Where the pointer last was over this screen, which is where a note waits if it leaves.
+    note_point: Option<(f64, f64)>,
+    /// The press that stamped your note, whose release isn't for anything else.
+    note_press: bool,
+    /// You're holding your stamp down.
+    stamp_held: bool,
+    /// The call is captured, so holding a stamp down can hear you.
+    capturing: bool,
     /// Last cursor position (percentage 0.0-1.0) inside participant area.
     last_draw_cursor: Option<(f64, f64)>,
     /// Whether the settings dropdown is open.
@@ -458,7 +491,11 @@ impl Default for ScreensharingState {
             last_stream_height: 0,
             local_stroke: Default::default(),
             drawing_hint: Default::default(),
-            stamp_hint: Default::default(),
+            note: None,
+            note_point: None,
+            note_press: false,
+            stamp_held: false,
+            capturing: false,
             last_draw_cursor: None,
             dropdown_open: false,
             draw_persist: true,
@@ -1021,9 +1058,12 @@ impl ScreensharingWindow {
 
     pub fn drawing_mode(&self) -> crate::room_service::DrawingMode {
         match self.state.active_tab {
-            "draw" => crate::room_service::DrawingMode::Draw(crate::room_service::DrawSettings {
-                permanent: self.state.draw_persist,
-            }),
+            // Stamping is drawing to everyone else, so your ink stays up.
+            "draw" | "stamp" => {
+                crate::room_service::DrawingMode::Draw(crate::room_service::DrawSettings {
+                    permanent: self.state.draw_persist,
+                })
+            }
             "point" => crate::room_service::DrawingMode::ClickAnimation,
             _ => crate::room_service::DrawingMode::Disabled,
         }
@@ -1042,16 +1082,81 @@ impl ScreensharingWindow {
 
     /// Does what you asked with your stamps, and returns what everyone else needs to hear.
     fn stamp_input(&mut self, input: StampInput) -> Vec<ScreenShareInputEvent> {
-        let messages = self.participants_manager.stamp_input(input);
-        self.window.request_redraw();
-        messages
+        self.stamp_messages(input)
             .into_iter()
             .map(ScreenShareInputEvent::Stamp)
             .collect()
     }
 
+    /// The same, for what's been heard for a stamp you held down.
+    pub fn stamp_messages(&mut self, input: StampInput) -> Vec<StampMessage> {
+        let messages = self.participants_manager.stamp_input(input);
+        self.window.request_redraw();
+        messages
+    }
+
+    /// You've a stamp taking words here.
+    pub fn is_stamp_typing(&self) -> bool {
+        self.participants_manager.is_stamp_typing()
+    }
+
+    pub fn set_capturing(&mut self, capturing: bool) {
+        self.state.capturing = capturing;
+        self.window.request_redraw();
+    }
+
+    /// The window's going away: nothing's being typed or held down on it any more.
+    pub fn drop_note(&mut self) {
+        self.state.stamp_held = false;
+        self.forget_note();
+    }
+
+    /// Your keys and clicks are for their screen from here on, so a note can't keep them.
+    fn forget_note(&mut self) {
+        self.state.note = None;
+        self.state.note_press = false;
+        self.note_changed();
+    }
+
+    fn note_changed(&mut self) {
+        self.sync_note_ghost();
+        self.update_cursor();
+    }
+
+    fn sync_note_ghost(&mut self) {
+        let note = self.state.note.as_deref().zip(self.state.note_point);
+        self.participants_manager
+            .set_note_ghost(note.map(|(text, point)| (point, text)));
+        self.window.request_redraw();
+    }
+
+    /// Puts your typed note down at `point` as a finished stamp.
+    fn stamp_note(&mut self, point: (f64, f64)) -> Vec<ScreenShareInputEvent> {
+        let Some(text) = self.state.note.take() else {
+            return Vec::new();
+        };
+        self.note_changed();
+        self.stamp_input(StampInput::Note {
+            x: point.0,
+            y: point.1,
+            text,
+        })
+    }
+
+    /// You let go of your stamp, if you were holding it.
+    fn release_stamp(&mut self) -> Option<ScreenShareInputEvent> {
+        if !std::mem::take(&mut self.state.stamp_held) {
+            return None;
+        }
+        self.window.request_redraw();
+        Some(ScreenShareInputEvent::StampHold(false))
+    }
+
     pub fn set_remote_control_allowed(&mut self, allowed: bool) {
         self.state.remote_control_allowed = allowed;
+        if allowed && self.state.active_tab == "control" {
+            self.forget_note();
+        }
     }
 
     pub fn set_camera_active(&mut self, active: bool, device_name: Option<String>) {
@@ -1089,7 +1194,9 @@ impl ScreensharingWindow {
         self.call_participants = state;
 
         let (state, participants_manager) = build_initial_state(&remote, draw_persist, &last_mode);
+        let capturing = self.state.capturing;
         self.state = state;
+        self.state.capturing = capturing;
         self.participants_manager = participants_manager;
 
         // Window-level state.
@@ -1159,6 +1266,8 @@ impl ScreensharingWindow {
             use objc2_app_kit::NSCursor;
             if !self.mouse_in_participant_area {
                 NSCursor::arrowCursor().set();
+            } else if self.state.note.is_some() {
+                NSCursor::crosshairCursor().set();
             } else if self.state.active_tab == "draw" {
                 self.ns_cursor_pencil.set();
             } else if self.state.active_tab == "stamp" {
@@ -1176,6 +1285,9 @@ impl ScreensharingWindow {
             if !self.mouse_in_participant_area {
                 self.window
                     .set_cursor(winit::window::Cursor::Icon(CursorIcon::Default));
+            } else if self.state.note.is_some() {
+                self.window
+                    .set_cursor(winit::window::Cursor::Icon(CursorIcon::Crosshair));
             } else if self.state.active_tab == "draw" {
                 self.window.set_cursor(winit::window::Cursor::Custom(
                     self.custom_cursor_pencil.clone(),
@@ -1262,6 +1374,7 @@ impl ScreensharingWindow {
                     let pct_x = ((logical_x - rect.x) / rect.width) as f64;
                     let pct_y = ((logical_y - rect.y) / rect.height) as f64;
                     self.state.last_draw_cursor = Some((pct_x, pct_y));
+                    self.state.note_point = Some((pct_x, pct_y));
 
                     if self.state.local_stroke.is_active() {
                         let stroke_events = self.state.local_stroke.extend(
@@ -1290,6 +1403,9 @@ impl ScreensharingWindow {
                     self.state.queued_modifier_events.clear();
                     log::debug!("ScreensharingWindow: cursor left participant area");
                 }
+                if self.state.note.is_some() {
+                    self.sync_note_ghost();
+                }
             }
             // Reset when cursor leaves the window — winit skips the final
             // CursorMoved when the cursor exits quickly.
@@ -1306,6 +1422,9 @@ impl ScreensharingWindow {
             // Also reset when the window loses focus so stale state doesn't
             // linger while the user interacts with another window.
             WindowEvent::Focused(false) => {
+                input_events.extend(self.release_stamp());
+                // Its release may go elsewhere now, and the next one here isn't its.
+                self.state.note_press = false;
                 if self.mouse_in_participant_area {
                     input_events.extend(self.end_stroke_at_last_cursor());
                     self.state.last_draw_cursor = None;
@@ -1318,7 +1437,14 @@ impl ScreensharingWindow {
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                if self.mouse_in_participant_area {
+                let left = matches!(button, winit::event::MouseButton::Left);
+                let left_up = left && !state.is_pressed();
+                if left_up {
+                    // Wherever the pointer's got to by now.
+                    input_events.extend(self.release_stamp());
+                }
+                let note_click_over = left_up && std::mem::take(&mut self.state.note_press);
+                if self.mouse_in_participant_area && !note_click_over {
                     let (pct_x, pct_y) = match &self.cursor {
                         mouse::Cursor::Available(pos) => (
                             ((pos.x - rect.x) / rect.width) as f64,
@@ -1329,7 +1455,10 @@ impl ScreensharingWindow {
 
                     let down = state.is_pressed();
 
-                    if self.state.active_tab == "draw" {
+                    if left && down && self.state.note.is_some() {
+                        self.state.note_press = true;
+                        input_events.extend(self.stamp_note((pct_x, pct_y)));
+                    } else if self.state.active_tab == "draw" {
                         match button {
                             winit::event::MouseButton::Left => {
                                 let point = Position { x: pct_x, y: pct_y };
@@ -1369,8 +1498,13 @@ impl ScreensharingWindow {
                             winit::event::MouseButton::Right if down => Some(StampInput::ClearMine),
                             _ => None,
                         };
+                        let pressed = left && down;
                         if let Some(input) = input {
                             input_events.extend(self.stamp_input(input));
+                        }
+                        if pressed {
+                            self.state.stamp_held = true;
+                            input_events.push(ScreenShareInputEvent::StampHold(true));
                         }
                     } else if self.state.active_tab == "point" {
                         if matches!(button, winit::event::MouseButton::Left) && down {
@@ -1506,19 +1640,38 @@ impl ScreensharingWindow {
                     }
                 }
 
-                if self.state.active_tab == "stamp" && key_event.state.is_pressed() {
-                    if let Some(input) = drawing_helpers::stamp_key(
+                // A key on its way into a note, or the release of one, isn't for their screen.
+                let note_has_key = self.state.note.is_some();
+                if key_event.state.is_pressed() {
+                    let input = drawing_helpers::stamp_key(
                         &key_event.logical_key,
                         key_event.text.as_deref(),
                         self.modifiers,
-                    ) {
-                        input_events.extend(self.stamp_input(input));
+                    );
+                    if self.is_stamp_typing() {
+                        if let Some(input) = input {
+                            input_events.extend(self.stamp_input(input));
+                        }
+                    } else {
+                        let may_start = self.state.last_draw_cursor.is_some()
+                            && !(self.state.active_tab == "control"
+                                && self.state.remote_control_allowed);
+                        match drawing_helpers::note_key(&mut self.state.note, input, may_start) {
+                            drawing_helpers::NoteKey::Ignored => {}
+                            drawing_helpers::NoteKey::Changed => self.note_changed(),
+                            drawing_helpers::NoteKey::Stamp => {
+                                if let Some(point) = self.state.note_point {
+                                    input_events.extend(self.stamp_note(point));
+                                }
+                            }
+                        }
                     }
                 }
 
                 if self.mouse_in_participant_area
                     && self.state.active_tab == "control"
                     && self.state.remote_control_allowed
+                    && !note_has_key
                 {
                     // Extract key string to match the format expected by keyboard.rs.
                     // We need strings like "Enter", "Tab", "a", "A", etc., not control characters.
@@ -1695,23 +1848,29 @@ impl ScreensharingWindow {
                                     self.state.drawing_hint.show_once();
                                     ScreenShareTab::Draw
                                 }
-                                "stamp" => {
-                                    self.state.stamp_hint.show_once();
-                                    ScreenShareTab::Stamp
-                                }
+                                "stamp" => ScreenShareTab::Stamp,
                                 "point" => ScreenShareTab::Point,
                                 _ => ScreenShareTab::Control,
                             };
+                            if matches!(tab, ScreenShareTab::Control)
+                                && self.state.remote_control_allowed
+                            {
+                                self.forget_note();
+                            }
+                            let stamping = matches!(tab, ScreenShareTab::Stamp);
                             let mode = match tab {
-                                ScreenShareTab::Draw => crate::room_service::DrawingMode::Draw(
-                                    crate::room_service::DrawSettings {
-                                        permanent: self.state.draw_persist,
-                                    },
-                                ),
+                                // Stamping is drawing to everyone else, so your ink stays up.
+                                ScreenShareTab::Draw | ScreenShareTab::Stamp => {
+                                    crate::room_service::DrawingMode::Draw(
+                                        crate::room_service::DrawSettings {
+                                            permanent: self.state.draw_persist,
+                                        },
+                                    )
+                                }
                                 ScreenShareTab::Point => {
                                     crate::room_service::DrawingMode::ClickAnimation
                                 }
-                                ScreenShareTab::Control | ScreenShareTab::Stamp => {
+                                ScreenShareTab::Control => {
                                     crate::room_service::DrawingMode::Disabled
                                 }
                             };
@@ -1727,7 +1886,11 @@ impl ScreensharingWindow {
                                 mode.clone(),
                             );
                             self.state.local_stroke.cancel();
-                            input_events.push(ScreenShareInputEvent::DrawingModeChanged(mode));
+                            input_events.push(if stamping {
+                                ScreenShareInputEvent::StampTabSelected(mode)
+                            } else {
+                                ScreenShareInputEvent::DrawingModeChanged(mode)
+                            });
                         }
                         ScreensharingMessage::DropdownItemClicked(index) => {
                             let permanent = *index == 1;
@@ -1857,7 +2020,9 @@ impl ScreensharingWindow {
                 }
             }
             WindowEvent::CloseRequested => {
+                input_events.extend(self.release_stamp());
                 input_events.extend(self.stamp_input(StampInput::Finish));
+                self.drop_note();
                 self.window.set_visible(false);
             }
             _ => {}
@@ -2071,10 +2236,17 @@ impl ScreensharingWindow {
             app_veil_overlay,
             canvas_overlay,
             remote_control_disabled_label,
-            if state.active_tab == "draw" {
+            if state.note.is_some() || state.active_tab == "stamp" {
+                drawing_helpers::StampHint {
+                    note: state.note.is_some(),
+                    typing: participants.is_stamp_typing(),
+                    hearing: participants.is_stamp_hearing(),
+                    held: state.stamp_held,
+                    capturing: state.capturing,
+                }
+                .view()
+            } else if state.active_tab == "draw" {
                 state.drawing_hint.view(false)
-            } else if state.active_tab == "stamp" {
-                state.stamp_hint.stamp_view()
             } else {
                 Space::new().into()
             }
@@ -2432,7 +2604,6 @@ impl ScreensharingWindow {
             || self.participants_manager.is_cursor_animating()
             || self.participants_manager.is_stamp_animating()
             || self.state.drawing_hint.is_visible()
-            || self.state.stamp_hint.is_visible()
         {
             let _ = self.redraw_tx.send(RedrawCommand::Animate);
         }

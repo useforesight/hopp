@@ -12,7 +12,7 @@ use crate::components::fonts::GEIST_REGULAR;
 use crate::graphics::graphics_context::click_animation::ClickAnimationRenderer;
 use crate::graphics::graphics_context::participant::ParticipantsManager;
 use crate::utils::geometry::Position;
-use hopp_marks::stamps::StampInput;
+use hopp_marks::stamps::{StampInput, STAMP_TEXT_MAX};
 
 pub(crate) const LOCAL_PARTICIPANT_IDENTITY: &str = "local";
 pub(crate) const CURSOR_LOGICAL_SIZE: f64 = 30.0;
@@ -217,16 +217,6 @@ impl DrawingHint {
         ))
     }
 
-    pub(crate) fn stamp_view<'a, Message: 'a>(
-        &self,
-    ) -> iced::Element<'a, Message, Theme, iced::Renderer> {
-        self.pill(
-            "Click to place a stamp  ·  Type, then press Enter  ·  Esc to cancel  ·  \
-             Right-click to clear yours"
-                .to_owned(),
-        )
-    }
-
     fn pill<'a, Message: 'a>(
         &self,
         controls: String,
@@ -235,39 +225,83 @@ impl DrawingHint {
         if opacity <= 0.0 {
             return Space::new().into();
         }
+        hint_pill(controls, opacity)
+    }
+}
 
-        container(
-            container(text(controls).size(13).font(GEIST_REGULAR).color(Color {
-                a: opacity,
-                ..Color::WHITE
-            }))
-            .padding(Padding {
-                top: 7.0,
-                right: 14.0,
-                bottom: 7.0,
-                left: 14.0,
-            })
-            .style(move |_theme: &Theme| container::Style {
-                background: Some(Background::Color(Color::from_rgba(
-                    0.09,
-                    0.09,
-                    0.11,
-                    0.88 * opacity,
-                ))),
-                border: Border {
-                    radius: 100.0.into(),
-                    color: Color::from_rgba(1.0, 1.0, 1.0, 0.14 * opacity),
-                    width: 1.0,
-                },
-                ..Default::default()
-            }),
-        )
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .align_x(Alignment::Center)
-        .align_y(Alignment::End)
-        .padding(24.0)
-        .into()
+fn hint_pill<'a, Message: 'a>(
+    controls: String,
+    opacity: f32,
+) -> iced::Element<'a, Message, Theme, iced::Renderer> {
+    container(
+        container(text(controls).size(13).font(GEIST_REGULAR).color(Color {
+            a: opacity,
+            ..Color::WHITE
+        }))
+        .padding(Padding {
+            top: 7.0,
+            right: 14.0,
+            bottom: 7.0,
+            left: 14.0,
+        })
+        .style(move |_theme: &Theme| container::Style {
+            background: Some(Background::Color(Color::from_rgba(
+                0.09,
+                0.09,
+                0.11,
+                0.88 * opacity,
+            ))),
+            border: Border {
+                radius: 100.0.into(),
+                color: Color::from_rgba(1.0, 1.0, 1.0, 0.14 * opacity),
+                width: 1.0,
+            },
+            ..Default::default()
+        }),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .align_x(Alignment::Center)
+    .align_y(Alignment::End)
+    .padding(24.0)
+    .into()
+}
+
+/// How to use the stamp tool right now. It changes with what you do, so it stays up as long as
+/// the tool's in your hand, where the drawing controls show once and fade.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct StampHint {
+    /// You're typing a note that follows the pointer.
+    pub(crate) note: bool,
+    /// You've a stamp taking words.
+    pub(crate) typing: bool,
+    /// It hears what you say.
+    pub(crate) hearing: bool,
+    /// You're holding it down.
+    pub(crate) held: bool,
+    /// The call is captured, so holding one down can hear you.
+    pub(crate) capturing: bool,
+}
+
+impl StampHint {
+    pub(crate) fn text(self) -> &'static str {
+        if self.note {
+            "Click to stamp your note there  ·  Esc drops it"
+        } else if self.typing && self.hearing && self.held {
+            "Listening  ·  let go to stamp it"
+        } else if self.typing && self.hearing {
+            "Writing down what you said…"
+        } else if self.typing {
+            "Type your note  ·  Enter to finish  ·  Esc removes it"
+        } else if self.capturing {
+            "Hold on a spot and say your note, or click and type  ·  Right-click clears yours"
+        } else {
+            "Click a spot and type your note  ·  Right-click clears yours"
+        }
+    }
+
+    pub(crate) fn view<'a, Message: 'a>(self) -> iced::Element<'a, Message, Theme, iced::Renderer> {
+        hint_pill(self.text().to_owned(), 1.0)
     }
 }
 
@@ -295,6 +329,70 @@ pub(crate) fn stamp_key(
                 .collect();
             (!typed.is_empty()).then_some(StampInput::Typed(typed))
         }
+    }
+}
+
+/// What a key did to a note you're typing over someone's screen.
+#[derive(Debug, PartialEq)]
+pub(crate) enum NoteKey {
+    Ignored,
+    Changed,
+    /// Stamp it where the pointer is.
+    Stamp,
+}
+
+/// `input` is what the key means, from [`stamp_key`]. A word starts a note, if one `may_start`,
+/// and a space or a stray key doesn't.
+pub(crate) fn note_key(
+    note: &mut Option<String>,
+    input: Option<StampInput>,
+    may_start: bool,
+) -> NoteKey {
+    let Some(text) = note.as_mut() else {
+        return match input {
+            Some(StampInput::Typed(typed)) if may_start && !typed.trim().is_empty() => {
+                *note = Some(typed);
+                NoteKey::Changed
+            }
+            _ => NoteKey::Ignored,
+        };
+    };
+    match input {
+        Some(StampInput::Typed(typed)) => {
+            if text.len() + typed.len() <= STAMP_TEXT_MAX {
+                text.push_str(&typed);
+            }
+            NoteKey::Changed
+        }
+        Some(StampInput::Backspace) => {
+            text.pop();
+            if text.is_empty() {
+                *note = None;
+            }
+            NoteKey::Changed
+        }
+        Some(StampInput::Cancel) => {
+            *note = None;
+            NoteKey::Changed
+        }
+        Some(StampInput::Finish) => NoteKey::Stamp,
+        _ => NoteKey::Ignored,
+    }
+}
+
+/// The tool a key switches to while you mark your own screen, with S for the stamp and D for the
+/// pen: `Some(true)` for the stamp. Only a plain key, and only if it's a change.
+pub(crate) fn tool_key(key: &Key, modifiers: ModifiersState, stamping: bool) -> Option<bool> {
+    let Key::Character(character) = key else {
+        return None;
+    };
+    if !modifiers.is_empty() {
+        return None;
+    }
+    match character.as_str() {
+        "s" if !stamping => Some(true),
+        "d" if stamping => Some(false),
+        _ => None,
     }
 }
 
@@ -465,6 +563,114 @@ mod tests {
         let arrow = Key::Named(NamedKey::ArrowUp);
         assert_eq!(stamp_key(&arrow, Some("\u{F700}"), none), None);
         assert_eq!(stamp_key(&Key::Named(NamedKey::Shift), None, none), None);
+    }
+
+    #[test]
+    fn a_word_starts_a_note_and_a_stray_key_does_not() {
+        let typed = |text: &str| Some(StampInput::Typed(text.to_owned()));
+        let mut note = None;
+
+        // Nothing to start with: a space, Return or Esc do nothing, and they go on to the sharer.
+        for key in [
+            typed(" "),
+            Some(StampInput::Finish),
+            Some(StampInput::Cancel),
+            Some(StampInput::Backspace),
+            None,
+        ] {
+            assert_eq!(note_key(&mut note, key, true), NoteKey::Ignored);
+            assert_eq!(note, None);
+        }
+        // Not where one may start, as over someone's screen you're controlling.
+        assert_eq!(note_key(&mut note, typed("h"), false), NoteKey::Ignored);
+        assert_eq!(note, None);
+
+        assert_eq!(note_key(&mut note, typed("h"), true), NoteKey::Changed);
+        assert_eq!(note.as_deref(), Some("h"));
+        // Once it's going, a space is a word's end, wherever the pointer's gone.
+        assert_eq!(note_key(&mut note, typed(" "), false), NoteKey::Changed);
+        assert_eq!(note_key(&mut note, typed("i"), false), NoteKey::Changed);
+        assert_eq!(note.as_deref(), Some("h i"));
+        assert_eq!(
+            note_key(&mut note, Some(StampInput::Finish), false),
+            NoteKey::Stamp
+        );
+        assert_eq!(note.as_deref(), Some("h i"), "stamping it is the caller's");
+        assert_eq!(note_key(&mut note, None, false), NoteKey::Ignored);
+    }
+
+    #[test]
+    fn a_note_can_be_taken_back_and_never_outgrows_a_stamp() {
+        let typed = |text: &str| Some(StampInput::Typed(text.to_owned()));
+        let backspace = || Some(StampInput::Backspace);
+
+        let mut note = Some("hé".to_owned());
+        assert_eq!(note_key(&mut note, backspace(), true), NoteKey::Changed);
+        assert_eq!(note.as_deref(), Some("h"));
+        // The last letter takes the note with it.
+        assert_eq!(note_key(&mut note, backspace(), true), NoteKey::Changed);
+        assert_eq!(note, None);
+
+        let mut note = Some("half a thought".to_owned());
+        assert_eq!(
+            note_key(&mut note, Some(StampInput::Cancel), true),
+            NoteKey::Changed
+        );
+        assert_eq!(note, None);
+
+        let full = "a".repeat(STAMP_TEXT_MAX);
+        let mut note = Some(full.clone());
+        assert_eq!(note_key(&mut note, typed("b"), true), NoteKey::Changed);
+        assert_eq!(note, Some(full));
+    }
+
+    #[test]
+    fn s_and_d_switch_the_tool_only_when_it_is_a_change() {
+        let none = ModifiersState::empty();
+        let (s, d) = (Key::Character("s".into()), Key::Character("d".into()));
+        assert_eq!(tool_key(&s, none, false), Some(true));
+        assert_eq!(tool_key(&d, none, true), Some(false));
+        assert_eq!(tool_key(&s, none, true), None);
+        assert_eq!(tool_key(&d, none, false), None);
+
+        assert_eq!(tool_key(&s, ModifiersState::SUPER, false), None);
+        assert_eq!(tool_key(&s, ModifiersState::SHIFT, false), None);
+        assert_eq!(tool_key(&Key::Character("x".into()), none, false), None);
+        assert_eq!(tool_key(&Key::Named(NamedKey::Enter), none, true), None);
+    }
+
+    #[test]
+    fn the_stamp_hint_says_what_you_can_do_right_now() {
+        let waiting = StampHint::default();
+        assert!(!waiting.text().contains("Hold"));
+        assert!(waiting.text().contains("Right-click clears yours"));
+
+        // Holding one down only hears you if the call is captured.
+        let captured = StampHint {
+            capturing: true,
+            ..waiting
+        };
+        assert!(captured.text().starts_with("Hold on a spot"));
+
+        let typing = StampHint {
+            typing: true,
+            ..captured
+        };
+        assert!(typing.text().starts_with("Type your note"));
+        let hearing = StampHint {
+            hearing: true,
+            ..typing
+        };
+        assert!(hearing.text().starts_with("Writing down"));
+        let held = StampHint {
+            held: true,
+            ..hearing
+        };
+        assert!(held.text().starts_with("Listening"));
+
+        // A note in hand comes before all of it.
+        let note = StampHint { note: true, ..held };
+        assert!(note.text().starts_with("Click to stamp your note"));
     }
 
     fn position(x: f64, y: f64) -> Position {

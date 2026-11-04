@@ -34,6 +34,7 @@ pub enum AppRequest {
     Camera,
     Share,
     Draw,
+    Stamp,
     CaptureStart,
     CaptureStop,
     /// Open the captures window, on this call if one is named.

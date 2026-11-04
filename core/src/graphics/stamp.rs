@@ -11,7 +11,7 @@ use crate::utils::geometry::Position;
 use hopp_marks::colours;
 use hopp_marks::sprites;
 use hopp_marks::stamps::{
-    card_position, Pose, Stamp, Stamps, CARD_LINE_HEIGHT, CARD_MAX_LINES, CARD_MAX_TEXT_WIDTH,
+    card_position, Pose, Stamp, CARD_LINE_HEIGHT, CARD_MAX_LINES, CARD_MAX_TEXT_WIDTH,
     CARD_MIN_WIDTH, CARD_PADDING, CARD_RADIUS, CARD_TEXT_SIZE, CARD_TITLE_HEIGHT, CARD_TITLE_SIZE,
     DRAFT_ALPHA, MARKER_RADIUS, MARKER_RISE,
 };
@@ -67,11 +67,15 @@ fn measure(text: &str, font: Font, size: f32, line_height: f32) -> (f32, f32) {
 
 /// What a stamp shows with no words yet, if it's still taking them.
 fn prompt(stamp: &Stamp) -> Option<(&'static str, bool)> {
-    match (stamp.listening, stamp.is_mine()) {
-        (false, _) => None,
-        (true, true) => Some(("Type, then press Enter", false)),
+    if !stamp.listening {
+        None
+    } else if !stamp.is_mine() {
         // They may be typing or talking, depending on what they're using.
-        (true, false) => Some(("Adding a note", true)),
+        Some(("Adding a note", true))
+    } else if stamp.voice {
+        Some(("Listening", true))
+    } else {
+        Some(("Type a note", true))
     }
 }
 
@@ -412,16 +416,15 @@ impl Placed<'_> {
 
 /// Draws every stamp, oldest underneath. `translate` turns a point on the shared screen into
 /// a place on this frame.
-pub(super) fn paint_stamps(
+pub(super) fn paint_stamps<'a>(
     frame: &mut Frame,
-    stamps: &Stamps,
+    stamps: impl Iterator<Item = &'a Stamp>,
     visuals: &HashMap<StampKey, StampVisual>,
     translate: &dyn Fn(Position) -> Position,
     now: Instant,
 ) {
     let area = frame.size();
     let placed: Vec<Placed> = stamps
-        .iter()
         .filter(|stamp| !stamp.gone(now))
         .filter_map(|stamp| {
             let visual = visuals.get(&(stamp.owner.clone(), stamp.id))?;
@@ -452,7 +455,7 @@ pub(super) fn paint_stamps(
 mod tests {
     use super::super::cursor::tests::{near, Screen};
     use super::*;
-    use hopp_marks::stamps::{StampInput, StampMessage};
+    use hopp_marks::stamps::{StampInput, StampMessage, Stamps};
     use std::time::Duration;
 
     const WIDTH: f32 = 800.;
@@ -487,6 +490,35 @@ mod tests {
         // Two cards, overlapping each other as well.
         let covers = [rect(0., 0., 50., 50.), rect(25., 0., 50., 50.)];
         assert_eq!(area_of(&uncovered(card, &covers)), 25. * 50.);
+    }
+
+    #[test]
+    fn a_stamp_with_no_words_says_how_it_is_getting_them() {
+        let now = Instant::now();
+        let place = StampInput::Place { x: 0.5, y: 0.5 };
+        let only = |stamps: &Stamps| prompt(stamps.iter().next().unwrap());
+
+        // Clicked, then held down.
+        let mut stamps = Stamps::default();
+        stamps.apply(place.clone(), "Ada", now);
+        assert_eq!(only(&stamps), Some(("Type a note", true)));
+        stamps.apply(StampInput::Listen, "Ada", now);
+        assert_eq!(only(&stamps), Some(("Listening", true)));
+
+        // Finished, it has nothing to ask.
+        stamps.apply(StampInput::Typed("Here".to_owned()), "Ada", now);
+        stamps.apply(StampInput::Finish, "Ada", now);
+        assert_eq!(only(&stamps), None);
+
+        // Theirs could be either.
+        let mut stamps = Stamps::default();
+        let theirs = StampMessage::StampPlace {
+            id: 1,
+            x: 0.5,
+            y: 0.5,
+        };
+        stamps.receive("room:r:lee:video", "Lee", theirs, now);
+        assert_eq!(only(&stamps), Some(("Adding a note", true)));
     }
 
     /// Someone else's stamp saying `text`, placed at `placed`.
@@ -609,7 +641,7 @@ mod tests {
         let later = start + Duration::from_millis(1_250);
         for (name, background) in [("dark", DARK), ("light", LIGHT)] {
             let picture = screen.paint(PHYSICAL, 2., colour(background), |frame| {
-                paint_stamps(frame, &stamps, &visuals, &fractions, later);
+                paint_stamps(frame, stamps.iter(), &visuals, &fractions, later);
             });
             picture
                 .save(format!("/tmp/hopp-stamps-{name}.png"))
@@ -625,9 +657,30 @@ mod tests {
         }
         let visuals = visuals_of(&dropping);
         let picture = screen.paint(PHYSICAL, 2., colour(DARK), |frame| {
-            paint_stamps(frame, &dropping, &visuals, &fractions, later);
+            paint_stamps(frame, dropping.iter(), &visuals, &fractions, later);
         });
         picture.save("/tmp/hopp-stamp-drop.png").expect("save");
+
+        // Yours as it hears you, and a note you're typing that follows the pointer.
+        let mut yours = Stamps::default();
+        yours.apply(StampInput::Place { x: 0.12, y: 0.25 }, "You", start);
+        yours.apply(StampInput::Listen, "You", start);
+        let ghost = yours.ghost((0.45, 0.6), "Move this up", "You", later);
+        let mut visuals = visuals_of(&yours);
+        visuals.insert(
+            (ghost.owner.clone(), ghost.id),
+            StampVisual::new(&ghost, [0x0a, 0x84, 0xff]).expect("visual"),
+        );
+        let picture = screen.paint(PHYSICAL, 2., colour(DARK), |frame| {
+            paint_stamps(
+                frame,
+                yours.iter().chain([&ghost]),
+                &visuals,
+                &fractions,
+                later,
+            );
+        });
+        picture.save("/tmp/hopp-stamp-yours.png").expect("save");
 
         // A short card, alone, on the dark screen: where everything lands.
         let mut alone = Stamps::default();
@@ -635,7 +688,7 @@ mod tests {
         let visuals = visuals_of(&alone);
         let stamp = alone.iter().next().unwrap();
         let picture = screen.paint(PHYSICAL, 2., colour(DARK), |frame| {
-            paint_stamps(frame, &alone, &visuals, &fractions, later);
+            paint_stamps(frame, alone.iter(), &visuals, &fractions, later);
         });
         picture.save("/tmp/hopp-stamp-alone.png").expect("save");
         let (tip_x, tip_y) = (200., 250.);
@@ -679,7 +732,7 @@ mod tests {
         say(&mut covered, 2, wide_name, (0.25, 0.5), "Short", start);
         let visuals = visuals_of(&covered);
         let picture = screen.paint(PHYSICAL, 2., colour(DARK), |frame| {
-            paint_stamps(frame, &covered, &visuals, &fractions, later);
+            paint_stamps(frame, covered.iter(), &visuals, &fractions, later);
         });
         picture.save("/tmp/hopp-stamps-covered.png").expect("save");
         let text_x = beside - 4. + CARD_PADDING.0;
