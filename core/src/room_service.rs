@@ -2234,6 +2234,20 @@ fn start_remote_camera_stream(
     ));
 }
 
+/// Someone's share ended. The flag is on their audio connection.
+fn clear_screensharing(
+    participants: &Arc<std::sync::RwLock<HashMap<String, ParticipantInfo>>>,
+    video_identity: &str,
+) {
+    let Some(prefix) = video_identity.strip_suffix(":video") else {
+        return;
+    };
+    let mut participants = participants.write().unwrap();
+    if let Some(info) = participants.get_mut(&format!("{prefix}:audio")) {
+        info.set_is_screensharing(false);
+    }
+}
+
 fn start_remote_screen_share_stream(
     video_track: livekit::track::RemoteVideoTrack,
     remote_screen_share: &RemoteScreenShare,
@@ -2280,6 +2294,7 @@ fn start_remote_screen_share_stream(
         std::sync::mpsc::channel::<crate::window::screensharing_window::RedrawCommand>();
     let redraw_rx = std::sync::Arc::new(std::sync::Mutex::new(Some(redraw_rx)));
 
+    call_capture.screen_changed();
     tokio::spawn(process_video_stream(
         video_track,
         manager,
@@ -2679,6 +2694,7 @@ async fn handle_room_events(ctx: RoomEventContext) {
                         .unwrap()
                         .take();
                     remote_screen_share.app_veil_snapshot.lock().unwrap().take();
+                    inner.call_capture.screen_changed();
                     if let Err(error) =
                         event_loop_proxy.send_event(UserEvent::CloseScreenShareWindow)
                     {
@@ -2816,6 +2832,8 @@ async fn handle_room_events(ctx: RoomEventContext) {
                                 "handle_room_events: Ignoring mute from non-current publisher {}",
                                 identity,
                             );
+                            clear_screensharing(&participants, &identity);
+                            snapshot_sender.send_participants_snapshot();
                             continue;
                         }
 
@@ -2836,21 +2854,8 @@ async fn handle_room_events(ctx: RoomEventContext) {
                                 .take();
                             remote_screen_share.app_veil_snapshot.lock().unwrap().take();
                         }
-
-                        // Derive the audio participant identity to clear is_screensharing
-                        let audio_identity = {
-                            let video_identity = participant.identity().as_str().to_string();
-                            video_identity
-                                .strip_suffix(":video")
-                                .map(|prefix| format!("{prefix}:audio"))
-                        };
-                        if let Some(audio_id) = audio_identity {
-                            let mut participants_guard = participants.write().unwrap();
-                            if let Some(info) = participants_guard.get_mut(&audio_id) {
-                                info.set_is_screensharing(false);
-                            }
-                        }
-
+                        inner.call_capture.screen_changed();
+                        clear_screensharing(&participants, &identity);
                         snapshot_sender.send_participants_snapshot();
 
                         // Close the screen share window
@@ -3057,89 +3062,79 @@ async fn handle_room_events(ctx: RoomEventContext) {
                 }
 
                 match track {
-                    livekit::track::RemoteTrack::Video(_) => {
-                        match publication.source() {
-                            TrackSource::Camera => {
-                                log::info!(
-                                    "handle_room_events: Camera track unsubscribed from {}",
-                                    participant_identity
-                                );
-                                let any_camera_active = {
-                                    let mut guard = participants.write().unwrap();
-                                    if let Some(info) = guard.get_mut(&participant_identity) {
-                                        info.stop_camera_stream();
-                                    }
-                                    guard.values().any(|info| info.camera_active())
-                                };
-                                if !any_camera_active {
-                                    if let Err(e) =
-                                        event_loop_proxy.send_event(UserEvent::CloseCameraWindow)
-                                    {
-                                        log::error!(
+                    livekit::track::RemoteTrack::Video(_) => match publication.source() {
+                        TrackSource::Camera => {
+                            log::info!(
+                                "handle_room_events: Camera track unsubscribed from {}",
+                                participant_identity
+                            );
+                            let any_camera_active = {
+                                let mut guard = participants.write().unwrap();
+                                if let Some(info) = guard.get_mut(&participant_identity) {
+                                    info.stop_camera_stream();
+                                }
+                                guard.values().any(|info| info.camera_active())
+                            };
+                            if !any_camera_active {
+                                if let Err(e) =
+                                    event_loop_proxy.send_event(UserEvent::CloseCameraWindow)
+                                {
+                                    log::error!(
                                             "handle_room_events: Failed to send CloseCameraWindow event: {e:?}"
                                         );
-                                    }
                                 }
-                            }
-                            TrackSource::Screenshare => {
-                                log::info!(
-                                    "handle_room_events: Screen share track unsubscribed from {}",
-                                    participant_identity
-                                );
-
-                                let is_current = {
-                                    let publisher_guard =
-                                        remote_screen_share.publisher_identity.lock().unwrap();
-                                    publisher_guard.as_deref()
-                                        == Some(participant_identity.as_str())
-                                };
-
-                                if is_current {
-                                    {
-                                        let mut stop_tx_guard =
-                                            remote_screen_share.stop_tx.lock().unwrap();
-                                        if let Some(tx) = stop_tx_guard.take() {
-                                            let _ = tx.send(());
-                                        }
-                                    }
-                                    remote_screen_share
-                                        .publisher_identity
-                                        .lock()
-                                        .unwrap()
-                                        .take();
-                                    remote_screen_share.app_veil_snapshot.lock().unwrap().take();
-
-                                    // Derive audio identity to clear is_screensharing
-                                    let audio_identity = participant_identity
-                                        .strip_suffix(":video")
-                                        .map(|prefix| format!("{prefix}:audio"));
-                                    if let Some(audio_id) = audio_identity {
-                                        let mut participants_guard = participants.write().unwrap();
-                                        if let Some(info) = participants_guard.get_mut(&audio_id) {
-                                            info.set_is_screensharing(false);
-                                        }
-                                    }
-
-                                    snapshot_sender.send_participants_snapshot();
-
-                                    if let Err(e) = event_loop_proxy
-                                        .send_event(UserEvent::CloseScreenShareWindow)
-                                    {
-                                        log::error!(
-                                            "handle_room_events: Failed to send CloseScreenShareWindow event: {e:?}"
-                                        );
-                                    }
-                                }
-                            }
-                            source => {
-                                log::info!(
-                                    "handle_room_events: Video track unsubscribed from {} ({:?})",
-                                    participant_identity,
-                                    source,
-                                );
                             }
                         }
-                    }
+                        TrackSource::Screenshare => {
+                            log::info!(
+                                "handle_room_events: Screen share track unsubscribed from {}",
+                                participant_identity
+                            );
+
+                            let is_current = {
+                                let publisher_guard =
+                                    remote_screen_share.publisher_identity.lock().unwrap();
+                                publisher_guard.as_deref() == Some(participant_identity.as_str())
+                            };
+
+                            if is_current {
+                                {
+                                    let mut stop_tx_guard =
+                                        remote_screen_share.stop_tx.lock().unwrap();
+                                    if let Some(tx) = stop_tx_guard.take() {
+                                        let _ = tx.send(());
+                                    }
+                                }
+                                remote_screen_share
+                                    .publisher_identity
+                                    .lock()
+                                    .unwrap()
+                                    .take();
+                                remote_screen_share.app_veil_snapshot.lock().unwrap().take();
+                                inner.call_capture.screen_changed();
+                                clear_screensharing(&participants, &participant_identity);
+                                snapshot_sender.send_participants_snapshot();
+
+                                if let Err(e) =
+                                    event_loop_proxy.send_event(UserEvent::CloseScreenShareWindow)
+                                {
+                                    log::error!(
+                                            "handle_room_events: Failed to send CloseScreenShareWindow event: {e:?}"
+                                        );
+                                }
+                            } else {
+                                clear_screensharing(&participants, &participant_identity);
+                                snapshot_sender.send_participants_snapshot();
+                            }
+                        }
+                        source => {
+                            log::info!(
+                                "handle_room_events: Video track unsubscribed from {} ({:?})",
+                                participant_identity,
+                                source,
+                            );
+                        }
+                    },
                     livekit::track::RemoteTrack::Audio(_) => {
                         log::info!(
                             "handle_room_events: Stopping audio stream for participant: {}",

@@ -224,6 +224,11 @@ impl Capturer {
         Ok(())
     }
 
+    /// Whether a stream is running.
+    pub fn is_capturing(&self) -> bool {
+        self.active_stream.is_some()
+    }
+
     /// Signals the capture thread to stop and releases the active stream.
     /// The thread is detached and will exit on its own.
     /// Safe to call when no stream is active (no-op).

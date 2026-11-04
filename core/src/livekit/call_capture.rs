@@ -4,7 +4,7 @@
 //! captured each audio or video frame costs one atomic load, and a capture never waits.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -102,9 +102,12 @@ fn changes(before: &People, after: &People) -> Vec<String> {
     lines
 }
 
-fn sharers(people: &People) -> Vec<&String> {
-    let sharing = people.iter().filter(|(_, person)| person.sharing);
-    sharing.map(|(id, _)| id).collect()
+/// Everyone's identities for their colours: the snapshot calls you "local".
+fn everyone(own: &str, people: &People) -> Vec<String> {
+    people
+        .keys()
+        .map(|id| if id == "local" { own } else { id }.to_string())
+        .collect()
 }
 
 /// What a data message means to the capture's frames, if anything.
@@ -204,6 +207,7 @@ impl MicTap {
 struct State {
     recorder: Option<Recorder>,
     seen: People,
+    own_identity: String,
 }
 
 /// The capture's stills of the shared screen. Apart from `State`, so that video and marks
@@ -214,6 +218,17 @@ struct Stills {
     watching: AtomicBool,
     moments: Mutex<Option<Moments>>,
     converting: AtomicBool,
+    /// Counts changes of the shared screen, to drop a copy of the old one still on its way.
+    screen: AtomicU64,
+}
+
+/// Held while a copy of the screen is being converted, however that ends.
+struct Converting(Arc<Stills>);
+
+impl Drop for Converting {
+    fn drop(&mut self) {
+        self.0.converting.store(false, Ordering::Release);
+    }
 }
 
 /// The capture of the current call, if there is one. Cheap to clone.
@@ -264,22 +279,33 @@ impl CallCapture {
         if !self.watching() {
             return;
         }
+        let screen = self.stills.screen.load(Ordering::Acquire);
         let Some(sampler) = self.sampler_if_wanted() else {
             return;
         };
         let copy = frame.to_i420();
-        let stills = self.stills.clone();
-        let converting = std::thread::Builder::new()
+        let converting = Converting(self.stills.clone());
+        let thread = std::thread::Builder::new()
             .name("hopp-capture-still".into())
             .spawn(move || {
+                let converting = converting;
                 if let Some(still) = still_of(copy) {
-                    sampler.sample(still);
+                    if converting.0.screen.load(Ordering::Acquire) == screen {
+                        sampler.sample(still);
+                    }
                 }
-                stills.converting.store(false, Ordering::Release);
             });
-        if let Err(error) = converting {
+        if let Err(error) = thread {
             log::error!("Capture: couldn't copy the screen on a new thread: {error}");
-            self.stills.converting.store(false, Ordering::Release);
+        }
+    }
+
+    /// The shared screen started, stopped or changed hands. Say so before its first frame,
+    /// which is the only one if the screen stays still.
+    pub fn screen_changed(&self) {
+        self.stills.screen.fetch_add(1, Ordering::AcqRel);
+        if let Some(moments) = self.moments().as_mut() {
+            moments.screen_changed();
         }
     }
 
@@ -307,14 +333,16 @@ impl CallCapture {
         let Some(event) = draw_event(event) else {
             return;
         };
+        let name = name_or(person_name(owner, name), "Someone");
         if let Some(moments) = self.moments().as_mut() {
-            moments.draw(owner, person_name(owner, name), &event);
+            moments.draw(owner, &name, &event);
         }
     }
 
     pub fn own_mark(&self, local: &LocalParticipant, event: &ClientEvent) {
         if self.watching() {
-            self.mark(local.identity().as_str(), &local.name(), event);
+            let name = name_or(&local.name(), "You");
+            self.mark(local.identity().as_str(), &name, event);
         }
     }
 
@@ -322,14 +350,16 @@ impl CallCapture {
         if !self.watching() {
             return;
         }
+        let name = name_or(person_name(owner, name), "Someone");
         if let Some(moments) = self.moments().as_mut() {
-            moments.stamp(owner, person_name(owner, name), message);
+            moments.stamp(owner, &name, message);
         }
     }
 
     pub fn own_stamp(&self, local: &LocalParticipant, message: &StampMessage) {
         if self.watching() {
-            self.stamp(local.identity().as_str(), &local.name(), message);
+            let name = name_or(&local.name(), "You");
+            self.stamp(local.identity().as_str(), &name, message);
         }
     }
 
@@ -360,7 +390,10 @@ impl CallCapture {
             return;
         }
         let capture = self.clone();
-        match tokio::task::spawn_blocking(move || capture.begin(room, &snapshot)).await {
+        let own_identity = local.identity().as_str().to_string();
+        match tokio::task::spawn_blocking(move || capture.begin(room, &own_identity, &snapshot))
+            .await
+        {
             Ok(Ok(id)) => {
                 let capture = self.clone();
                 tokio::spawn(async move {
@@ -374,7 +407,12 @@ impl CallCapture {
     }
 
     /// Open the capture, not yet listening. Returns its id.
-    fn begin(&self, room: String, snapshot: &[CoreParticipantState]) -> anyhow::Result<String> {
+    fn begin(
+        &self,
+        room: String,
+        own_identity: &str,
+        snapshot: &[CoreParticipantState],
+    ) -> anyhow::Result<String> {
         let chosen = config::load();
         let model = models::find(&chosen.model).or_else(|_| models::find(models::DEFAULT))?;
         let store = store::default_path()?;
@@ -404,11 +442,15 @@ impl CallCapture {
         }
         // The transcript matters more than its frames.
         match Moments::start(&id, feed) {
-            Ok(moments) => *self.moments() = Some(moments),
+            Ok(mut moments) => {
+                moments.people(everyone(own_identity, &seen));
+                *self.moments() = Some(moments);
+            }
             Err(error) => log::error!("Capture {id}: no screen frames: {error:#}"),
         }
         let mut state = self.state();
         state.seen = seen;
+        state.own_identity = own_identity.to_string();
         state.recorder = Some(recorder);
         Ok(id)
     }
@@ -436,10 +478,8 @@ impl CallCapture {
             feed.event(line);
         }
         feed.participants(now.values().map(|p| p.name.clone()).collect());
-        if sharers(&state.seen) != sharers(&now) {
-            if let Some(moments) = self.moments().as_mut() {
-                moments.screen_changed();
-            }
+        if let Some(moments) = self.moments().as_mut() {
+            moments.people(everyone(&state.own_identity, &now));
         }
         state.seen = now;
     }
@@ -795,16 +835,58 @@ mod tests {
     }
 
     #[test]
-    fn someone_starting_or_stopping_a_share_changes_the_screen() {
-        let nobody = people(&[participant(SAM, "Sam", false)]);
-        let sam = people(&[participant(SAM, "Sam", true)]);
-        let you = people(&[
+    fn your_colour_goes_by_your_user_id() {
+        let seen = people(&[
+            participant("local", "Alex", false),
             participant(SAM, "Sam", false),
-            participant("local", "Alex", true),
         ]);
-        assert_ne!(sharers(&nobody), sharers(&sam));
-        assert_ne!(sharers(&sam), sharers(&you));
-        assert_eq!(sharers(&nobody), sharers(&people(&[])));
+        assert_eq!(
+            everyone("room:r1:user-alex:audio", &seen),
+            vec!["room:r1:user-alex:audio", "user-sam"]
+        );
+    }
+
+    /// A still screen sends one frame, so it must be told about the share first.
+    #[test]
+    fn marks_on_a_still_screen_still_get_a_frame() -> anyhow::Result<()> {
+        let (capture, directory) = capture_with_moments("still");
+        capture.stills.watching.store(true, Ordering::Relaxed);
+        capture.screen_changed();
+        capture.offer_screen(&slide(800, 500, RED));
+        std::thread::sleep(Duration::from_millis(300));
+        capture.mark(
+            SAM,
+            "Sam",
+            &ClientEvent::ClickAnimation(ClientPoint { x: 0.5, y: 0.5 }),
+        );
+        std::thread::sleep(Duration::from_millis(2_100));
+        capture.moments().take().unwrap().finish();
+        let frame: moments::FrameInfo =
+            serde_json::from_slice(&std::fs::read(directory.join("frame-002.json"))?)?;
+        assert_eq!(frame.marks.len(), 1);
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    /// A share that ends while its last frame is being converted.
+    #[test]
+    fn a_copy_of_the_old_screen_is_dropped() {
+        let (capture, directory) = capture_with_moments("old");
+        capture.stills.watching.store(true, Ordering::Relaxed);
+        for _ in 0..50 {
+            capture.moments().as_mut().unwrap().screen_changed();
+            capture.offer_screen(&slide(2560, 1440, RED));
+            capture.screen_changed();
+            while capture.stills.converting.load(Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+        }
+        capture.moments().take().unwrap().finish();
+        let frames = std::fs::read_dir(&directory)
+            .map(|files| files.count())
+            .unwrap_or(0);
+        let _ = std::fs::remove_dir_all(directory);
+        assert_eq!(frames, 0);
     }
 
     /// What the stills cost the thread that makes the video, on the largest screens.
@@ -875,7 +957,7 @@ mod tests {
         let them = participant(SAM, "Sam", false);
 
         let capture = CallCapture::default();
-        let id = capture.begin("Test room".to_string(), &[you(false), them.clone()])?;
+        let id = capture.begin("Test room".to_string(), ALEX, &[you(false), them.clone()])?;
         capture.listen(&id);
         let muted = Arc::new(AtomicBool::new(false));
         let mic = MicTap::new(capture.tap(), ALEX, "Alex", muted);
@@ -891,7 +973,10 @@ mod tests {
             mic.hear(alex);
             remote.hear(sam);
             match index {
-                50 => capture.observe(&[you(true), them.clone()]),
+                50 => {
+                    capture.screen_changed();
+                    capture.observe(&[you(true), them.clone()]);
+                }
                 200 => capture.mark(
                     SAM,
                     "Sam",
@@ -958,11 +1043,12 @@ mod tests {
                 _ => {}
             }
             if index % 3 == 0 && index >= 50 {
-                capture.offer_screen(if index < 1700 { &first } else { &second });
+                capture.offer_screen(if index < 1500 { &first } else { &second });
             }
             let next = Duration::from_millis(10) * (index as u32 + 1);
             std::thread::sleep(next.saturating_sub(started.elapsed()));
         }
+        capture.screen_changed();
         capture.observe(&[you(false), them]);
         capture.stop();
         assert!(!capture.bookmark(None), "bookmarked after the capture");
@@ -1061,7 +1147,11 @@ mod tests {
         let sam_in_call = participant(SAM, "Sam", false);
 
         let capture = CallCapture::default();
-        let id = capture.begin("Test room".to_string(), std::slice::from_ref(&you))?;
+        let id = capture.begin(
+            "Test room".to_string(),
+            "room:r1:user-alex:audio",
+            std::slice::from_ref(&you),
+        )?;
         let muted = Arc::new(AtomicBool::new(false));
         let mic = MicTap::new(
             capture.tap(),

@@ -36,7 +36,11 @@ use image::RgbaImage;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync_channel},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+        mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync_channel},
+    },
     thread::JoinHandle,
     time::{Duration, Instant},
 };
@@ -92,6 +96,9 @@ pub const QUALITY: f32 = 85.;
 const MAX_STROKES: usize = 256;
 const MAX_POINTS: usize = 4_096;
 const MAX_FRAMES: u32 = 2_000;
+/// Copies of the screen waiting for the thread. Each can be 15 MB, and it can stall on a
+/// slow disk, so the rest are skipped.
+const MAX_QUEUED_SAMPLES: usize = 4;
 
 pub use hopp_marks::colours::colour;
 use hopp_marks::colours::{Colours, hex};
@@ -175,12 +182,15 @@ enum Message {
     Sample(VideoFrame),
     /// The shared screen changed hands or stopped: older frames and ink no longer apply.
     Screen,
+    /// Who's in the call, for everyone's colours.
+    People(Vec<String>),
     Stop,
 }
 
 /// The engine's side: cheap calls that hand work to the moments thread.
 pub struct Moments {
     sender: SyncSender<Message>,
+    queued_samples: Arc<AtomicUsize>,
     feed: Feed,
     last_sample: Option<Instant>,
     /// A mark is waiting for a frame: sample the next one whatever the interval.
@@ -196,13 +206,15 @@ impl Moments {
     /// Frames go into `directory`.
     pub fn start_in(directory: PathBuf, feed: Feed) -> Result<Self> {
         let (sender, receiver) = sync_channel(64);
-        let worker = Worker::new(directory, feed.clone());
+        let queued_samples = Arc::new(AtomicUsize::new(0));
+        let worker = Worker::new(directory, feed.clone(), queued_samples.clone());
         let thread = std::thread::Builder::new()
             .name("hopp-moments".into())
             .spawn(move || worker.run(receiver))
             .context("Starting the moments thread")?;
         Ok(Self {
             sender,
+            queued_samples,
             feed,
             last_sample: None,
             urgent: false,
@@ -211,9 +223,13 @@ impl Moments {
     }
 
     fn send(&self, message: Message) {
-        // Samples may be dropped when the thread is busy; marks wait their turn.
+        // A point in a stroke may be dropped when the thread is busy, because those come
+        // fastest and the stroke keeps its shape. Other marks wait their turn.
         match message {
-            Message::Sample(_) => {
+            Message::Draw {
+                event: DrawEvent::DrawAddPoint(_),
+                ..
+            } => {
                 let _ = self.sender.try_send(message);
             }
             other => {
@@ -288,12 +304,20 @@ impl Moments {
     /// A copy of the shared screen, in BGRA.
     pub fn sample(&mut self, frame: VideoFrame) {
         self.sampling();
-        self.send(Message::Sample(frame));
+        self.sampler().sample(frame);
     }
 
     /// For other threads (the share encoder) to hand over samples.
     pub fn sampler(&self) -> Sampler {
-        Sampler(self.sender.clone())
+        Sampler {
+            sender: self.sender.clone(),
+            queued: self.queued_samples.clone(),
+        }
+    }
+
+    /// Who's in the call, as identities, so ink has the colours it has on screen.
+    pub fn people(&mut self, people: Vec<String>) {
+        self.send(Message::People(people));
     }
 
     /// Write the frames still waiting, then stop. Waits at most a few seconds.
@@ -312,11 +336,18 @@ impl Moments {
 }
 
 #[derive(Clone)]
-pub struct Sampler(SyncSender<Message>);
+pub struct Sampler {
+    sender: SyncSender<Message>,
+    queued: Arc<AtomicUsize>,
+}
 
 impl Sampler {
     pub fn sample(&self, frame: VideoFrame) {
-        let _ = self.0.try_send(Message::Sample(frame));
+        if self.queued.fetch_add(1, Ordering::AcqRel) >= MAX_QUEUED_SAMPLES
+            || self.sender.try_send(Message::Sample(frame)).is_err()
+        {
+            self.queued.fetch_sub(1, Ordering::AcqRel);
+        }
     }
 }
 
@@ -395,13 +426,15 @@ struct Worker {
     saved_thumb: Option<Vec<f32>>,
     /// Colours given out in this call: one each, different where the palette allows.
     colours: Colours,
+    queued_samples: Arc<AtomicUsize>,
 }
 
 impl Worker {
-    fn new(directory: PathBuf, feed: Feed) -> Self {
+    fn new(directory: PathBuf, feed: Feed, queued_samples: Arc<AtomicUsize>) -> Self {
         Self {
             directory,
             feed,
+            queued_samples,
             strokes: Vec::new(),
             active: HashMap::new(),
             pins: Vec::new(),
@@ -440,7 +473,13 @@ impl Worker {
                     message,
                     t_ms,
                 }) => self.stamp(owner, name, message, t_ms),
-                Ok(Message::Sample(frame)) => self.sample(frame),
+                Ok(Message::Sample(frame)) => {
+                    self.queued_samples.fetch_sub(1, Ordering::AcqRel);
+                    self.sample(frame);
+                }
+                Ok(Message::People(people)) => {
+                    self.colours = Colours::for_call(people.iter().map(String::as_str));
+                }
                 Ok(Message::Screen) => {
                     self.latest = None;
                     self.scene = Scene::default();
@@ -1442,6 +1481,66 @@ mod tests {
             }
         }
         out
+    }
+
+    #[test]
+    fn a_stalled_thread_holds_only_a_few_copies_of_the_screen() {
+        let (sender, receiver) = sync_channel(64);
+        let queued = Arc::new(AtomicUsize::new(0));
+        let sampler = Sampler {
+            sender,
+            queued: queued.clone(),
+        };
+        for _ in 0..10 {
+            sampler.sample(flat(16, 16, 0));
+        }
+        assert_eq!(receiver.try_iter().count(), MAX_QUEUED_SAMPLES);
+        assert_eq!(queued.load(Ordering::Acquire), MAX_QUEUED_SAMPLES);
+    }
+
+    #[test]
+    fn copies_of_the_screen_keep_coming_once_the_thread_has_them() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let (feed, _receiver) = Feed::for_tests();
+        let mut moments = Moments::start_in(directory.path().into(), feed)?;
+        for _ in 0..12 {
+            moments.sample(flat(16, 16, 0));
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(moments.queued_samples.load(Ordering::Acquire), 0);
+        moments.finish();
+        Ok(())
+    }
+
+    #[test]
+    fn ink_has_the_colours_it_has_on_screen() -> Result<()> {
+        // Two people who want the same colour: the one sorting first keeps it.
+        let id = |n: u32| format!("room:r:user-{n:03}:audio");
+        let mut ids = (0..100).map(id);
+        let first = ids.next().unwrap();
+        let second = ids.find(|other| colour(other) == colour(&first)).unwrap();
+
+        let directory = tempfile::tempdir()?;
+        let (feed, receiver) = Feed::for_tests();
+        let mut moments = Moments::start_in(directory.path().into(), feed)?;
+        moments.people(vec![first.clone(), second.clone()]);
+        moments.sample(flat(800, 500, 90));
+        let _ = frames(&receiver, Duration::from_millis(1_000));
+
+        // The later one marks first, and still doesn't get the colour they both want.
+        let point = Point { x: 0.5, y: 0.5 };
+        moments.draw(&second, "Second", &DrawEvent::ClickAnimation(point));
+        std::thread::sleep(Duration::from_millis(300));
+        moments.sample(flat(800, 500, 90));
+        assert_eq!(frames(&receiver, Duration::from_millis(1_500)).len(), 1);
+        let info: FrameInfo =
+            serde_json::from_slice(&std::fs::read(directory.path().join("frame-002.json"))?)?;
+        let expected = Colours::for_call([first.as_str(), second.as_str()]);
+        assert_eq!(info.marks[0].colour, hex(expected.get(&second).unwrap()));
+        assert_ne!(info.marks[0].colour, hex(colour(&second)));
+        moments.finish();
+        Ok(())
     }
 
     #[test]
