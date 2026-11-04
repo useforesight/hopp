@@ -233,6 +233,7 @@ pub fn run(command: CaptureCommand) -> Result<()> {
             store.delete(&call.id)?;
             let markdown = super::markdown_path(&call.id)?;
             let _ = std::fs::remove_file(markdown);
+            super::moments::remove(&call.id);
             println!("Deleted {}", call.id);
         }
     }

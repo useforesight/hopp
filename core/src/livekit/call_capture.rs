@@ -1,22 +1,29 @@
 //! Capture in the Mac app: a transcript of the call, one track per person, saved only on
 //! this computer. The recorder and its rules are in `hopp-capture`; this starts and stops
 //! it with the call and feeds it. Nothing here can hold up the call: when nothing is being
-//! captured each 10 ms audio frame costs one atomic load, and a capture never waits.
+//! captured each audio or video frame costs one atomic load, and a capture never waits.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use hopp_capture::moments::{
+    DrawEvent, Moments, PathPoint, Point, Sampler, VideoFrame, AGENT_EDGE,
+};
 use hopp_capture::recorder::{self, Recorder, Speaker};
 use hopp_capture::{config, liveness, models, store, Tap};
 use hopp_marks::colours::{canonical_identity, person};
+use hopp_marks::stamps::StampMessage;
 use livekit::participant::LocalParticipant;
+use livekit::webrtc::prelude::I420Buffer;
+use livekit::webrtc::video_frame::{native::VideoFrameBufferExt, VideoBuffer, VideoFormatType};
 use socket_lib::CoreParticipantState;
 
 use crate::livekit::audio::LIVEKIT_SAMPLE_RATE;
 use crate::livekit::participant::CAPTURE_ATTRIBUTE;
+use crate::room_service::{ClientEvent, ClientPoint};
 
 // The recorder counts 10 ms frames at its own rate, so it must be the call's.
 const _: () = assert!(LIVEKIT_SAMPLE_RATE as usize == hopp_capture::vad::RATE);
@@ -42,6 +49,16 @@ struct Person {
 
 fn name_or(name: &str, placeholder: &str) -> String {
     if name.is_empty() { placeholder } else { name }.to_string()
+}
+
+/// The server names a person's other connections "Sam video" and "Sam camera".
+pub fn person_name<'a>(identity: &str, name: &'a str) -> &'a str {
+    let suffix = match identity.rsplit(':').next() {
+        Some("video") => " video",
+        Some("camera") => " camera",
+        _ => return name,
+    };
+    name.strip_suffix(suffix).unwrap_or(name)
 }
 
 fn people(snapshot: &[CoreParticipantState]) -> People {
@@ -83,6 +100,65 @@ fn changes(before: &People, after: &People) -> Vec<String> {
         }
     }
     lines
+}
+
+/// Everyone's identities for their colours: the snapshot calls you "local".
+fn everyone(own: &str, people: &People) -> Vec<String> {
+    people
+        .keys()
+        .map(|id| if id == "local" { own } else { id }.to_string())
+        .collect()
+}
+
+/// What a data message means to the capture's frames, if anything.
+fn draw_event(event: &ClientEvent) -> Option<DrawEvent> {
+    let at = |point: &ClientPoint| Point {
+        x: point.x,
+        y: point.y,
+    };
+    Some(match event {
+        ClientEvent::DrawStart(start) => DrawEvent::DrawStart(PathPoint {
+            point: at(&start.point),
+            path_id: start.path_id,
+        }),
+        ClientEvent::DrawAddPoint(point) => DrawEvent::DrawAddPoint(at(point)),
+        ClientEvent::DrawEnd(point) => DrawEvent::DrawEnd(at(point)),
+        ClientEvent::DrawClearPath { path_id } => DrawEvent::DrawClearPath { path_id: *path_id },
+        ClientEvent::DrawClearAllPaths => DrawEvent::DrawClearAllPaths,
+        ClientEvent::ClickAnimation(point) => DrawEvent::ClickAnimation(at(point)),
+        _ => return None,
+    })
+}
+
+/// A copy of the shared screen to keep, shrunk to a short side of at most `AGENT_EDGE`.
+fn still_of(mut buffer: I420Buffer) -> Option<VideoFrame> {
+    let (width, height) = (buffer.width(), buffer.height());
+    let pixels = width as usize * height as usize;
+    if pixels == 0 || pixels > 7680 * 4320 {
+        return None;
+    }
+    let short = width.min(height);
+    let scaled = (short > AGENT_EDGE).then(|| {
+        let scale = AGENT_EDGE as f64 / short as f64;
+        let even = |side: u32| (((side as f64 * scale) as u32) / 2 * 2).max(2);
+        buffer.scale(even(width) as i32, even(height) as i32)
+    });
+    let buffer = scaled.as_ref().unwrap_or(&buffer);
+    let (width, height) = (buffer.width(), buffer.height());
+    let mut bgra = vec![0; width as usize * height as usize * 4];
+    // libyuv names formats by word, so its ARGB is B, G, R, A in memory.
+    buffer.to_argb(
+        VideoFormatType::ARGB,
+        &mut bgra,
+        width * 4,
+        width as i32,
+        height as i32,
+    );
+    Some(VideoFrame {
+        width,
+        height,
+        bgra,
+    })
 }
 
 /// One person's audio on its way to the capture.
@@ -131,6 +207,28 @@ impl MicTap {
 struct State {
     recorder: Option<Recorder>,
     seen: People,
+    own_identity: String,
+}
+
+/// The capture's stills of the shared screen. Apart from `State`, so that video and marks
+/// don't wait on the people in the call.
+#[derive(Default)]
+struct Stills {
+    /// Off until the call has been told, like the audio.
+    watching: AtomicBool,
+    moments: Mutex<Option<Moments>>,
+    converting: AtomicBool,
+    /// Counts changes of the shared screen, to drop a copy of the old one still on its way.
+    screen: AtomicU64,
+}
+
+/// Held while a copy of the screen is being converted, however that ends.
+struct Converting(Arc<Stills>);
+
+impl Drop for Converting {
+    fn drop(&mut self) {
+        self.0.converting.store(false, Ordering::Release);
+    }
 }
 
 /// The capture of the current call, if there is one. Cheap to clone.
@@ -138,6 +236,7 @@ struct State {
 pub struct CallCapture {
     tap: Tap,
     state: Arc<Mutex<State>>,
+    stills: Arc<Stills>,
 }
 
 impl std::fmt::Debug for CallCapture {
@@ -164,6 +263,121 @@ impl CallCapture {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    fn moments(&self) -> MutexGuard<'_, Option<Moments>> {
+        let moments = self.stills.moments.lock();
+        moments.unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn watching(&self) -> bool {
+        self.stills.watching.load(Ordering::Relaxed)
+    }
+
+    /// A frame of the shared screen, once it's on its way to the call. Called for every
+    /// frame, and copies at most two a second: the shrinking and converting happen on a
+    /// thread of their own, and a frame that would have to wait is skipped.
+    pub fn offer_screen(&self, frame: &impl VideoBuffer) {
+        if !self.watching() {
+            return;
+        }
+        let screen = self.stills.screen.load(Ordering::Acquire);
+        let Some(sampler) = self.sampler_if_wanted() else {
+            return;
+        };
+        let copy = frame.to_i420();
+        let converting = Converting(self.stills.clone());
+        let thread = std::thread::Builder::new()
+            .name("hopp-capture-still".into())
+            .spawn(move || {
+                let converting = converting;
+                if let Some(still) = still_of(copy) {
+                    if converting.0.screen.load(Ordering::Acquire) == screen {
+                        sampler.sample(still);
+                    }
+                }
+            });
+        if let Err(error) = thread {
+            log::error!("Capture: couldn't copy the screen on a new thread: {error}");
+        }
+    }
+
+    /// The shared screen started, stopped or changed hands. Say so before its first frame,
+    /// which is the only one if the screen stays still.
+    pub fn screen_changed(&self) {
+        self.stills.screen.fetch_add(1, Ordering::AcqRel);
+        if let Some(moments) = self.moments().as_mut() {
+            moments.screen_changed();
+        }
+    }
+
+    fn sampler_if_wanted(&self) -> Option<Sampler> {
+        // A mark may be holding this while the frames thread catches up.
+        let mut moments = match self.stills.moments.try_lock() {
+            Ok(moments) => moments,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => return None,
+        };
+        let moments = moments.as_mut().filter(|moments| moments.wants_sample())?;
+        if self.stills.converting.swap(true, Ordering::AcqRel) {
+            return None;
+        }
+        moments.sampling();
+        Some(moments.sampler())
+    }
+
+    /// Ink or a pin, from anyone. Marks can wait for room in the frames thread's queue, so
+    /// this isn't for the video paths.
+    pub fn mark(&self, owner: &str, name: &str, event: &ClientEvent) {
+        if !self.watching() {
+            return;
+        }
+        let Some(event) = draw_event(event) else {
+            return;
+        };
+        let name = name_or(person_name(owner, name), "Someone");
+        if let Some(moments) = self.moments().as_mut() {
+            moments.draw(owner, &name, &event);
+        }
+    }
+
+    pub fn own_mark(&self, local: &LocalParticipant, event: &ClientEvent) {
+        if self.watching() {
+            let name = name_or(&local.name(), "You");
+            self.mark(local.identity().as_str(), &name, event);
+        }
+    }
+
+    pub fn stamp(&self, owner: &str, name: &str, message: &StampMessage) {
+        if !self.watching() {
+            return;
+        }
+        let name = name_or(person_name(owner, name), "Someone");
+        if let Some(moments) = self.moments().as_mut() {
+            moments.stamp(owner, &name, message);
+        }
+    }
+
+    pub fn own_stamp(&self, local: &LocalParticipant, message: &StampMessage) {
+        if self.watching() {
+            let name = name_or(&local.name(), "You");
+            self.stamp(local.identity().as_str(), &name, message);
+        }
+    }
+
+    /// Mark this moment in the transcript and on a frame. False if nothing's being captured.
+    pub fn bookmark(&self, label: Option<String>) -> bool {
+        let state = self.state();
+        let Some(recorder) = state.recorder.as_ref() else {
+            return false;
+        };
+        let who = state.seen.get("local").map(|you| you.name.clone());
+        let label = label.unwrap_or_else(|| "Bookmark".to_string());
+        if let Some(moments) = self.moments().as_mut() {
+            moments.bookmark(who.clone(), &label);
+        }
+        recorder.feed().bookmark(who, label);
+        true
+    }
+
     /// Capture this call if the user chose to capture every call. Off until they do, see
     /// `config::Config::auto`.
     pub async fn auto_start(
@@ -176,7 +390,10 @@ impl CallCapture {
             return;
         }
         let capture = self.clone();
-        match tokio::task::spawn_blocking(move || capture.begin(room, &snapshot)).await {
+        let own_identity = local.identity().as_str().to_string();
+        match tokio::task::spawn_blocking(move || capture.begin(room, &own_identity, &snapshot))
+            .await
+        {
             Ok(Ok(id)) => {
                 let capture = self.clone();
                 tokio::spawn(async move {
@@ -190,7 +407,12 @@ impl CallCapture {
     }
 
     /// Open the capture, not yet listening. Returns its id.
-    fn begin(&self, room: String, snapshot: &[CoreParticipantState]) -> anyhow::Result<String> {
+    fn begin(
+        &self,
+        room: String,
+        own_identity: &str,
+        snapshot: &[CoreParticipantState],
+    ) -> anyhow::Result<String> {
         let chosen = config::load();
         let model = models::find(&chosen.model).or_else(|_| models::find(models::DEFAULT))?;
         let store = store::default_path()?;
@@ -218,8 +440,17 @@ impl CallCapture {
         for sharer in seen.values().filter(|p| p.sharing) {
             feed.event(format!("{} is sharing their screen", sharer.name));
         }
+        // The transcript matters more than its frames.
+        match Moments::start(&id, feed) {
+            Ok(mut moments) => {
+                moments.people(everyone(own_identity, &seen));
+                *self.moments() = Some(moments);
+            }
+            Err(error) => log::error!("Capture {id}: no screen frames: {error:#}"),
+        }
         let mut state = self.state();
         state.seen = seen;
+        state.own_identity = own_identity.to_string();
         state.recorder = Some(recorder);
         Ok(id)
     }
@@ -229,6 +460,7 @@ impl CallCapture {
         let state = self.state();
         if let Some(recorder) = state.recorder.as_ref().filter(|r| r.id() == id) {
             self.tap.set(Some(recorder.feed()));
+            self.stills.watching.store(true, Ordering::Relaxed);
         }
     }
 
@@ -246,6 +478,9 @@ impl CallCapture {
             feed.event(line);
         }
         feed.participants(now.values().map(|p| p.name.clone()).collect());
+        if let Some(moments) = self.moments().as_mut() {
+            moments.people(everyone(&state.own_identity, &now));
+        }
         state.seen = now;
     }
 
@@ -259,7 +494,9 @@ impl CallCapture {
     pub fn stop(&self) {
         let mut state = self.state();
         self.tap.set(None);
+        self.stills.watching.store(false, Ordering::Relaxed);
         state.seen.clear();
+        let moments = self.moments().take();
         let Some(recorder) = state.recorder.take() else {
             return;
         };
@@ -267,6 +504,10 @@ impl CallCapture {
         let finishing = std::thread::Builder::new()
             .name("hopp-capture-finish".into())
             .spawn(move || {
+                // Its last frames go into the transcript before the recorder finishes.
+                if let Some(moments) = moments {
+                    moments.finish();
+                }
                 if let Err(error) = recorder.finish() {
                     log::error!("Capture {id}: didn't finish cleanly: {error:#}");
                 }
@@ -313,7 +554,11 @@ async fn tell_the_call(local: LocalParticipant) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::room_service::DrawPathPoint;
+    use hopp_capture::moments;
     use hopp_capture::recorder::{Feed, Input};
+    use livekit::webrtc::prelude::NV12Buffer;
+    use std::collections::BTreeSet;
 
     fn participant(identity: &str, name: &str, sharing: bool) -> CoreParticipantState {
         CoreParticipantState {
@@ -462,23 +707,455 @@ mod tests {
         assert_eq!(changes(&start, &after), vec!["Someone joined"]);
     }
 
-    /// Everything but LiveKit, in real time: two people's tracks into a saved transcript.
-    /// Alex mutes after their first sentence, so their second must not be in it.
     #[test]
-    #[ignore = "needs HOPP_CAPTURE_HOME with the model, HOPP_TRANSCRIBE_HELPER, HOPP_TEST_VOICES"]
-    fn a_call_goes_from_its_tracks_to_a_transcript() -> anyhow::Result<()> {
+    fn a_person_is_not_their_connection() {
+        assert_eq!(person_name("room:r1:u1:video", "Sam video"), "Sam");
+        assert_eq!(person_name("room:r1:u1:camera", "Sam camera"), "Sam");
+        assert_eq!(person_name("room:r1:u1:audio", "Sam video"), "Sam video");
+        assert_eq!(person_name("local", "Sam"), "Sam");
+    }
+
+    /// YUV for a slide in one colour.
+    const RED: [u8; 3] = [81, 90, 240];
+    const BLUE: [u8; 3] = [41, 240, 110];
+
+    fn slide(width: u32, height: u32, [y, u, v]: [u8; 3]) -> I420Buffer {
+        let mut buffer = I420Buffer::new(width, height);
+        let (luma, blue_chroma, red_chroma) = buffer.data_mut();
+        luma.fill(y);
+        blue_chroma.fill(u);
+        red_chroma.fill(v);
+        buffer
+    }
+
+    #[test]
+    fn a_still_is_in_the_order_the_frames_expect() {
+        let still = still_of(slide(64, 36, RED)).unwrap();
+        assert_eq!((still.width, still.height), (64, 36));
+        let [blue, green, red, alpha] = still.bgra[..4] else {
+            panic!("no pixels");
+        };
+        assert!(red > 200 && green < 60 && blue < 60, "{blue} {green} {red}");
+        assert_eq!(alpha, 255);
+    }
+
+    #[test]
+    fn a_still_is_no_bigger_than_agents_need() {
+        let big = still_of(slide(2560, 1600, RED)).unwrap();
+        assert_eq!((big.width, big.height), (2304, 1440));
+        assert_eq!(big.bgra.len(), 2304 * 1440 * 4);
+        let smaller = still_of(slide(1920, 1080, RED)).unwrap();
+        assert_eq!((smaller.width, smaller.height), (1920, 1080));
+    }
+
+    fn capture_with_moments(name: &str) -> (CallCapture, std::path::PathBuf) {
+        let directory =
+            std::env::temp_dir().join(format!("hopp-call-capture-{name}-{}", std::process::id()));
+        let (feed, _input) = Feed::for_tests();
+        let capture = CallCapture::default();
+        *capture.moments() = Some(Moments::start_in(directory.clone(), feed).unwrap());
+        (capture, directory)
+    }
+
+    fn wants_a_frame(capture: &CallCapture) -> bool {
+        capture.moments().as_ref().unwrap().wants_sample()
+    }
+
+    #[test]
+    fn the_screen_is_left_alone_until_the_call_has_been_told() {
+        let (capture, directory) = capture_with_moments("told");
+        capture.offer_screen(&slide(64, 36, RED));
+        assert!(wants_a_frame(&capture), "copied before the call was told");
+        capture.mark(
+            SAM,
+            "Sam",
+            &ClientEvent::ClickAnimation(ClientPoint { x: 0.5, y: 0.5 }),
+        );
+        capture.stills.watching.store(true, Ordering::Relaxed);
+        capture.offer_screen(&slide(64, 36, RED));
+        assert!(!wants_a_frame(&capture), "the first frame wasn't copied");
+        capture.moments().take().unwrap().finish();
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn a_finished_mark_asks_for_a_frame_straight_away() {
+        let (capture, directory) = capture_with_moments("urgent");
+        capture.stills.watching.store(true, Ordering::Relaxed);
+        capture.offer_screen(&slide(64, 36, RED));
+        assert!(!wants_a_frame(&capture));
+        capture.mark(
+            SAM,
+            "Sam",
+            &ClientEvent::ClickAnimation(ClientPoint { x: 0.5, y: 0.5 }),
+        );
+        assert!(wants_a_frame(&capture));
+        capture.moments().take().unwrap().finish();
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn only_marks_are_marks() {
+        let point = || ClientPoint { x: 0.25, y: 0.75 };
+        let at = Point { x: 0.25, y: 0.75 };
+        let start = PathPoint {
+            point: at,
+            path_id: 4,
+        };
+        let cases = [
+            (
+                ClientEvent::DrawStart(DrawPathPoint {
+                    point: point(),
+                    path_id: 4,
+                }),
+                Some(DrawEvent::DrawStart(start)),
+            ),
+            (
+                ClientEvent::DrawAddPoint(point()),
+                Some(DrawEvent::DrawAddPoint(at)),
+            ),
+            (ClientEvent::DrawEnd(point()), Some(DrawEvent::DrawEnd(at))),
+            (
+                ClientEvent::DrawClearPath { path_id: 4 },
+                Some(DrawEvent::DrawClearPath { path_id: 4 }),
+            ),
+            (
+                ClientEvent::DrawClearAllPaths,
+                Some(DrawEvent::DrawClearAllPaths),
+            ),
+            (
+                ClientEvent::ClickAnimation(point()),
+                Some(DrawEvent::ClickAnimation(at)),
+            ),
+            (ClientEvent::MouseMove(point()), None),
+        ];
+        for (event, expected) in cases {
+            assert_eq!(draw_event(&event), expected, "{event:?}");
+        }
+    }
+
+    #[test]
+    fn your_colour_goes_by_your_user_id() {
+        let seen = people(&[
+            participant("local", "Alex", false),
+            participant(SAM, "Sam", false),
+        ]);
+        assert_eq!(
+            everyone("room:r1:user-alex:audio", &seen),
+            vec!["room:r1:user-alex:audio", "user-sam"]
+        );
+    }
+
+    /// A still screen sends one frame, so it must be told about the share first.
+    #[test]
+    fn marks_on_a_still_screen_still_get_a_frame() -> anyhow::Result<()> {
+        let (capture, directory) = capture_with_moments("still");
+        capture.stills.watching.store(true, Ordering::Relaxed);
+        capture.screen_changed();
+        capture.offer_screen(&slide(800, 500, RED));
+        std::thread::sleep(Duration::from_millis(300));
+        capture.mark(
+            SAM,
+            "Sam",
+            &ClientEvent::ClickAnimation(ClientPoint { x: 0.5, y: 0.5 }),
+        );
+        std::thread::sleep(Duration::from_millis(2_100));
+        capture.moments().take().unwrap().finish();
+        let frame: moments::FrameInfo =
+            serde_json::from_slice(&std::fs::read(directory.join("frame-002.json"))?)?;
+        assert_eq!(frame.marks.len(), 1);
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    /// A share that ends while its last frame is being converted.
+    #[test]
+    fn a_copy_of_the_old_screen_is_dropped() {
+        let (capture, directory) = capture_with_moments("old");
+        capture.stills.watching.store(true, Ordering::Relaxed);
+        for _ in 0..50 {
+            capture.moments().as_mut().unwrap().screen_changed();
+            capture.offer_screen(&slide(2560, 1440, RED));
+            capture.screen_changed();
+            while capture.stills.converting.load(Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+        }
+        capture.moments().take().unwrap().finish();
+        let frames = std::fs::read_dir(&directory)
+            .map(|files| files.count())
+            .unwrap_or(0);
+        let _ = std::fs::remove_dir_all(directory);
+        assert_eq!(frames, 0);
+    }
+
+    /// What the stills cost the thread that makes the video, on the largest screens.
+    #[test]
+    #[ignore = "a measurement, it asserts nothing"]
+    fn what_a_still_costs_the_video_thread() {
+        let (width, height) = (5120, 2880);
+        let mut screen = NV12Buffer::new(width, height);
+        let (luma, chroma) = screen.data_mut();
+        luma.fill(120);
+        chroma.fill(128);
+        let (capture, directory) = capture_with_moments("cost");
+        let mut idle = Vec::new();
+        for _ in 0..1_000 {
+            let started = Instant::now();
+            capture.offer_screen(&screen);
+            idle.push(started.elapsed());
+        }
+        capture.stills.watching.store(true, Ordering::Relaxed);
+        let mut copying = Vec::new();
+        for _ in 0..8 {
+            capture.moments().as_mut().unwrap().screen_changed();
+            std::thread::sleep(Duration::from_millis(120));
+            let started = Instant::now();
+            capture.offer_screen(&screen);
+            copying.push(started.elapsed());
+        }
+        let started = Instant::now();
+        let still = still_of(screen.to_i420()).unwrap();
+        let converting = started.elapsed();
+        idle.sort();
+        copying.sort();
+        println!(
+            "not capturing: worst {:?}; a copy of {width}x{height}: median {:?}, worst {:?}; \
+             then {converting:?} off that thread for {}x{}",
+            idle[idle.len() - 1],
+            copying[copying.len() / 2],
+            copying[copying.len() - 1],
+            still.width,
+            still.height,
+        );
+        capture.moments().take().unwrap().finish();
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    fn test_voices() -> anyhow::Result<(Vec<i16>, Vec<i16>)> {
         let voices = std::path::PathBuf::from(std::env::var("HOPP_TEST_VOICES")?);
         let load = |file: &str| -> anyhow::Result<Vec<i16>> {
             let (rate, samples) = hopp_capture::wav::read(&std::fs::read(voices.join(file))?)?;
             Ok(hopp_capture::resample::to_call_rate(rate, &samples))
         };
-        let (alex, sam) = (load("alex.wav")?, load("sam.wav")?);
+        Ok((load("alex.wav")?, load("sam.wav")?))
+    }
+
+    fn near(found: [f64; 4], drawn: [f64; 4]) -> bool {
+        found.iter().zip(drawn).all(|(a, b)| (a - b).abs() <= 0.01)
+    }
+
+    /// The guide's scripted call without LiveKit or a real screen: two voices in real time,
+    /// one share, ink and pins from both people, a bookmark and a finished stamp.
+    #[test]
+    #[ignore = "needs HOPP_CAPTURE_HOME with the model, HOPP_TRANSCRIBE_HELPER, HOPP_TEST_VOICES"]
+    fn a_scripted_call_keeps_every_mark_on_a_frame() -> anyhow::Result<()> {
+        const ALEX: &str = "room:r1:user-alex:audio";
+        let (alex, sam) = test_voices()?;
+        let frame = LIVEKIT_SAMPLE_RATE as usize / 100;
+        let you = |sharing: bool| participant("local", "Alex", sharing);
+        let them = participant(SAM, "Sam", false);
+
+        let capture = CallCapture::default();
+        let id = capture.begin("Test room".to_string(), ALEX, &[you(false), them.clone()])?;
+        capture.listen(&id);
+        let muted = Arc::new(AtomicBool::new(false));
+        let mic = MicTap::new(capture.tap(), ALEX, "Alex", muted);
+        let remote = capture.track_tap(SAM, "Sam");
+        let (first, second) = (slide(1920, 1080, RED), slide(1920, 1080, BLUE));
+        let circle = |step: usize| ClientPoint {
+            x: 0.30 + 0.05 * (step as f64 / 60. * std::f64::consts::TAU).cos(),
+            y: 0.40 + 0.09 * (step as f64 / 60. * std::f64::consts::TAU).sin(),
+        };
+
+        let mut voices = alex.chunks(frame).zip(sam.chunks(frame));
+        let started = Instant::now();
+        // The share goes on a little after the last words, as the new slide settles.
+        for index in 0..2_500 {
+            if let Some((alex, sam)) = voices.next() {
+                mic.hear(alex);
+                remote.hear(sam);
+            }
+            match index {
+                50 => {
+                    capture.screen_changed();
+                    capture.observe(&[you(true), them.clone()]);
+                }
+                200 => capture.mark(
+                    SAM,
+                    "Sam",
+                    &ClientEvent::DrawStart(DrawPathPoint {
+                        point: circle(0),
+                        path_id: 1,
+                    }),
+                ),
+                201..=259 => {
+                    capture.mark(SAM, "Sam", &ClientEvent::DrawAddPoint(circle(index - 200)))
+                }
+                260 => capture.mark(SAM, "Sam", &ClientEvent::DrawEnd(circle(0))),
+                600 => capture.mark(
+                    ALEX,
+                    "Alex",
+                    &ClientEvent::DrawStart(DrawPathPoint {
+                        point: ClientPoint { x: 0.50, y: 0.70 },
+                        path_id: 1,
+                    }),
+                ),
+                601..=639 => capture.mark(
+                    ALEX,
+                    "Alex",
+                    &ClientEvent::DrawAddPoint(ClientPoint {
+                        x: 0.50 + 0.25 * (index - 600) as f64 / 40.,
+                        y: 0.70,
+                    }),
+                ),
+                640 => capture.mark(
+                    ALEX,
+                    "Alex",
+                    &ClientEvent::DrawEnd(ClientPoint { x: 0.75, y: 0.70 }),
+                ),
+                900 => assert!(capture.bookmark(Some("The totals".to_string()))),
+                1100 => {
+                    let place = StampMessage::StampPlace {
+                        id: 9,
+                        x: 0.70,
+                        y: 0.20,
+                    };
+                    capture.stamp(SAM, "Sam", &place);
+                    // Everyone's ripple where a stamp lands.
+                    capture.mark(
+                        SAM,
+                        "Sam",
+                        &ClientEvent::ClickAnimation(ClientPoint { x: 0.70, y: 0.20 }),
+                    );
+                }
+                1150 => capture.stamp(
+                    SAM,
+                    "Sam",
+                    &StampMessage::StampText {
+                        id: 9,
+                        text: "check this total".to_string(),
+                        draft: String::new(),
+                        done: true,
+                    },
+                ),
+                1400 => capture.mark(
+                    ALEX,
+                    "Alex",
+                    &ClientEvent::ClickAnimation(ClientPoint { x: 0.50, y: 0.60 }),
+                ),
+                _ => {}
+            }
+            if index % 3 == 0 && index >= 50 {
+                capture.offer_screen(if index < 1700 { &first } else { &second });
+            }
+            let next = Duration::from_millis(10) * (index as u32 + 1);
+            std::thread::sleep(next.saturating_sub(started.elapsed()));
+        }
+        capture.screen_changed();
+        capture.observe(&[you(false), them]);
+        capture.stop();
+        assert!(!capture.bookmark(None), "bookmarked after the capture");
+        wait_for_finishing();
+
+        let transcript = store::Store::open_default()?.transcript(&id)?;
+        let text = transcript
+            .iter()
+            .map(store::format_line)
+            .collect::<Vec<_>>()
+            .join("\n");
+        println!("{id}\n{text}");
+        let frames = moments::list(&id)?;
+        for frame in &frames {
+            println!("{frame:?}");
+        }
+
+        let speakers: BTreeSet<_> = transcript
+            .iter()
+            .filter(|line| matches!(line.kind, store::Kind::Speech))
+            .filter_map(|line| line.speaker.as_deref())
+            .collect();
+        assert_eq!(speakers, BTreeSet::from(["Alex", "Sam"]), "{text}");
+
+        let on_a_frame = |by: &str, shape: &str, bounds: [f64; 4]| {
+            frames.iter().find(|frame| {
+                frame
+                    .marks
+                    .iter()
+                    .any(|mark| mark.by == by && mark.shape == shape && near(mark.bounds, bounds))
+            })
+        };
+        let circled = on_a_frame("Sam", "circle", [0.25, 0.31, 0.35, 0.49]);
+        assert!(circled.is_some(), "the circle: {frames:?}");
+        assert!(
+            on_a_frame("Alex", "underline", [0.50, 0.70, 0.75, 0.70]).is_some(),
+            "the underline: {frames:?}"
+        );
+        assert!(
+            on_a_frame("Alex", "pin", [0.50, 0.60, 0.50, 0.60]).is_some(),
+            "the pin: {frames:?}"
+        );
+        let bookmark = frames.iter().find(|frame| frame.trigger == "bookmark");
+        assert!(bookmark.is_some(), "the bookmark: {frames:?}");
+        assert!(text.contains("The totals"), "{text}");
+
+        let stamped = on_a_frame("Sam", "stamp", [0.70, 0.20, 0.70, 0.20]);
+        let stamped = stamped.expect("the stamp");
+        assert!(
+            stamped
+                .marks
+                .iter()
+                .any(|mark| mark.text.as_deref() == Some("check this total")),
+            "{stamped:?}"
+        );
+        let pins: Vec<_> = frames
+            .iter()
+            .flat_map(|frame| &frame.marks)
+            .filter_map(|mark| mark.pin)
+            .collect();
+        assert_eq!(pins, [1, 2], "a stamp's ripple isn't a pin of its own");
+
+        // The share's change of slide, and the ink in the picture itself.
+        assert!(
+            frames
+                .iter()
+                .filter(|frame| frame.trigger == "screen")
+                .count()
+                >= 2,
+            "the first view and the new slide: {frames:?}"
+        );
+        let circled = circled.unwrap();
+        let image = moments::load_image(&moments::full(&id, circled.number)?)?;
+        let (width, height) = (f64::from(image.width()), f64::from(image.height()));
+        let pixel = |x: f64, y: f64| image.get_pixel((width * x) as u32, (height * y) as u32).0;
+        let [red, green, blue, _] = pixel(0.1, 0.1);
+        assert!(red > 200 && green < 60 && blue < 60, "the slide is red");
+        let on_the_line = pixel(0.35, 0.40);
+        assert_ne!(
+            on_the_line,
+            pixel(0.1, 0.1),
+            "no ink in frame {}",
+            circled.number
+        );
+        Ok(())
+    }
+
+    /// Everything but LiveKit, in real time: two people's tracks into a saved transcript.
+    /// Alex mutes after their first sentence, so their second must not be in it.
+    #[test]
+    #[ignore = "needs HOPP_CAPTURE_HOME with the model, HOPP_TRANSCRIBE_HELPER, HOPP_TEST_VOICES"]
+    fn a_call_goes_from_its_tracks_to_a_transcript() -> anyhow::Result<()> {
+        let (alex, sam) = test_voices()?;
         let frame = LIVEKIT_SAMPLE_RATE as usize / 100;
         let you = participant("local", "Alex", false);
         let sam_in_call = participant(SAM, "Sam", false);
 
         let capture = CallCapture::default();
-        let id = capture.begin("Test room".to_string(), std::slice::from_ref(&you))?;
+        let id = capture.begin(
+            "Test room".to_string(),
+            "room:r1:user-alex:audio",
+            std::slice::from_ref(&you),
+        )?;
         let muted = Arc::new(AtomicBool::new(false));
         let mic = MicTap::new(
             capture.tap(),

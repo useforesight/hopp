@@ -595,6 +595,11 @@ impl RoomService {
     }
 
     /// Returns a list of all non-local participants from the participants map.
+    /// For the share's video path, whose frames go into the capture.
+    pub fn call_capture(&self) -> CallCapture {
+        self.inner.call_capture.clone()
+    }
+
     pub fn get_participants(&self) -> Vec<ParticipantData> {
         let guard = self.inner.participants.read().unwrap();
         guard
@@ -1529,6 +1534,7 @@ async fn room_service_commands(
                 let room = room.as_ref().unwrap();
                 let local_participant = room.local_participant();
                 let event = ClientEvent::DrawStart(point);
+                inner.call_capture.own_mark(&local_participant, &event);
                 let payload = serde_json::to_vec(&event).unwrap();
                 let res = local_participant
                     .publish_data(DataPacket {
@@ -1552,6 +1558,7 @@ async fn room_service_commands(
                 let room = room.as_ref().unwrap();
                 let local_participant = room.local_participant();
                 let event = ClientEvent::DrawAddPoint(point);
+                inner.call_capture.own_mark(&local_participant, &event);
                 let payload = serde_json::to_vec(&event).unwrap();
                 let res = local_participant
                     .publish_data(DataPacket {
@@ -1575,6 +1582,7 @@ async fn room_service_commands(
                 let room = room.as_ref().unwrap();
                 let local_participant = room.local_participant();
                 let event = ClientEvent::DrawEnd(point);
+                inner.call_capture.own_mark(&local_participant, &event);
                 let payload = serde_json::to_vec(&event).unwrap();
                 let res = local_participant
                     .publish_data(DataPacket {
@@ -1601,6 +1609,7 @@ async fn room_service_commands(
                 // Send individual DrawClearPath events for each path ID
                 for path_id in path_ids {
                     let event = ClientEvent::DrawClearPath { path_id };
+                    inner.call_capture.own_mark(&local_participant, &event);
                     let payload = serde_json::to_vec(&event).unwrap();
                     let res = local_participant
                         .publish_data(DataPacket {
@@ -1628,6 +1637,7 @@ async fn room_service_commands(
                 let room = room.as_ref().unwrap();
                 let local_participant = room.local_participant();
                 let event = ClientEvent::DrawClearAllPaths;
+                inner.call_capture.own_mark(&local_participant, &event);
                 let payload = serde_json::to_vec(&event).unwrap();
                 let res = local_participant
                     .publish_data(DataPacket {
@@ -1914,6 +1924,7 @@ async fn room_service_commands(
                 let local_participant = room.local_participant();
 
                 let event = ClientEvent::ClickAnimation(point);
+                inner.call_capture.own_mark(&local_participant, &event);
                 let payload = serde_json::to_vec(&event).unwrap();
                 let res = local_participant
                     .publish_data(DataPacket {
@@ -1934,9 +1945,10 @@ async fn room_service_commands(
                     log::warn!("room_service_commands: Room doesn't exist for PublishStamp");
                     continue;
                 };
+                let local_participant = room.local_participant();
+                inner.call_capture.own_stamp(&local_participant, &message);
                 let payload = serde_json::to_vec(&message).unwrap();
-                let res = room
-                    .local_participant()
+                let res = local_participant
                     .publish_data(DataPacket {
                         payload,
                         reliable: true,
@@ -2218,7 +2230,22 @@ fn start_remote_camera_stream(
         identity.to_string(),
         true,
         None,
+        None,
     ));
+}
+
+/// Someone's share ended. The flag is on their audio connection.
+fn clear_screensharing(
+    participants: &Arc<std::sync::RwLock<HashMap<String, ParticipantInfo>>>,
+    video_identity: &str,
+) {
+    let Some(prefix) = video_identity.strip_suffix(":video") else {
+        return;
+    };
+    let mut participants = participants.write().unwrap();
+    if let Some(info) = participants.get_mut(&format!("{prefix}:audio")) {
+        info.set_is_screensharing(false);
+    }
 }
 
 fn start_remote_screen_share_stream(
@@ -2228,6 +2255,7 @@ fn start_remote_screen_share_stream(
     participant_identity: &str,
     event_loop_proxy: &EventLoopProxy<UserEvent>,
     snapshot_sender: &SnapshotSender,
+    call_capture: &CallCapture,
 ) {
     {
         let mut stop_tx_guard = remote_screen_share.stop_tx.lock().unwrap();
@@ -2266,6 +2294,7 @@ fn start_remote_screen_share_stream(
         std::sync::mpsc::channel::<crate::window::screensharing_window::RedrawCommand>();
     let redraw_rx = std::sync::Arc::new(std::sync::Mutex::new(Some(redraw_rx)));
 
+    call_capture.screen_changed();
     tokio::spawn(process_video_stream(
         video_track,
         manager,
@@ -2273,6 +2302,7 @@ fn start_remote_screen_share_stream(
         format!("screenshare_{participant_identity}"),
         false,
         Some(redraw_tx.clone()),
+        Some(call_capture.clone()),
     ));
 
     let sharer_identity = {
@@ -2420,6 +2450,9 @@ async fn handle_room_events(ctx: RoomEventContext) {
                         log::warn!("handle_room_events: dropped a bad stamp from {sender}");
                         continue;
                     };
+                    inner
+                        .call_capture
+                        .stamp(&sender, &participant.name(), &message);
                     if let Err(e) =
                         event_loop_proxy.send_event(UserEvent::StampReceived(message, sender))
                     {
@@ -2500,11 +2533,14 @@ async fn handle_room_events(ctx: RoomEventContext) {
                     }
                 };
                 log::debug!("handle_room_events: Data received: {client_event:?}");
-                let identity = if let Some(participant) = participant {
-                    participant.identity().as_str().to_string()
+                let (identity, name) = if let Some(participant) = participant {
+                    (
+                        participant.identity().as_str().to_string(),
+                        participant.name(),
+                    )
                 } else {
                     log::warn!("handle_room_events: Participant is none");
-                    "".to_string()
+                    ("".to_string(), "".to_string())
                 };
 
                 /* Skip our own events. */
@@ -2512,6 +2548,8 @@ async fn handle_room_events(ctx: RoomEventContext) {
                     log::debug!("handle_room_events: Skipping own event");
                     continue;
                 }
+
+                inner.call_capture.mark(&identity, &name, &client_event);
 
                 let res = match client_event {
                     ClientEvent::MouseMove(point) => {
@@ -2656,6 +2694,7 @@ async fn handle_room_events(ctx: RoomEventContext) {
                         .unwrap()
                         .take();
                     remote_screen_share.app_veil_snapshot.lock().unwrap().take();
+                    inner.call_capture.screen_changed();
                     if let Err(error) =
                         event_loop_proxy.send_event(UserEvent::CloseScreenShareWindow)
                     {
@@ -2793,6 +2832,8 @@ async fn handle_room_events(ctx: RoomEventContext) {
                                 "handle_room_events: Ignoring mute from non-current publisher {}",
                                 identity,
                             );
+                            clear_screensharing(&participants, &identity);
+                            snapshot_sender.send_participants_snapshot();
                             continue;
                         }
 
@@ -2813,21 +2854,8 @@ async fn handle_room_events(ctx: RoomEventContext) {
                                 .take();
                             remote_screen_share.app_veil_snapshot.lock().unwrap().take();
                         }
-
-                        // Derive the audio participant identity to clear is_screensharing
-                        let audio_identity = {
-                            let video_identity = participant.identity().as_str().to_string();
-                            video_identity
-                                .strip_suffix(":video")
-                                .map(|prefix| format!("{prefix}:audio"))
-                        };
-                        if let Some(audio_id) = audio_identity {
-                            let mut participants_guard = participants.write().unwrap();
-                            if let Some(info) = participants_guard.get_mut(&audio_id) {
-                                info.set_is_screensharing(false);
-                            }
-                        }
-
+                        inner.call_capture.screen_changed();
+                        clear_screensharing(&participants, &identity);
                         snapshot_sender.send_participants_snapshot();
 
                         // Close the screen share window
@@ -2904,6 +2932,7 @@ async fn handle_room_events(ctx: RoomEventContext) {
                             &identity,
                             &event_loop_proxy,
                             &snapshot_sender,
+                            &inner.call_capture,
                         );
                     }
                     _ => {}
@@ -2974,6 +3003,7 @@ async fn handle_room_events(ctx: RoomEventContext) {
                                     &participant_identity,
                                     &event_loop_proxy,
                                     &snapshot_sender,
+                                    &inner.call_capture,
                                 );
                             } else {
                                 log::info!(
@@ -3032,89 +3062,79 @@ async fn handle_room_events(ctx: RoomEventContext) {
                 }
 
                 match track {
-                    livekit::track::RemoteTrack::Video(_) => {
-                        match publication.source() {
-                            TrackSource::Camera => {
-                                log::info!(
-                                    "handle_room_events: Camera track unsubscribed from {}",
-                                    participant_identity
-                                );
-                                let any_camera_active = {
-                                    let mut guard = participants.write().unwrap();
-                                    if let Some(info) = guard.get_mut(&participant_identity) {
-                                        info.stop_camera_stream();
-                                    }
-                                    guard.values().any(|info| info.camera_active())
-                                };
-                                if !any_camera_active {
-                                    if let Err(e) =
-                                        event_loop_proxy.send_event(UserEvent::CloseCameraWindow)
-                                    {
-                                        log::error!(
+                    livekit::track::RemoteTrack::Video(_) => match publication.source() {
+                        TrackSource::Camera => {
+                            log::info!(
+                                "handle_room_events: Camera track unsubscribed from {}",
+                                participant_identity
+                            );
+                            let any_camera_active = {
+                                let mut guard = participants.write().unwrap();
+                                if let Some(info) = guard.get_mut(&participant_identity) {
+                                    info.stop_camera_stream();
+                                }
+                                guard.values().any(|info| info.camera_active())
+                            };
+                            if !any_camera_active {
+                                if let Err(e) =
+                                    event_loop_proxy.send_event(UserEvent::CloseCameraWindow)
+                                {
+                                    log::error!(
                                             "handle_room_events: Failed to send CloseCameraWindow event: {e:?}"
                                         );
-                                    }
                                 }
-                            }
-                            TrackSource::Screenshare => {
-                                log::info!(
-                                    "handle_room_events: Screen share track unsubscribed from {}",
-                                    participant_identity
-                                );
-
-                                let is_current = {
-                                    let publisher_guard =
-                                        remote_screen_share.publisher_identity.lock().unwrap();
-                                    publisher_guard.as_deref()
-                                        == Some(participant_identity.as_str())
-                                };
-
-                                if is_current {
-                                    {
-                                        let mut stop_tx_guard =
-                                            remote_screen_share.stop_tx.lock().unwrap();
-                                        if let Some(tx) = stop_tx_guard.take() {
-                                            let _ = tx.send(());
-                                        }
-                                    }
-                                    remote_screen_share
-                                        .publisher_identity
-                                        .lock()
-                                        .unwrap()
-                                        .take();
-                                    remote_screen_share.app_veil_snapshot.lock().unwrap().take();
-
-                                    // Derive audio identity to clear is_screensharing
-                                    let audio_identity = participant_identity
-                                        .strip_suffix(":video")
-                                        .map(|prefix| format!("{prefix}:audio"));
-                                    if let Some(audio_id) = audio_identity {
-                                        let mut participants_guard = participants.write().unwrap();
-                                        if let Some(info) = participants_guard.get_mut(&audio_id) {
-                                            info.set_is_screensharing(false);
-                                        }
-                                    }
-
-                                    snapshot_sender.send_participants_snapshot();
-
-                                    if let Err(e) = event_loop_proxy
-                                        .send_event(UserEvent::CloseScreenShareWindow)
-                                    {
-                                        log::error!(
-                                            "handle_room_events: Failed to send CloseScreenShareWindow event: {e:?}"
-                                        );
-                                    }
-                                }
-                            }
-                            source => {
-                                log::info!(
-                                    "handle_room_events: Video track unsubscribed from {} ({:?})",
-                                    participant_identity,
-                                    source,
-                                );
                             }
                         }
-                    }
+                        TrackSource::Screenshare => {
+                            log::info!(
+                                "handle_room_events: Screen share track unsubscribed from {}",
+                                participant_identity
+                            );
+
+                            let is_current = {
+                                let publisher_guard =
+                                    remote_screen_share.publisher_identity.lock().unwrap();
+                                publisher_guard.as_deref() == Some(participant_identity.as_str())
+                            };
+
+                            if is_current {
+                                {
+                                    let mut stop_tx_guard =
+                                        remote_screen_share.stop_tx.lock().unwrap();
+                                    if let Some(tx) = stop_tx_guard.take() {
+                                        let _ = tx.send(());
+                                    }
+                                }
+                                remote_screen_share
+                                    .publisher_identity
+                                    .lock()
+                                    .unwrap()
+                                    .take();
+                                remote_screen_share.app_veil_snapshot.lock().unwrap().take();
+                                inner.call_capture.screen_changed();
+                                clear_screensharing(&participants, &participant_identity);
+                                snapshot_sender.send_participants_snapshot();
+
+                                if let Err(e) =
+                                    event_loop_proxy.send_event(UserEvent::CloseScreenShareWindow)
+                                {
+                                    log::error!(
+                                            "handle_room_events: Failed to send CloseScreenShareWindow event: {e:?}"
+                                        );
+                                }
+                            } else {
+                                clear_screensharing(&participants, &participant_identity);
+                                snapshot_sender.send_participants_snapshot();
+                            }
+                        }
+                        source => {
+                            log::info!(
+                                "handle_room_events: Video track unsubscribed from {} ({:?})",
+                                participant_identity,
+                                source,
+                            );
+                        }
+                    },
                     livekit::track::RemoteTrack::Audio(_) => {
                         log::info!(
                             "handle_room_events: Stopping audio stream for participant: {}",

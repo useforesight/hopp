@@ -45,3 +45,11 @@ does the same through the Mac's taps, in real time.
 `bench/live_text.py` times the live transcript. On an Apple M5 at background priority, with two
 synthetic voices over 95 s: first words after a median of 1.86 s (Linux 2.1 s), final text after
 0.78 s (Linux 0.56 s), transcriber busy for 13% of the audio (Linux 26%), and no word taken back.
+
+`moments` keeps numbered stills of the shared screen, with everyone's marks drawn on them, in
+`capture/frames/<id>/`: `frame-NNN.webp` (at most 1440 px), `frame-NNN.full.webp` and
+`frame-NNN.json`. `a_scripted_call_keeps_every_mark_on_a_frame` in `core/src/livekit/call_capture.rs`
+runs that through the real recorder and helper, and `what_a_still_costs` and `what_a_frame` measure
+it. On an Apple M5: 1.46 µs per video frame at worst when not capturing; a 5120x2880 frame costs
+the video thread a median of 680 µs (worst 3.8 ms, debug build) when a still is wanted; a 2560x1440
+still takes 182 ms on its own thread (release).

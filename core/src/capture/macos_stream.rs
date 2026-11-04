@@ -18,6 +18,7 @@ use std::sync::{
 
 use super::CapturerError;
 use crate::app_veil_state::{AppVeilState, TrackedApplication};
+use crate::livekit::call_capture::CallCapture;
 
 const HOPP_BUNDLE_ID: &str = "com.hopp.app";
 
@@ -162,6 +163,7 @@ pub struct Stream {
     scale: f64,
     target_process_id: Option<i32>,
     app_veil_state: AppVeilState,
+    call_capture: CallCapture,
 }
 
 impl Stream {
@@ -172,6 +174,7 @@ impl Stream {
         tx: mpsc::Sender<StreamRuntimeMessage>,
         buffer_source: NativeVideoSource,
         app_veil_state: AppVeilState,
+        call_capture: CallCapture,
     ) -> Result<Self, CapturerError> {
         Ok(Stream {
             sc_stream: None,
@@ -189,6 +192,7 @@ impl Stream {
             scale,
             target_process_id: None,
             app_veil_state,
+            call_capture,
         })
     }
 
@@ -354,6 +358,7 @@ impl Stream {
 
         let stream_buffer = self.stream_buffer.clone();
         let buffer_source = self.buffer_source.clone();
+        let call_capture = self.call_capture.clone();
         let failures_count = self.failures_count.clone();
         let frame_arc = self.frame.clone();
         let frame_changed_tx = self.permanent_error_tx.clone();
@@ -516,6 +521,7 @@ impl Stream {
 
             sb.video_frame.timestamp_us = capture_start.elapsed().as_micros() as i64;
             buffer_source.capture_frame(&sb.video_frame);
+            call_capture.offer_screen(&sb.video_frame.buffer);
         };
 
         let mut sc_stream = SCStream::new_with_delegate(&filter, &config, delegate);
@@ -592,6 +598,7 @@ impl Stream {
             scale: self.scale,
             target_process_id: self.target_process_id,
             app_veil_state: self.app_veil_state.clone(),
+            call_capture: self.call_capture.clone(),
         })
     }
 

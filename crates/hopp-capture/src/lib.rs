@@ -11,9 +11,11 @@ pub mod draft;
 pub mod follow;
 pub mod frame_files;
 pub mod helper;
+pub mod ink_raster;
 pub mod liveness;
 pub mod logger;
 pub mod models;
+pub mod moments;
 pub mod paths;
 pub mod recorder;
 pub mod resample;
@@ -84,6 +86,7 @@ pub fn prune() -> Result<usize> {
     let ids = store::Store::open(&path)?.prune(cutoff)?;
     for id in &ids {
         let _ = fs::remove_file(markdown_path(id)?);
+        moments::remove(id);
     }
     Ok(ids.len())
 }

@@ -7,6 +7,8 @@ use std::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 
+use crate::livekit::call_capture::CallCapture;
+
 /// Align a value up to the given alignment.
 fn align_to(value: u32, alignment: u32) -> u32 {
     value.div_ceil(alignment) * alignment
@@ -165,6 +167,7 @@ pub async fn process_video_stream(
     stream_key: String,
     is_camera: bool,
     redraw_tx: Option<std::sync::mpsc::Sender<crate::window::screensharing_window::RedrawCommand>>,
+    capture: Option<CallCapture>,
 ) {
     let stream_type = if is_camera { "camera" } else { "screen share" };
     log::info!(
@@ -202,6 +205,9 @@ pub async fn process_video_stream(
                         }
 
                         let i420 = latest_frame.buffer.to_i420();
+                        if let Some(capture) = &capture {
+                            capture.offer_screen(&i420);
+                        }
                         let width = latest_frame.buffer.width();
                         let height = latest_frame.buffer.height();
 

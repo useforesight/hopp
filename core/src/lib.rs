@@ -769,6 +769,8 @@ impl<'a> Application<'a> {
         }
 
         let app_veil_enabled = is_display_share && screen_capturer.app_veil_enabled();
+        let call_capture = room_service.call_capture();
+        call_capture.screen_changed();
         let res = screen_capturer.start_capture(
             screenshare_input.content,
             Extent {
@@ -777,6 +779,7 @@ impl<'a> Application<'a> {
             },
             buffer_source,
             scale,
+            call_capture,
         );
         if let Err(error) = res {
             #[cfg(target_os = "macos")]
@@ -1079,10 +1082,14 @@ impl<'a> Application<'a> {
             return;
         }
         let mut screen_capturer = screen_capturer.unwrap();
+        let was_sharing = screen_capturer.is_capturing();
         screen_capturer.stop_capture();
         drop(screen_capturer);
         if let Some(room_service) = self.room_service.as_ref() {
             room_service.mute_screen_share_track();
+            if was_sharing {
+                room_service.call_capture().screen_changed();
+            }
         }
         self.destroy_overlay_window();
         self.set_screensharing_active(false);
