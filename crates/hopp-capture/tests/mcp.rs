@@ -369,9 +369,14 @@ fn an_agent_follows_a_call_until_someone_wakes_it() -> Result<()> {
     )?;
     let mut agent = Agent::start(home.path())?;
 
+    // From this line, so a busy machine starting it late doesn't miss what's said next.
     let waiting = agent.start_tool(
         "capture_follow",
-        json!({ "wake_phrase": "hey claude", "timeout_seconds": 20 }),
+        json!({
+            "wake_phrase": "hey claude",
+            "timeout_seconds": 20,
+            "after_line": store.latest_rev("c_live")?,
+        }),
     )?;
     std::thread::sleep(Duration::from_millis(800));
     store.add_line(

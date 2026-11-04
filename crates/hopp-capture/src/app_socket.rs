@@ -171,10 +171,20 @@ mod unix {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error).context("Looking for an old socket"),
         }
-        let listener =
-            UnixListener::bind(path).with_context(|| format!("Listening at {}", path.display()))?;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-            .with_context(|| format!("Making {} private", path.display()))?;
+        // Bound under another name, so `hopp` can't find it before it's private and refuse it.
+        // A link can't replace a socket another Hopp has just made.
+        let making = path.with_extension(std::process::id().to_string());
+        let _ = fs::remove_file(&making);
+        let listener = UnixListener::bind(&making)
+            .with_context(|| format!("Listening at {}", making.display()))?;
+        let linked = fs::set_permissions(&making, fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("Making {} private", making.display()))
+            .and_then(|()| {
+                fs::hard_link(&making, path)
+                    .with_context(|| format!("Listening at {}", path.display()))
+            });
+        let _ = fs::remove_file(&making);
+        linked?;
         Ok(listener)
     }
 
@@ -243,6 +253,27 @@ mod unix {
     mod tests {
         use super::*;
         use serde_json::json;
+
+        #[test]
+        fn nobody_finds_the_socket_before_its_private() -> Result<()> {
+            for _ in 0..200 {
+                let home = tempfile::tempdir()?;
+                let path = home.path().join("run/hopp.sock");
+                let making = path.clone();
+                let listening = std::thread::spawn(move || listen(&making));
+                let mode = loop {
+                    if let Ok(found) = fs::symlink_metadata(&path) {
+                        break found.mode();
+                    }
+                };
+                assert_eq!(mode & 0o777, 0o600);
+                let _listener = listening.join().expect("listening")?;
+                assert!(UnixStream::connect(&path).is_ok());
+                let names = fs::read_dir(home.path().join("run"))?.count();
+                assert_eq!(names, 1, "nothing else is left in the folder");
+            }
+            Ok(())
+        }
         use std::{os::unix::fs::PermissionsExt, sync::mpsc, thread, time::Instant};
 
         /// An app that says yes to everything, and tells the test what it was asked.
