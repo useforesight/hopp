@@ -1843,6 +1843,7 @@ fn main() {
             captures_stop,
             hopp::cards::cards_showing,
             hopp::cards::cards_settle,
+            hopp::cards::cards_return_focus,
             hopp::captures::captures_list,
             hopp::captures::captures_open,
             hopp::captures::captures_poll,

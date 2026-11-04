@@ -360,6 +360,7 @@ export interface CommandMap {
   app_publish_state: { args: { state: AppState }; return: void };
   cards_showing: { args: void; return: AgentCard[] };
   cards_settle: { args: { id: string; state: AgentCardAnswer }; return: void };
+  cards_return_focus: { args: void; return: void };
   capture_settings: { args: void; return: CaptureSettings };
   capture_settings_change: { args: { change: CaptureChange }; return: void };
   capture_model_download: { args: { name: string }; return: void };

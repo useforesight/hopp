@@ -25,6 +25,8 @@ const SHOWN: usize = 3;
 #[derive(Default)]
 pub struct Cards {
     stack: Mutex<Stack>,
+    /// Held while finding or making the window, so that two cards don't both make it.
+    window: Mutex<()>,
 }
 
 /// The window's height for `count` cards waiting.
@@ -105,87 +107,110 @@ pub fn cards_settle(app: AppHandle, id: String, state: CardState) {
         CardState::Accepted | CardState::Rejected | CardState::Dismissed
     ) {
         settle(&app, &id, state);
-        #[cfg(target_os = "macos")]
-        focus::hand_back(&app);
+        cards_return_focus(app);
     }
 }
 
-/// Bring the window up to date with the stack.
+/// Back to the app you were in, if a card is what took you away.
+#[tauri::command(async)]
+pub fn cards_return_focus(app: AppHandle) {
+    #[cfg(target_os = "macos")]
+    focus::hand_back(&app);
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
+}
+
+/// Bring the window up to date with the stack. The main thread does that, one at a time, so
+/// what's on screen is always the last change and not whichever thread finished last.
 fn changed(app: &AppHandle) -> Result<(), String> {
+    let cards = app.state::<Cards>();
+    {
+        let _window = cards.window.lock().unwrap_or_else(PoisonError::into_inner);
+        if app.get_webview_window(CARDS_WINDOW_LABEL).is_none() {
+            let empty = cards
+                .stack
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .showing()
+                .is_empty();
+            if empty {
+                return Ok(());
+            }
+            #[cfg(target_os = "macos")]
+            focus::making_a_webview();
+            // Outlives each card and is only hidden, as the call card's window is.
+            WebviewWindowBuilder::new(
+                app,
+                CARDS_WINDOW_LABEL,
+                WebviewUrl::App("cards.html".into()),
+            )
+            .title("Hopp cards")
+            .inner_size(WIDTH, CARD_HEIGHT)
+            .visible(false)
+            .focused(false)
+            .transparent(true)
+            .decorations(false)
+            .shadow(false)
+            .always_on_top(true)
+            .resizable(false)
+            .skip_taskbar(true)
+            .accept_first_mouse(true)
+            .content_protected(true)
+            .build()
+            .map_err(|e| format!("Failed to create the cards window: {e}"))?;
+        }
+    }
+    refresh_soon(app).map_err(|e| format!("Failed to show the cards window: {e}"))
+}
+
+fn refresh_soon(app: &AppHandle) -> tauri::Result<()> {
+    let for_main_thread = app.clone();
+    app.run_on_main_thread(move || refresh(&for_main_thread))
+}
+
+/// Runs on the main thread.
+fn refresh(app: &AppHandle) {
+    let Some(window) = app.get_webview_window(CARDS_WINDOW_LABEL) else {
+        return;
+    };
     let showing = app
         .state::<Cards>()
         .stack
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .showing();
-    let window = match app.get_webview_window(CARDS_WINDOW_LABEL) {
-        Some(window) => window,
-        None if showing.is_empty() => return Ok(()),
-        // Outlives each card and is only hidden, as the call card's window is.
-        None => WebviewWindowBuilder::new(
-            app,
-            CARDS_WINDOW_LABEL,
-            WebviewUrl::App("cards.html".into()),
-        )
-        .title("Hopp cards")
-        .inner_size(WIDTH, height(showing.len()))
-        .visible(false)
-        .focused(false)
-        .transparent(true)
-        .decorations(false)
-        .shadow(false)
-        .always_on_top(true)
-        .resizable(false)
-        .skip_taskbar(true)
-        .accept_first_mouse(true)
-        .content_protected(true)
-        .build()
-        .map_err(|e| format!("Failed to create the cards window: {e}"))?,
-    };
     if let Err(e) = app.emit_to(CARDS_WINDOW_LABEL, "cards_changed", &showing) {
         log::error!("cards: failed to emit: {e:?}");
     }
     if showing.is_empty() {
-        return window
-            .hide()
-            .map_err(|e| format!("Failed to hide the cards window: {e}"));
+        if let Err(e) = window.hide() {
+            log::error!("cards: failed to hide: {e:?}");
+        }
+        return;
     }
 
     #[cfg(target_os = "macos")]
     {
-        let (for_main_thread, count) = (app.clone(), showing.len());
-        window
-            .run_on_main_thread(move || place(&for_main_thread, count))
-            .map_err(|e| format!("Failed to show the cards window: {e}"))
+        focus::note_whats_in_front();
+        place(app, showing.len());
     }
 
     #[cfg(not(target_os = "macos"))]
+    if let Err(e) = window
+        .set_size(tauri::LogicalSize::new(WIDTH, height(showing.len())))
+        .and_then(|_| window.show())
     {
-        window
-            .set_size(tauri::LogicalSize::new(WIDTH, height(showing.len())))
-            .and_then(|_| window.show())
-            .map_err(|e| format!("Failed to show the cards window: {e}"))
+        log::error!("cards: failed to show: {e:?}");
     }
 }
 
 /// The call card has come or gone: the stack goes under it.
 #[cfg(target_os = "macos")]
 pub fn make_room(app: &AppHandle) {
-    let Some(window) = app.get_webview_window(CARDS_WINDOW_LABEL) else {
-        return;
-    };
-    let count = app
-        .state::<Cards>()
-        .stack
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .showing()
-        .len();
-    if count == 0 {
+    if app.get_webview_window(CARDS_WINDOW_LABEL).is_none() {
         return;
     }
-    let for_main_thread = app.clone();
-    if let Err(e) = window.run_on_main_thread(move || place(&for_main_thread, count)) {
+    if let Err(e) = refresh_soon(app) {
         log::error!("cards: make_room: {e:?}");
     }
 }
@@ -242,12 +267,17 @@ fn place(app: &AppHandle, count: usize) {
     ns_window.orderFrontRegardless();
 }
 
-/// Whether the cursor is on the stack, for a click on a card bringing Hopp forward: that click
-/// is for the card, and shouldn't open anything else.
+/// Whether a card is why Hopp just came forward, which shouldn't open anything else. Either
+/// that's a click on one, or the cards window has only now been made.
 #[cfg(target_os = "macos")]
-pub fn took_a_click(app: &AppHandle) -> bool {
+pub fn explains_activation(app: &AppHandle) -> bool {
     use objc2_app_kit::{NSEvent, NSWindow};
 
+    if focus::just_made_a_webview() {
+        focus::CLICKED.store(true, std::sync::atomic::Ordering::Relaxed);
+        focus::hand_back(app);
+        return true;
+    }
     let Some(window) = app.get_webview_window(CARDS_WINDOW_LABEL) else {
         return false;
     };
@@ -279,7 +309,11 @@ pub use focus::watch as watch_focus;
 mod focus {
     use std::{
         ptr::NonNull,
-        sync::atomic::{AtomicBool, AtomicI32, Ordering},
+        sync::{
+            atomic::{AtomicBool, AtomicI32, Ordering},
+            Mutex, PoisonError,
+        },
+        time::{Duration, Instant},
     };
 
     use objc2_app_kit::{
@@ -294,15 +328,42 @@ mod focus {
     /// The process of the last app active that wasn't Hopp.
     static PREVIOUS: AtomicI32 = AtomicI32::new(0);
 
+    /// wry asks for the app to come forward whenever it makes a webview, whatever the window
+    /// was told, and this is when that was.
+    static WEBVIEW_MADE: Mutex<Option<Instant>> = Mutex::new(None);
+    const WEBVIEW_ACTIVATES_WITHIN: Duration = Duration::from_secs(3);
+
+    pub fn making_a_webview() {
+        *WEBVIEW_MADE.lock().unwrap_or_else(PoisonError::into_inner) = Some(Instant::now());
+    }
+
+    pub fn just_made_a_webview() -> bool {
+        WEBVIEW_MADE
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some_and(|made| made.elapsed() < WEBVIEW_ACTIVATES_WITHIN)
+    }
+
+    /// Remember the app in front, unless that's Hopp. Says whether it wasn't.
+    pub fn note_whats_in_front() -> bool {
+        let own = std::process::id() as i32;
+        let front = NSWorkspace::sharedWorkspace()
+            .frontmostApplication()
+            .map(|front| front.processIdentifier());
+        match front.filter(|front| *front != own) {
+            Some(front) => {
+                PREVIOUS.store(front, Ordering::Relaxed);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// From startup on, keep track of the app in front. Runs on the main thread.
     pub fn watch() {
-        let own = std::process::id() as i32;
+        note_whats_in_front();
         let block = block2::RcBlock::new(move |_: NonNull<NSNotification>| {
-            let front = NSWorkspace::sharedWorkspace()
-                .frontmostApplication()
-                .map(|front| front.processIdentifier());
-            if let Some(front) = front.filter(|front| *front != own) {
-                PREVIOUS.store(front, Ordering::Relaxed);
+            if note_whats_in_front() {
                 CLICKED.store(false, Ordering::Relaxed);
             }
         });
@@ -319,7 +380,7 @@ mod focus {
         };
     }
 
-    /// After answering a card: back to the app you were in, if the card is what took you away.
+    /// Back to the app you were in, if a card is what took you away.
     pub fn hand_back(app: &AppHandle) {
         if !CLICKED.swap(false, Ordering::Relaxed) {
             return;

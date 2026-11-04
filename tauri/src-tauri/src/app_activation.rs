@@ -48,8 +48,8 @@ impl AppActivationObserver {
                 }
 
                 // The same for a card from an agent.
-                if crate::cards::took_a_click(&app_handle) {
-                    log::info!("app_activation: cursor is over a card, skipping");
+                if crate::cards::explains_activation(&app_handle) {
+                    log::info!("app_activation: a card brought the app forward, skipping");
                     return;
                 }
 

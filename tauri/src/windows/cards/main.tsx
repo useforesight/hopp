@@ -30,27 +30,34 @@ function CardsWindow() {
       movedAt.current = Date.now();
       setCards(showing);
     };
-    const unlisten = listen<AgentCard[]>("cards_changed", (event) => show(event.payload));
-    unlisten.then(() => typedInvoke("cards_showing").then(show));
+    let heard = false;
+    const unlisten = listen<AgentCard[]>("cards_changed", (event) => {
+      heard = true;
+      show(event.payload);
+    });
+    // Anything heard while this is on its way is newer than its answer.
+    unlisten.then(() => typedInvoke("cards_showing").then((showing) => heard || show(showing)));
     return () => {
       unlisten.then((stopListening) => stopListening());
     };
   }, []);
 
   const settle = useCallback((id: string, state: AgentCardAnswer) => {
-    if (Date.now() - movedAt.current < STEADY_AFTER_MS) return;
+    if (Date.now() - movedAt.current < STEADY_AFTER_MS) {
+      // The click brought Hopp forward even though it didn't count.
+      typedInvoke("cards_return_focus");
+      return;
+    }
     typedInvoke("cards_settle", { id, state });
   }, []);
 
-  // Keys act on the newest card, once a click has given this window the keyboard.
+  // Once a click has given this window the keyboard, Escape closes the newest card. Return
+  // does nothing: someone typing elsewhere who hit it here would have said yes to something.
   useEffect(() => {
     const newest = cards[0];
     if (!newest) return;
     const onKey = (event: KeyboardEvent) => {
-      // Enter on a focused button already means that button.
-      if (event.target instanceof HTMLButtonElement) return;
-      if (event.key === "Enter" && newest.question) settle(newest.id, "accepted");
-      else if (event.key === "Escape") settle(newest.id, newest.question ? "rejected" : "dismissed");
+      if (event.key === "Escape") settle(newest.id, newest.question ? "rejected" : "dismissed");
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
