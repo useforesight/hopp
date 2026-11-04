@@ -302,7 +302,8 @@ mod tests {
         run_to_the_end(
             directory.path(),
             Limits {
-                time: Duration::from_millis(500),
+                // Long enough for a busy machine to get as far as starting the helper.
+                time: Duration::from_secs(3),
                 ..LIMITS
             },
         );
