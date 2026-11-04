@@ -751,7 +751,7 @@ fn frame_from_ax_attributes(values: &CFArray) -> Option<Frame> {
     None
 }
 
-fn number(
+pub(crate) fn number(
     description: &CFDictionary<CFString, CFType>,
     key: core_foundation_sys::string::CFStringRef,
 ) -> Option<i32> {

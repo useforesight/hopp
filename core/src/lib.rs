@@ -779,7 +779,14 @@ impl<'a> Application<'a> {
 
         let app_veil_enabled = is_display_share && screen_capturer.app_veil_enabled();
         let call_capture = room_service.call_capture();
-        call_capture.screen_changed();
+        #[cfg(target_os = "macos")]
+        let own_windows = selected_monitor
+            .as_ref()
+            .and_then(ScreenshareFunctions::capture_content_id_for_monitor)
+            .map(ScreenshareFunctions::own_windows_on_display);
+        #[cfg(not(target_os = "macos"))]
+        let own_windows = None;
+        call_capture.screen_changed(own_windows);
         let res = screen_capturer.start_capture(
             screenshare_input.content,
             Extent {
@@ -1132,7 +1139,7 @@ impl<'a> Application<'a> {
         if let Some(room_service) = self.room_service.as_ref() {
             room_service.mute_screen_share_track();
             if was_sharing {
-                room_service.call_capture().screen_changed();
+                room_service.call_capture().screen_changed(None);
             }
         }
         self.destroy_overlay_window();

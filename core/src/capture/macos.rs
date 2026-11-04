@@ -1,18 +1,29 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
+use core_foundation::{
+    base::{CFType, TCFType},
+    dictionary::CFDictionary,
+    string::CFString,
+};
 use core_graphics::{
+    display::CGDisplay,
     event::CGEvent,
     event_source::{CGEventSource, CGEventSourceStateID},
+    geometry::CGRect,
     window::{
-        create_window_list, kCGNullWindowID, kCGWindowListExcludeDesktopElements,
-        kCGWindowListOptionOnScreenOnly,
+        copy_window_info, create_window_list, kCGNullWindowID, kCGWindowBounds,
+        kCGWindowListExcludeDesktopElements, kCGWindowListOptionOnScreenOnly, kCGWindowOwnerPID,
+        kCGWindowSharingState,
     },
 };
+use hopp_capture::moments::OwnWindows;
 use screencapturekit::shareable_content::SCShareableContent;
 #[cfg(target_os = "macos")]
 use winit::platform::macos::MonitorHandleExtMacOS;
 
 use crate::{
+    app_veil::number,
     capture::capturer::{MonitorId, ScreenshareExt},
     utils::geometry::{Extent, Frame, Position},
     SelectableWindow,
@@ -129,6 +140,58 @@ impl ScreenshareFunctions {
     }
 }
 
+impl ScreenshareFunctions {
+    /// Finds Hopp's windows that a share of `display_id` shows, as fractions of it. Most of
+    /// them are hidden from shares, so can't change what's shared and would only hide real
+    /// changes beneath them: in practice this is the camera window.
+    pub fn own_windows_on_display(display_id: u32) -> OwnWindows {
+        let own_processes = [
+            std::process::id() as i32,
+            std::os::unix::process::parent_id() as i32,
+        ];
+        Arc::new(move || -> Option<Vec<[f64; 4]>> {
+            let display = CGDisplay::new(display_id).bounds();
+            let descriptions = copy_window_info(
+                kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
+                kCGNullWindowID,
+            )?;
+            let bounds_key = unsafe { CFString::wrap_under_get_rule(kCGWindowBounds) };
+            let windows: Vec<[f64; 4]> = descriptions
+                .get_all_values()
+                .into_iter()
+                .filter_map(|description| {
+                    let description = unsafe {
+                        CFDictionary::<CFString, CFType>::wrap_under_get_rule(description as _)
+                    };
+                    let owner = number(&description, unsafe { kCGWindowOwnerPID })?;
+                    let shown = number(&description, unsafe { kCGWindowSharingState })? != 0;
+                    if !own_processes.contains(&owner) || !shown {
+                        return None;
+                    }
+                    let bounds = description.find(&bounds_key)?;
+                    let bounds =
+                        unsafe { CFDictionary::wrap_under_get_rule(bounds.as_CFTypeRef() as _) };
+                    fraction_of_display(CGRect::from_dict_representation(&bounds)?, display)
+                })
+                .collect();
+            Some(windows)
+        })
+    }
+}
+
+/// `[left, top, right, bottom]` of a window as fractions of a display, if it's on it.
+fn fraction_of_display(window: CGRect, display: CGRect) -> Option<[f64; 4]> {
+    if display.size.width <= 0.0 || display.size.height <= 0.0 {
+        return None;
+    }
+    let left = (window.origin.x - display.origin.x) / display.size.width;
+    let top = (window.origin.y - display.origin.y) / display.size.height;
+    let right = left + window.size.width / display.size.width;
+    let bottom = top + window.size.height / display.size.height;
+    (right > left && bottom > top && right > 0.0 && bottom > 0.0 && left < 1.0 && top < 1.0)
+        .then_some([left, top, right, bottom])
+}
+
 fn is_window_selectable(
     layer: i32,
     owner_process_id: Option<i32>,
@@ -155,6 +218,31 @@ fn windows_in_front_order(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core_graphics::geometry::{CGPoint, CGSize};
+
+    #[test]
+    fn a_window_is_a_fraction_of_the_display_it_is_on() {
+        let rect =
+            |x, y, width, height| CGRect::new(&CGPoint::new(x, y), &CGSize::new(width, height));
+        // The display right of the main one.
+        let display = rect(1000., 0., 2000., 1000.);
+        assert_eq!(
+            fraction_of_display(rect(2500., 0., 500., 1000.), display),
+            Some([0.75, 0., 1., 1.])
+        );
+        // Hanging over its edge, it covers what it covers.
+        assert_eq!(
+            fraction_of_display(rect(800., 0., 400., 500.), display),
+            Some([-0.1, 0., 0.1, 0.5])
+        );
+        // On the main display.
+        assert_eq!(fraction_of_display(rect(0., 0., 800., 500.), display), None);
+        // A display that has gone away.
+        assert_eq!(
+            fraction_of_display(rect(0., 0., 800., 500.), rect(0., 0., 0., 0.)),
+            None
+        );
+    }
 
     #[test]
     fn joins_shareable_windows_in_front_to_back_order() {
