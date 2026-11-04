@@ -41,3 +41,7 @@ cargo test --features rate-48k # from this directory
 Always give it a throwaway `HOPP_CAPTURE_HOME`, and `HOPP_TRANSCRIBE_HELPER` if the helper
 isn't beside it. `a_call_goes_from_its_tracks_to_a_transcript` in `core/src/livekit/call_capture.rs`
 does the same through the Mac's taps, in real time.
+
+`bench/live_text.py` times the live transcript. On an Apple M5 at background priority, with two
+synthetic voices over 95 s: first words after a median of 1.86 s (Linux 2.1 s), final text after
+0.78 s (Linux 0.56 s), transcriber busy for 13% of the audio (Linux 26%), and no word taken back.

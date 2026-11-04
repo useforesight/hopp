@@ -7,7 +7,9 @@ use serde_json::json;
 use std::{io::Read, path::PathBuf, time::Duration};
 
 use super::{
-    config, models,
+    config,
+    follow::{Follower, Wake},
+    models,
     recorder::{Input, Options, Recorder, Speaker},
     resample,
     store::{self, Call, Store},
@@ -40,6 +42,35 @@ pub enum CaptureCommand {
         json: bool,
         #[arg(long, default_value_t = 20)]
         limit: usize,
+    },
+    /// Print transcript lines as they arrive, until the capture ends.
+    ///
+    /// With --on-wake or --wake-if, print nothing until woken, then print the lines
+    /// leading up to it and exit: an agent can run this in a loop.
+    Follow {
+        /// Capture id, or `current` (waits for one to start).
+        #[arg(default_value = "current")]
+        id: String,
+        /// Wake when someone says this. Separate alternatives with |, as in
+        /// "hey claude|ok computer"; "hey claude" also wakes on how speech
+        /// recognition often mishears it ("Heckord", "Hey Cord").
+        #[arg(long, value_name = "PHRASE")]
+        on_wake: Option<String>,
+        /// Wake when this program, given the held lines as JSON lines, exits 0.
+        #[arg(long, value_name = "PROGRAM")]
+        wake_if: Option<PathBuf>,
+        /// Lines of context to print when woken.
+        #[arg(long, default_value_t = 40)]
+        context: usize,
+        /// One JSON object per line.
+        #[arg(long)]
+        json: bool,
+        /// Also show what people are saying while they say it. In a terminal the line
+        /// being said is rewritten in place; with --json, each change to it is a line of
+        /// kind "draft" (then "speech", or "retracted" if it held no speech), all under
+        /// the same id.
+        #[arg(long)]
+        drafts: bool,
     },
     /// Set a call's title or summary.
     Annotate {
@@ -157,6 +188,24 @@ pub fn run(command: CaptureCommand) -> Result<()> {
                 }
             }
         }
+        CaptureCommand::Follow {
+            id,
+            on_wake,
+            wake_if,
+            context,
+            json,
+            drafts,
+        } => follow(
+            &store,
+            &id,
+            Wake {
+                phrase: on_wake,
+                script: wake_if,
+            },
+            context,
+            json,
+            drafts,
+        )?,
         CaptureCommand::Annotate {
             id,
             mut title,
@@ -362,4 +411,138 @@ fn loose_json(input: &str) -> Result<serde_json::Value> {
     let start = input.find('{').context("No JSON object on stdin")?;
     let end = input.rfind('}').context("No JSON object on stdin")?;
     serde_json::from_str(&input[start..=end]).context("Reading the JSON on stdin")
+}
+
+fn print_line(line: &store::Line, json: bool) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string(line)?);
+    } else {
+        println!("{}", store::format_line(line));
+    }
+    Ok(())
+}
+
+/// Prints what `follow` receives. With drafts in a terminal, the line being said sits
+/// at the bottom and is rewritten in place as it grows; final lines print above it.
+struct Printer {
+    json: bool,
+    /// Rewrite the draft in place rather than print each version.
+    in_place: bool,
+    /// Drafts still being said, newest last, and whether one is on the bottom line.
+    drafts: Vec<store::Line>,
+    showing: bool,
+}
+
+impl Printer {
+    fn new(json: bool) -> Self {
+        use std::io::IsTerminal;
+        Self {
+            json,
+            in_place: !json && std::io::stdout().is_terminal(),
+            drafts: Vec::new(),
+            showing: false,
+        }
+    }
+
+    fn print(&mut self, line: &store::Line) -> Result<()> {
+        use std::io::Write;
+        if self.json {
+            return print_line(line, true);
+        }
+        let mut out = std::io::stdout().lock();
+        if self.showing {
+            // Clear the draft on the bottom line; it is drawn again below.
+            write!(out, "\r\x1b[K")?;
+            self.showing = false;
+        }
+        self.drafts.retain(|draft| draft.id != line.id);
+        match line.kind {
+            store::Kind::Draft if self.in_place => self.drafts.push(line.clone()),
+            store::Kind::Draft => writeln!(out, "~ {}", store::format_line(line))?,
+            store::Kind::Retracted if self.in_place => {}
+            _ => writeln!(out, "{}", store::format_line(line))?,
+        }
+        if let Some(draft) = self.drafts.last() {
+            write!(out, "{}", store::format_line(draft))?;
+            self.showing = true;
+        }
+        out.flush()?;
+        Ok(())
+    }
+
+    /// Leave the terminal on a fresh line.
+    fn finish(&mut self) {
+        if self.showing {
+            print!("\r\x1b[K");
+            self.showing = false;
+        }
+    }
+}
+
+fn follow(
+    store: &Store,
+    which: &str,
+    wake: Wake,
+    context: usize,
+    json: bool,
+    drafts: bool,
+) -> Result<()> {
+    let call = loop {
+        match store.call(which)? {
+            Some(call) => break call,
+            None if which == "current" => {
+                eprintln!("Waiting for a capture to start…");
+                while store.call("current")?.is_none() {
+                    std::thread::sleep(Duration::from_secs(1));
+                }
+            }
+            None => store.require(which).map(|_| ())?,
+        }
+    };
+    let waking = wake.enabled();
+    if !json {
+        eprintln!("Following {} ({})", call.id, call.heading());
+    }
+    // Agents following a live call only want what happens next; a finished call
+    // plays back from the start.
+    let after = if call.live() {
+        store.latest_rev(&call.id)?
+    } else {
+        0
+    };
+    let mut follower = Follower::new(store, &call.id, after, context, wake)?;
+    // Drafts are for watching; a woken agent gets final lines only.
+    if drafts && !waking {
+        follower = follower.with_drafts();
+    }
+    let mut printer = Printer::new(json);
+    loop {
+        let poll = follower.wait(store, Duration::from_secs(3600))?;
+        if !waking {
+            for line in &poll.new {
+                printer.print(line)?;
+            }
+        }
+        if let Some(reason) = &poll.woke {
+            for line in follower.held() {
+                print_line(&line, json)?;
+            }
+            if !json {
+                println!("--- woke: {reason} · reply, then run this again to keep listening ---");
+            }
+            return Ok(());
+        }
+        if poll.ended {
+            printer.finish();
+            if waking {
+                for line in follower.held() {
+                    print_line(&line, json)?;
+                }
+            }
+            if !json {
+                println!("--- capture ended ---");
+            }
+            return Ok(());
+        }
+    }
 }
