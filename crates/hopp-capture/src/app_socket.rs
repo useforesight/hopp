@@ -357,7 +357,8 @@ mod unix {
             );
 
             let mut greedy = UnixStream::connect(&path)?;
-            greedy.write_all(&vec![b'x'; MAX_REQUEST as usize + 10])?;
+            // The app may answer and hang up before the last of this has gone.
+            let _ = greedy.write_all(&vec![b'x'; MAX_REQUEST as usize + 10]);
             let mut line = String::new();
             BufReader::new(&greedy).read_line(&mut line)?;
             let reply: AppReply = serde_json::from_str(&line)?;
