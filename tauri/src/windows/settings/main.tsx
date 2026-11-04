@@ -30,6 +30,7 @@ import {
   type ScreenShareResolution,
 } from "@/core_payloads";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { tauriUtils } from "@/windows/window-utils";
 import { OS, URLS } from "@/constants";
 import posthog from "posthog-js";
@@ -614,6 +615,35 @@ function CaptureModelRow({
   );
 }
 
+function CaptureRow({ title, description, children }: { title: string; description: string; children: ReactNode }) {
+  return (
+    <div className="flex min-h-[56px] items-center justify-between gap-6 px-3.5 py-2.5">
+      <div className="flex min-w-0 flex-col">
+        <span className={settingTitleClass}>{title}</span>
+        <span className={settingDescriptionClass}>{description}</span>
+      </div>
+      <div className="flex shrink-0 gap-2">{children}</div>
+    </div>
+  );
+}
+
+function CopyButton({ label, text }: { label: string; text: string }) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(timer);
+  }, [copied]);
+  return (
+    <Button variant="outline" size="sm" onClick={() => writeText(text).then(() => setCopied(true))}>
+      {copied ? "Copied" : label}
+    </Button>
+  );
+}
+
+/** A path as it needs to be typed in a shell. */
+const shellQuoted = (path: string) => (/^[\w./-]+$/.test(path) ? path : `'${path.replace(/'/g, `'\\''`)}'`);
+
 function CaptureSettingsSection() {
   const [failure, setFailure] = useState("");
   const { data: capture, refetch } = useQuery({
@@ -632,6 +662,7 @@ function CaptureSettingsSection() {
   const change = (next: CaptureChange) => run(typedInvoke("capture_settings_change", { change: next }));
   const failedDownload = capture.models.find((model) => model.failed !== null);
   const liveTextPossible = capture.gpu && capture.model.startsWith("parakeet");
+  const cli = shellQuoted(capture.cli_path);
 
   return (
     <>
@@ -688,22 +719,17 @@ function CaptureSettingsSection() {
       </SettingsGroup>
 
       <SettingsGroup title="Storage">
-        <div className="flex min-h-[56px] items-center justify-between gap-6 px-3.5 py-2.5">
-          <div className="flex min-w-0 flex-col">
-            <span className={settingTitleClass}>Storage used</span>
-            <span className={settingDescriptionClass}>
-              Captures {formatBytes(capture.captures_bytes)}, models {formatBytes(capture.models_bytes)}
-            </span>
-          </div>
-          <div className="flex shrink-0 gap-2">
-            <Button variant="outline" size="sm" onClick={() => run(tauriUtils.openCapturesWindow())}>
-              Open captures
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => run(typedInvoke("capture_open_folder"))}>
-              Show folder
-            </Button>
-          </div>
-        </div>
+        <CaptureRow
+          title="Storage used"
+          description={`Captures ${formatBytes(capture.captures_bytes)}, models ${formatBytes(capture.models_bytes)}`}
+        >
+          <Button variant="outline" size="sm" onClick={() => run(tauriUtils.openCapturesWindow())}>
+            Open captures
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => run(typedInvoke("capture_open_folder"))}>
+            Show folder
+          </Button>
+        </CaptureRow>
         <RadioCardsRow
           title="Delete captures after"
           description="Older captures go as soon as you choose, with their pictures and Markdown"
@@ -716,6 +742,21 @@ function CaptureSettingsSection() {
           value={capture.keep_days === null ? "never" : (String(capture.keep_days) as "90" | "30" | "never")}
           onValueChange={(keep) => change({ keep_days: keep === "never" ? null : Number(keep) })}
         />
+      </SettingsGroup>
+
+      <SettingsGroup title="Coding agents">
+        <CaptureRow title="Agents" description="Lets agents read, search and follow captures (MCP). Copy the setup.">
+          <CopyButton label="Claude Code" text={`claude mcp add hopp -- ${cli} mcp`} />
+          <CopyButton label="Codex" text={`codex mcp add hopp -- ${cli} mcp`} />
+        </CaptureRow>
+        <CaptureRow title="Command line" description="Use hopp in your terminal. Copy this, then run it in Terminal.">
+          <CopyButton label="Copy" text={`sudo mkdir -p /usr/local/bin && sudo ln -sf ${cli} /usr/local/bin/hopp`} />
+        </CaptureRow>
+        <CaptureRow title="Hooks" description="Your programs, run when a capture starts or finishes.">
+          <Button variant="outline" size="sm" onClick={() => run(typedInvoke("capture_open_hooks"))}>
+            Open folder
+          </Button>
+        </CaptureRow>
       </SettingsGroup>
       {failure && (
         <p role="alert" className="text-xs leading-[18px] text-destructive">

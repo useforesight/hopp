@@ -17,6 +17,8 @@ enum Command {
         #[command(subcommand)]
         command: hopp_capture::commands::CaptureCommand,
     },
+    /// Serve captured calls to coding agents over MCP (stdin/stdout).
+    Mcp,
 }
 
 /// Why a capture couldn't do something goes to stderr, not nowhere.
@@ -44,5 +46,6 @@ fn main() -> Result<()> {
     }
     match Cli::parse().command {
         Command::Capture { command } => hopp_capture::commands::run(command),
+        Command::Mcp => hopp_capture::mcp::serve(),
     }
 }

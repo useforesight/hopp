@@ -1,5 +1,5 @@
 {
   "bundle": {
-    "externalBin": ["../../core/target/release/hopp_core", "../../core/target/release/hopp-transcribe"]
+    "externalBin": ["../../core/target/release/hopp_core", "../../core/target/release/hopp-transcribe", "../../core/target/release/hopp-cli"]
   }
 }
