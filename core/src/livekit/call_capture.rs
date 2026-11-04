@@ -440,7 +440,8 @@ impl CallCapture {
         log::info!("Capture {id}: started");
         let feed = recorder.feed();
         let seen = people(snapshot);
-        feed.participants(seen.values().map(|p| p.name.clone()).collect());
+        let participants: Vec<String> = seen.values().map(|p| p.name.clone()).collect();
+        feed.participants(participants.clone());
         for sharer in seen.values().filter(|p| p.sharing) {
             feed.event(format!("{} is sharing their screen", sharer.name));
         }
@@ -457,7 +458,10 @@ impl CallCapture {
         state.own_identity = own_identity.to_string();
         state.recorder = Some(recorder);
         drop(state);
-        hooks::run("capture-started", hooks::payload("capture-started", &id));
+        // From here, because the recorder hasn't necessarily written them down yet.
+        let mut payload = hooks::payload("capture-started", &id);
+        payload["participants"] = participants.into();
+        hooks::run("capture-started", payload);
         Ok(id)
     }
 

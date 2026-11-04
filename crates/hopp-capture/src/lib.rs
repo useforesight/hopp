@@ -114,6 +114,23 @@ pub fn prune_in(store: &store::Store) -> Result<usize> {
     Ok(deleted)
 }
 
+/// Give a call a title or summary, in the store and in the Markdown copy of a call that has
+/// ended. A live call's copy is written when it ends.
+pub fn annotate(
+    store: &store::Store,
+    call_id: &str,
+    title: Option<&str>,
+    summary: Option<&str>,
+) -> Result<()> {
+    store.annotate(call_id, title, summary)?;
+    let call = store.require(call_id)?;
+    if !call.live() {
+        let markdown = store.markdown(&call)?;
+        write_private(&markdown_path(&call.id)?, markdown.as_bytes())?;
+    }
+    Ok(())
+}
+
 /// Bytes used by captures, with their pictures, and by downloaded models.
 pub fn disk_usage() -> (u64, u64) {
     let size =

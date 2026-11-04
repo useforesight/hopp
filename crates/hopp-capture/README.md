@@ -61,4 +61,5 @@ the window itself is in `tauri/src/windows/captures/`.
 `hopp mcp` serves captures to coding agents, and `tests/mcp.rs` runs it as an agent meets it. In a
 Mac build the command line is `Hopp.app/Contents/MacOS/hopp-cli`, since `hopp` there is the app.
 Agents read captures but can't start one. Hooks are in `hooks`; apps launched from Finder have a
-short `PATH`, so a hook should name the programs it runs in full.
+short `PATH`, so a hook should name the programs it runs in full. What a hook prints goes to
+`hooks/logs/<event>/<name>.log`, not to Hopp's log.

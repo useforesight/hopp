@@ -746,13 +746,16 @@ function CaptureSettingsSection() {
 
       <SettingsGroup title="Coding agents">
         <CaptureRow title="Agents" description="Lets agents read, search and follow captures (MCP). Copy the setup.">
-          <CopyButton label="Claude Code" text={`claude mcp add hopp -- ${cli} mcp`} />
+          <CopyButton label="Claude Code" text={`claude mcp add --scope user hopp -- ${cli} mcp`} />
           <CopyButton label="Codex" text={`codex mcp add hopp -- ${cli} mcp`} />
         </CaptureRow>
         <CaptureRow title="Command line" description="Use hopp in your terminal. Copy this, then run it in Terminal.">
           <CopyButton label="Copy" text={`sudo mkdir -p /usr/local/bin && sudo ln -sf ${cli} /usr/local/bin/hopp`} />
         </CaptureRow>
-        <CaptureRow title="Hooks" description="Your programs, run when a capture starts or finishes.">
+        <CaptureRow
+          title="Hooks"
+          description="Executable files named capture-started or capture-complete, given the call's details as JSON."
+        >
           <Button variant="outline" size="sm" onClick={() => run(typedInvoke("capture_open_hooks"))}>
             Open folder
           </Button>

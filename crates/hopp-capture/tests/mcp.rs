@@ -5,7 +5,7 @@ use std::{
     io::{BufRead, BufReader, Write},
     path::Path,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 
 struct Agent {
     child: Child,
-    stdin: ChildStdin,
+    stdin: Option<ChildStdin>,
     stdout: BufReader<ChildStdout>,
     next_id: u64,
 }
@@ -27,7 +27,7 @@ impl Agent {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()?;
-        let stdin = child.stdin.take().context("stdin")?;
+        let stdin = child.stdin.take();
         let stdout = BufReader::new(child.stdout.take().context("stdout")?);
         Ok(Self {
             child,
@@ -41,8 +41,9 @@ impl Agent {
         self.next_id += 1;
         let message =
             json!({ "jsonrpc": "2.0", "id": self.next_id, "method": method, "params": params });
-        writeln!(self.stdin, "{message}")?;
-        self.stdin.flush()?;
+        let stdin = self.stdin.as_mut().context("hung up")?;
+        writeln!(stdin, "{message}")?;
+        stdin.flush()?;
         Ok(self.next_id)
     }
 
@@ -190,6 +191,55 @@ fn agents_read_what_was_said_and_shown() -> Result<()> {
     assert!(text(&annotated).contains("Updated c_ended"), "{annotated}");
     let read = text(&agent.tool("capture_transcript", json!({ "id": "c_ended" }))?);
     assert!(read.contains("# The flood"), "{read}");
+    let copy = std::fs::read_to_string(home.path().join("capture/c_ended.md"))?;
+    assert!(copy.contains("# The flood"), "{copy}");
+    Ok(())
+}
+
+#[test]
+fn a_follow_holds_nothing_up_and_ends_when_the_agent_hangs_up() -> Result<()> {
+    let (home, store) = seeded_home()?;
+    store.begin_call("c_live", "Core", now_ms(), "parakeet-en")?;
+    let mut agent = Agent::start(home.path())?;
+    agent.start_tool("capture_follow", json!({ "timeout_seconds": 300 }))?;
+    std::thread::sleep(Duration::from_millis(300));
+
+    let id = agent.send("ping", json!({}))?;
+    agent.reply(id)?;
+    let listed = text(&agent.tool("capture_list", json!({}))?);
+    assert!(listed.contains("c_ended"), "{listed}");
+
+    agent.stdin = None;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = agent.child.try_wait()? {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "still running after hanging up");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(status.success(), "{status}");
+    Ok(())
+}
+
+#[test]
+fn an_agent_waiting_for_its_name_hears_nothing_until_then() -> Result<()> {
+    let (home, store) = seeded_home()?;
+    store.begin_call("c_live", "Core", now_ms(), "parakeet-en")?;
+    store.add_line(
+        "c_live",
+        &line(500, Kind::Speech, Some("Mira"), "Before the agent came."),
+    )?;
+    let mut agent = Agent::start(home.path())?;
+    let waited = agent.tool(
+        "capture_follow",
+        json!({ "wake_phrase": "hey claude", "timeout_seconds": 1 }),
+    )?;
+    let body: Value = serde_json::from_str(&text(&waited))?;
+    assert_eq!(body["timed_out"], true, "{body}");
+    assert_eq!(body["lines"], json!([]), "{body}");
+    assert_eq!(waited["content"].as_array().map(Vec::len), Some(1));
+    assert_eq!(body["after_line"], store.latest_rev("c_live")?);
     Ok(())
 }
 

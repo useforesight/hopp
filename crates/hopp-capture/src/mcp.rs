@@ -8,6 +8,7 @@ use anyhow::Result;
 use serde_json::{Value, json};
 use std::{
     io::{BufRead, Write},
+    sync::{Arc, Mutex, PoisonError},
     time::Duration,
 };
 
@@ -22,18 +23,26 @@ const MAX_FOLLOW: Duration = Duration::from_secs(600);
 /// Frames sent with one `capture_follow` reply; the rest are named, for `capture_frame`.
 const MAX_FOLLOW_FRAMES: usize = 3;
 
+/// Each message runs on its own thread: `capture_follow` can wait for minutes, while the agent
+/// may still ping, or read something else. When the agent hangs up, this returns and the
+/// process ends, whatever is still waiting.
 pub fn serve() -> Result<()> {
-    let stdin = std::io::stdin();
-    let mut stdout = std::io::stdout();
-    for line in stdin.lock().lines() {
+    let stdout = Arc::new(Mutex::new(std::io::stdout()));
+    for line in std::io::stdin().lock().lines() {
         let line = line?;
         if line.trim().is_empty() {
             continue;
         }
-        if let Some(response) = handle(&line) {
-            writeln!(stdout, "{response}")?;
-            stdout.flush()?;
-        }
+        let stdout = stdout.clone();
+        std::thread::Builder::new()
+            .name("hopp-mcp".into())
+            .spawn(move || {
+                if let Some(response) = handle(&line) {
+                    let mut stdout = stdout.lock().unwrap_or_else(PoisonError::into_inner);
+                    let _ = writeln!(stdout, "{response}");
+                    let _ = stdout.flush();
+                }
+            })?;
     }
     Ok(())
 }
@@ -347,7 +356,16 @@ fn call_tool_inner(name: &str, arguments: &Value) -> Result<Reply> {
                 follower = follower.with_drafts();
             }
             let poll = follower.wait(&store, timeout)?;
-            let mut lines = if waking { follower.held() } else { poll.new };
+            // Waiting for its name, an agent hears nothing until then. The lines held so far
+            // come back from the cursor next time, so sending them, with their pictures, at
+            // every timeout would only spend the agent's memory on a call it isn't in.
+            let mut lines = if !waking {
+                poll.new
+            } else if poll.woke.is_some() || poll.ended {
+                follower.held()
+            } else {
+                Vec::new()
+            };
             // The latest version of each line still being said, unless it has since
             // become final (or been withdrawn) in this same batch.
             let mut current: Vec<store::Line> = Vec::new();
@@ -395,7 +413,7 @@ fn call_tool_inner(name: &str, arguments: &Value) -> Result<Reply> {
             if title.is_none() && summary.is_none() {
                 anyhow::bail!("Give a title, a summary or both");
             }
-            store.annotate(&call.id, title, summary)?;
+            crate::annotate(&store, &call.id, title, summary)?;
             Ok(format!("Updated {}", call.id).into())
         }
         _ => anyhow::bail!("Unknown tool {name}"),

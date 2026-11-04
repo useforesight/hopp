@@ -223,7 +223,7 @@ pub fn run(command: CaptureCommand) -> Result<()> {
                 bail!("Give --title, --summary or --json");
             }
             let call = store.require(&id)?;
-            store.annotate(&call.id, title.as_deref(), summary.as_deref())?;
+            super::annotate(&store, &call.id, title.as_deref(), summary.as_deref())?;
         }
         CaptureCommand::Delete { id } => {
             let call = store.require(&id)?;

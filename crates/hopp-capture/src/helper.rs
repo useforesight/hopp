@@ -38,7 +38,9 @@ fn executable() -> PathBuf {
     if let Some(path) = std::env::var_os("HOPP_TRANSCRIBE_HELPER") {
         return PathBuf::from(path);
     }
+    // Through any link: `hopp` in a terminal is usually one to the app's copy.
     std::env::current_exe()
+        .and_then(std::fs::canonicalize)
         .ok()
         .and_then(|exe| Some(exe.parent()?.join("hopp-transcribe")))
         .filter(|path| path.is_file())
