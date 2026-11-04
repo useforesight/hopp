@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::livekit::call_capture::CallCapture;
+use crate::livekit::call_capture::{person_name, CallCapture};
 use crate::livekit::participant::ParticipantInfo;
 
 impl std::fmt::Debug for SnapshotSender {
@@ -75,7 +75,7 @@ impl SnapshotSender {
             let entry = seen.entry(user_id.to_string()).or_insert_with(|| {
                 socket_lib::CoreParticipantState {
                     identity: identity.to_string(),
-                    name: info.name().to_string(),
+                    name: person_name(identity, info.name()).to_string(),
                     connected: true,
                     muted: false,
                     has_camera: false,

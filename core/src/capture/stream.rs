@@ -12,6 +12,7 @@ use std::sync::{mpsc, Arc, Mutex};
 
 use super::CapturerError;
 use crate::app_veil_state::AppVeilState;
+use crate::livekit::call_capture::CallCapture;
 use socket_lib::{Content, ContentType};
 
 const FRAME_CAPTURE_INTERVAL_MS: u64 = 18;
@@ -322,6 +323,7 @@ impl Stream {
         tx: mpsc::Sender<StreamRuntimeMessage>,
         buffer_source: NativeVideoSource,
         _app_veil_state: AppVeilState,
+        _call_capture: CallCapture,
     ) -> Result<Self, CapturerError> {
         let stream_buffer = Arc::new(Mutex::new(StreamBuffer::new(1, 1)));
         let frame = Arc::new(Mutex::new(Frame {

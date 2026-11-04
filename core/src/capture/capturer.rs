@@ -5,6 +5,7 @@ use winit::{dpi::PhysicalPosition, event_loop::EventLoopProxy, monitor::MonitorH
 
 use crate::{
     app_veil_state::AppVeilState,
+    livekit::call_capture::CallCapture,
     utils::geometry::{Extent, Frame},
     UserEvent, STREAM_FAILURE_EXIT_CODE,
 };
@@ -174,6 +175,7 @@ impl Capturer {
     /// # Parameters
     /// - `content`: The content source to capture (display or window with display_id)
     /// - `stream_resolution`: The resolution of the stream buffer
+    /// - `call_capture`: Offered each frame, for the capture's stills of the screen
     ///
     /// # Returns
     /// - `Ok(())`: Successfully started the capture stream
@@ -195,6 +197,7 @@ impl Capturer {
         stream_resolution: Extent,
         buffer_source: NativeVideoSource,
         scale: f64,
+        call_capture: CallCapture,
     ) -> Result<(), CapturerError> {
         log::info!(
             "start_capture: content {content:?} resolution: {stream_resolution:?} scale: {scale}"
@@ -213,6 +216,7 @@ impl Capturer {
             self.tx.clone(),
             buffer_source,
             self.app_veil_state.clone(),
+            call_capture,
         )?;
 
         stream.start_capture()?;

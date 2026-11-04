@@ -777,6 +777,7 @@ impl<'a> Application<'a> {
             },
             buffer_source,
             scale,
+            room_service.call_capture(),
         );
         if let Err(error) = res {
             #[cfg(target_os = "macos")]

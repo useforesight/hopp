@@ -518,6 +518,14 @@ impl Worker {
                 self.active.remove(&owner);
             }
             DrawEvent::ClickAnimation(point) => {
+                // A stamp ripples where it lands. It's numbered when it's finished.
+                if self.stamps.iter().any(|((by, _), spot)| {
+                    *by == owner
+                        && (spot.0 - point.x).abs() < 1e-6
+                        && (spot.1 - point.y).abs() < 1e-6
+                }) {
+                    return;
+                }
                 self.pin_count += 1;
                 self.colours.of(&owner);
                 self.pins.push(Pin {
@@ -1434,6 +1442,61 @@ mod tests {
             }
         }
         out
+    }
+
+    #[test]
+    fn a_stamps_ripple_is_not_a_pin_of_its_own() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let (feed, receiver) = Feed::for_tests();
+        let mut moments = Moments::start_in(directory.path().into(), feed)?;
+        moments.sample(flat(800, 500, 90));
+        let _ = frames(&receiver, Duration::from_millis(1_500));
+        let lee = "room:r:lee:audio";
+        let (x, y) = (0.7, 0.2);
+        moments.stamp(lee, "Lee", &StampMessage::StampPlace { id: 5, x, y });
+        moments.draw(lee, "Lee", &DrawEvent::ClickAnimation(Point { x, y }));
+        moments.stamp(
+            lee,
+            "Lee",
+            &StampMessage::StampText {
+                id: 5,
+                text: "this one".into(),
+                draft: String::new(),
+                done: true,
+            },
+        );
+        // Someone else's pin in the same place, and the same person's elsewhere, do count.
+        moments.draw(
+            "room:r:alex:audio",
+            "Alex",
+            &DrawEvent::ClickAnimation(Point { x, y }),
+        );
+        moments.draw(
+            lee,
+            "Lee",
+            &DrawEvent::ClickAnimation(Point { x: 0.1, y: 0.1 }),
+        );
+        std::thread::sleep(Duration::from_millis(300));
+        moments.sample(flat(800, 500, 90));
+        let taken = frames(&receiver, Duration::from_millis(2_500));
+        assert_eq!(taken.len(), 1, "{taken:?}");
+        let info: FrameInfo =
+            serde_json::from_slice(&std::fs::read(directory.path().join("frame-002.json"))?)?;
+        let pins: Vec<_> = info
+            .marks
+            .iter()
+            .map(|mark| (mark.by.as_str(), mark.shape.as_str(), mark.pin))
+            .collect();
+        assert_eq!(
+            pins,
+            [
+                ("Lee", "stamp", Some(1)),
+                ("Alex", "pin", Some(2)),
+                ("Lee", "pin", Some(3))
+            ]
+        );
+        moments.finish();
+        Ok(())
     }
 
     #[test]
