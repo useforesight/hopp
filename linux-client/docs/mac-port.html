@@ -479,7 +479,9 @@ input.field{font:inherit;font-size:14px;border:1px solid var(--border-strong);bo
   <span class="eyebrow">Marks · phase 2</span>
   <h2>Stamps</h2>
   <div class="prose">
-    <p><strong>A stamp is a numbered pin with words attached.</strong> You press <strong>Stamp</strong>, click a spot on the screen and type. Everyone in the call sees the marker drop in with a small bounce, pulse while it takes words, and show a light card with your name and text. It came from Scrawl's numbered pins.</p>
+    <p><strong>A stamp is a numbered pin with words attached.</strong> You press <strong>Stamp</strong>, click a spot on the screen, then say or type your note. Everyone in the call sees the marker drop in with a small bounce, pulse while it takes words, and show a light card with your name and text. It came from Scrawl's numbered pins.</p>
+    <p><strong>It works on a screen you view and on your own while you share it.</strong> On Linux the sharer gets <strong>Stamp</strong> on the sharing pill and the drawing bar, <kbd>Super</kbd>+<kbd>Alt</kbd>+<kbd>P</kbd>, <code>hopp stamp</code>, or <kbd>S</kbd> while drawing. The pill then says what to do next: "Click a spot, then say or type your note", and once it's down, "Say it or type it · Enter to finish".</p>
+    <p><strong>While the call is captured, what you say goes on the stamp.</strong> Your lines in the capture's transcript that start after you place it fill the card as you talk: drafts dimmed, final words bright. Typing adds to it. A spoken stamp finishes itself once you've been quiet for 3 s; <kbd>Enter</kbd> finishes it sooner. Without a capture the card says "Type a note".</p>
     <p><strong>Click the screen below to place one, type, then press <kbd>Enter</kbd>.</strong> <kbd>Esc</kbd> removes it. Placing another finishes the last one, and an empty stamp disappears when finished.</p>
   </div>
   <div class="bench">
@@ -830,9 +832,10 @@ input.field{font:inherit;font-size:14px;border:1px solid var(--border-strong);bo
   <div class="tbl"><table>
     <thead><tr><th>Trigger (<code>moments.rs</code>)</th><th>Rule</th></tr></thead>
     <tbody>
-      <tr><td>A stroke, pin or finished stamp</td><td>Frame 250 ms after it ends. Marks within 3 s of the first share one frame.</td></tr>
+      <tr><td>A drawing</td><td>Frame once its strokes pause for 2.5 s, just before the 3 s group fade, with the whole drawing on it. A drawing that goes on gets one every 20 s. A stroke undone within 2 s isn't on it.</td></tr>
+      <tr><td>A pin or finished stamp</td><td>Frame 250 ms after it</td></tr>
       <tr><td>Bookmark, or first view of a new share</td><td>Frame at once</td></tr>
-      <tr><td>Screen changes</td><td>Sampled every 0.5 s. Saved once nothing bigger than a cursor has changed for 2 s.</td></tr>
+      <tr><td>Screen changes</td><td>Sampled every 0.5 s. Saved once nothing bigger than a cursor has changed for 2 s. On a screen you share, cells under Hopp's own windows (the transcript, the call window) are left out, so a growing transcript isn't a change.</td></tr>
       <tr><td>An ordinary change (scroll, typing)</td><td>Waits until 10 s after the last frame</td></tr>
       <tr><td>A new scene (30% of cells changed)</td><td>Waits only 3 s</td></tr>
       <tr><td>A screen that never settles</td><td>One frame every 30 s</td></tr>

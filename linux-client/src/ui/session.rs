@@ -1,7 +1,7 @@
 //! Window-independent client state. Every Hopp window reads this one model, so
 //! closing a window never stops the call, and frames are decoded exactly once.
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -20,6 +20,45 @@ use crate::{
     },
     settings::Settings,
 };
+
+/// How often your stamp looks for words you've said.
+const STAMP_LISTEN_EVERY: Duration = Duration::from_millis(300);
+/// A stamp you've spoken into finishes itself once you've been quiet this long.
+const STAMP_SAID_DONE: Duration = Duration::from_secs(3);
+
+/// The words going into your stamp.
+#[derive(Default)]
+struct StampWords {
+    typed: String,
+    /// While the call is captured, what you say after placing it.
+    heard: Option<Heard>,
+}
+
+/// Your words, from the capture's transcript as it's written.
+struct Heard {
+    store: crate::capture::store::Store,
+    call: String,
+    /// The end of your speaker id: `:` and your user id.
+    me: String,
+    /// Lines up to this id were said before the stamp.
+    after_id: i64,
+    /// Changes up to this revision have been read.
+    rev: i64,
+    /// Your lines since, by id: (final, text).
+    lines: BTreeMap<i64, (bool, String)>,
+    changed: Instant,
+}
+
+/// Cut `text` to at most `max` bytes, on a character boundary.
+fn truncate(text: &mut String, max: usize) {
+    if text.len() > max {
+        let mut end = max;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+    }
+}
 
 /// A decoded frame ready for painting. `generation` changes with every frame
 /// so windows know when to release the previous texture.
@@ -155,6 +194,8 @@ pub struct Session {
     pub stamping: bool,
     /// Your stamp still taking words.
     pub active_stamp: Option<u64>,
+    /// What goes into it: typed, and heard while the call is captured.
+    stamp_words: StampWords,
     next_stamp: u64,
     pub paths: Vec<Stroke>,
     pub pointers: HashMap<String, super::marks::Pointer>,
@@ -251,6 +292,7 @@ impl Session {
             stamps: Vec::new(),
             stamping: false,
             active_stamp: None,
+            stamp_words: StampWords::default(),
             next_stamp: 0,
             screen: None,
             ambient: None,
@@ -737,6 +779,8 @@ impl Session {
         if self.stamping && self.drawing {
             self.toggle_drawing(cx);
         }
+        // The draw pad opens for stamps on your own screen too.
+        cx.emit(SessionEvent::DrawingChanged);
         cx.notify();
     }
 
@@ -760,10 +804,34 @@ impl Session {
             text: String::new(),
             draft: String::new(),
             listening: true,
+            voice: false,
             placed: Instant::now(),
             removed: None,
         });
         self.active_stamp = Some(id);
+        self.stamp_words = StampWords {
+            typed: String::new(),
+            heard: self.listen_for_stamp(),
+        };
+        let voice = self.stamp_words.heard.is_some();
+        if let Some(stamp) = self.own_stamp(id) {
+            stamp.voice = voice;
+        }
+        if voice {
+            // Your words reach the transcript a moment after you say them; look often.
+            cx.spawn(async move |session, cx| {
+                loop {
+                    cx.background_executor().timer(STAMP_LISTEN_EVERY).await;
+                    let listening = session
+                        .update(cx, |session, cx| session.hear_stamp(id, cx))
+                        .unwrap_or(false);
+                    if !listening {
+                        break;
+                    }
+                }
+            })
+            .detach();
+        }
         self.send(Command::SendStamp(StampMessage::StampPlace {
             id,
             x: point.x,
@@ -796,23 +864,191 @@ impl Session {
 
     /// Words typed into your stamp. Backspace is `None`.
     pub fn stamp_typed(&mut self, typed: Option<&str>, cx: &mut Context<Self>) {
-        let Some(id) = self.active_stamp else {
+        if self.active_stamp.is_none() {
             return;
-        };
-        let Some(stamp) = self.own_stamp(id) else {
-            return;
-        };
+        }
+        let words = &mut self.stamp_words.typed;
         match typed {
-            Some(text) if stamp.text.len() + text.len() <= crate::protocol::STAMP_TEXT_MAX => {
-                stamp.text.push_str(text)
+            Some(text) if words.len() + text.len() <= crate::protocol::STAMP_TEXT_MAX => {
+                words.push_str(text)
             }
             Some(_) => return,
             None => {
-                stamp.text.pop();
+                words.pop();
             }
         }
+        self.show_stamp_words();
         self.send_stamp_text(false);
         cx.notify();
+    }
+
+    /// Keys while your stamp takes words: Enter finishes it, Escape takes it away,
+    /// anything else is typed into it. Returns whether the key was used.
+    pub fn stamp_key(&mut self, key: &gpui_kit::Keystroke, cx: &mut Context<Self>) -> bool {
+        if self.active_stamp.is_none() || key.modifiers.control || key.modifiers.alt {
+            return false;
+        }
+        match key.key.as_str() {
+            "enter" => self.finish_stamp(cx),
+            "escape" => self.cancel_stamp(cx),
+            "backspace" => self.stamp_typed(None, cx),
+            _ => {
+                if let Some(typed) = key.key_char.as_deref() {
+                    self.stamp_typed(Some(typed), cx);
+                }
+            }
+        }
+        true
+    }
+
+    /// Start hearing your words for a new stamp: what you say from now, as the capture
+    /// transcribes it. `None` when the call isn't being captured.
+    fn listen_for_stamp(&self) -> Option<Heard> {
+        let call = self.capture.as_ref()?.id.clone();
+        let me = format!(":{}", self.user.as_ref()?.id);
+        let store = crate::capture::store::Store::open_default().ok()?;
+        let after_id = store.last_line_id(&call).ok()?;
+        let rev = store.latest_rev(&call).ok()?;
+        Some(Heard {
+            store,
+            call,
+            me,
+            after_id,
+            rev,
+            lines: BTreeMap::new(),
+            changed: Instant::now(),
+        })
+    }
+
+    /// Bring in what you've said into stamp `id` since the last look. A stamp you've
+    /// spoken into finishes itself once you've stopped talking for [`STAMP_SAID_DONE`].
+    /// Returns whether it is still listening.
+    fn hear_stamp(&mut self, id: u64, cx: &mut Context<Self>) -> bool {
+        use crate::capture::store::Kind;
+        if self.active_stamp != Some(id) {
+            return false;
+        }
+        let Some(heard) = self.stamp_words.heard.as_mut() else {
+            return false;
+        };
+        let Ok(lines) = heard.store.changes(&heard.call, heard.rev) else {
+            return true;
+        };
+        let mut changed = false;
+        for line in lines {
+            heard.rev = heard.rev.max(line.rev);
+            let mine = line
+                .speaker_id
+                .as_deref()
+                .is_some_and(|speaker| speaker.ends_with(&heard.me));
+            if line.id <= heard.after_id || !mine {
+                continue;
+            }
+            match line.kind {
+                Kind::Speech => {
+                    heard.lines.insert(line.id, (true, line.text));
+                }
+                Kind::Draft => {
+                    heard.lines.insert(line.id, (false, line.text));
+                }
+                Kind::Retracted => {
+                    heard.lines.remove(&line.id);
+                }
+                _ => continue,
+            }
+            changed = true;
+        }
+        if changed {
+            heard.changed = Instant::now();
+            self.show_stamp_words();
+            self.send_stamp_text(false);
+            cx.notify();
+            return true;
+        }
+        let said = heard.lines.values().any(|(done, _)| *done);
+        let talking = heard.lines.values().any(|(done, _)| !done);
+        if said
+            && !talking
+            && self.stamp_words.typed.is_empty()
+            && heard.changed.elapsed() >= STAMP_SAID_DONE
+        {
+            self.finish_stamp(cx);
+            return false;
+        }
+        true
+    }
+
+    /// Put the words heard and typed so far on your stamp: what's settled as its text,
+    /// what's still being recognised as its draft.
+    fn show_stamp_words(&mut self) {
+        let Some(id) = self.active_stamp else {
+            return;
+        };
+        let (mut said, mut draft) = (Vec::new(), Vec::new());
+        if let Some(heard) = &self.stamp_words.heard {
+            for (done, text) in heard.lines.values() {
+                let text = text.trim();
+                if text.is_empty() {
+                    continue;
+                }
+                if *done {
+                    said.push(text);
+                } else {
+                    draft.push(text);
+                }
+            }
+        }
+        let mut text = said.join(" ");
+        let typed = &self.stamp_words.typed;
+        if !typed.is_empty() {
+            if !text.is_empty() && !typed.starts_with(' ') {
+                text.push(' ');
+            }
+            text.push_str(typed);
+        }
+        let mut draft = draft.join(" ");
+        let max = crate::protocol::STAMP_TEXT_MAX;
+        truncate(&mut text, max);
+        truncate(&mut draft, max - text.len());
+        if let Some(stamp) = self.own_stamp(id) {
+            stamp.text = text;
+            stamp.draft = draft;
+        }
+    }
+
+    /// Put the stamp tool and the pen down, finishing a stamp you were on.
+    pub fn stop_marking(&mut self, cx: &mut Context<Self>) {
+        if self.stamping {
+            self.finish_stamp(cx);
+            self.stamping = false;
+            cx.emit(SessionEvent::DrawingChanged);
+            cx.notify();
+        }
+        if self.drawing {
+            self.toggle_drawing(cx);
+        }
+    }
+
+    /// How to use the stamp tool right now, for whatever shows it.
+    pub fn stamp_hint(&self) -> &'static str {
+        match (
+            self.active_stamp.is_some(),
+            self.stamp_words.heard.is_some(),
+        ) {
+            (true, true) => "Say it or type it · Enter to finish · Esc removes it",
+            (true, false) => "Type your note · Enter to finish · Esc removes it",
+            (false, _) if self.capture.is_some() => "Click a spot, then say or type your note",
+            (false, _) => "Click a spot, then type your note",
+        }
+    }
+
+    /// The number on your stamp that's still taking words.
+    pub fn active_stamp_number(&self) -> Option<u32> {
+        let id = self.active_stamp?;
+        self.stamps
+            .iter()
+            .find(|stamp| stamp.owner.is_empty() && stamp.id == id)
+            .map(|stamp| stamp.number)
     }
 
     /// Your stamp is finished: its words are final. An empty one is removed.
@@ -821,7 +1057,11 @@ impl Session {
             return;
         };
         let empty = self.own_stamp(id).is_none_or(|stamp| {
-            stamp.text.push_str(&std::mem::take(&mut stamp.draft));
+            let draft = std::mem::take(&mut stamp.draft);
+            if !stamp.text.is_empty() && !draft.is_empty() {
+                stamp.text.push(' ');
+            }
+            stamp.text.push_str(&draft);
             stamp.listening = false;
             stamp.text.trim().is_empty()
         });
@@ -831,6 +1071,7 @@ impl Session {
         }
         self.send_stamp_text(true);
         self.active_stamp = None;
+        self.stamp_words = StampWords::default();
         cx.notify();
     }
 
@@ -839,6 +1080,7 @@ impl Session {
         let Some(id) = self.active_stamp.take() else {
             return;
         };
+        self.stamp_words = StampWords::default();
         if let Some(stamp) = self.own_stamp(id) {
             stamp.listening = false;
             stamp.removed = Some(Instant::now());
@@ -869,6 +1111,7 @@ impl Session {
                     text: String::new(),
                     draft: String::new(),
                     listening: true,
+                    voice: false,
                     placed: Instant::now(),
                     removed: None,
                 });
@@ -1775,6 +2018,7 @@ impl Session {
             UiRequest::Bookmark(label) => self.send(Command::Bookmark(label.clone())),
             UiRequest::Card(request) => self.post_card(request.clone(), cx),
             UiRequest::Draw => self.toggle_drawing(cx),
+            UiRequest::Stamp => self.toggle_stamping(cx),
             UiRequest::CancelCard(id) => {
                 self.settle_card(id, crate::cards::CardState::Cancelled, cx)
             }

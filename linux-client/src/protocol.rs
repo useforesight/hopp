@@ -388,4 +388,6 @@ pub enum UiRequest {
     /// Start or stop drawing: on the screen you're viewing, or on your own while you
     /// share it.
     Draw,
+    /// Pick up or put down the stamp tool, on the same screens as `Draw`.
+    Stamp,
 }

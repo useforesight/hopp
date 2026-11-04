@@ -81,7 +81,7 @@ def install_hyprland(binary, share_plugin=None):
         separator = "" if text.endswith("\n") else "\n"
         atomic_write(main, (text + separator + REQUIRE).encode(), main.stat().st_mode & 0o777)
         print(f"Added one line to {main} to load {rules}")
-    print(f"Hyprland rules and Super+H / Super+Alt+H / Super+Ctrl+Esc / Super+Alt+C / Super+Alt+D: {rules}")
+    print(f"Hyprland rules and Super+H / Super+Alt+H / Super+Ctrl+Esc / Super+Alt+C / Super+Alt+D / Super+Alt+P: {rules}")
 
 
 SHARE_PLUGIN = "hopp-share-clean.so"

@@ -9,6 +9,11 @@
 //! instead of letting it fade (the Mac app's drawing rules). Closing it gives focus back
 //! to your app.
 //!
+//! The stamp tool (Stamp on the pill, Super+Alt+P, `hopp stamp`, or S on the pad) uses
+//! the pad too: a click drops a
+//! numbered stamp, and what you then say (while the call is captured) or type goes on it.
+//! Enter finishes it, Escape removes it, D goes back to the pen.
+//!
 //! The pad shows nothing itself: the sharing pill turns into the drawing bar, so there's
 //! one overlay to look at. The pad takes the pointer only over the usable area minus the
 //! pill, so the pill and the bars (Omarchy's included) stay clickable while you draw.
@@ -102,11 +107,8 @@ impl DrawPad {
     }
 
     fn stop(&self, cx: &mut Context<Self>) {
-        self.session.update(cx, |session, cx| {
-            if session.drawing {
-                session.toggle_drawing(cx);
-            }
-        });
+        self.session
+            .update(cx, |session, cx| session.stop_marking(cx));
     }
 }
 
@@ -161,23 +163,34 @@ impl Render for DrawPad {
                 }),
             )
             .on_key_down(cx.listener(|view, event: &gpui_kit::KeyDownEvent, _, cx| {
-                if view
-                    .session
-                    .update(cx, |session, cx| session.drawing_key(&event.keystroke, cx))
-                {
+                // A stamp taking words gets the keys first: they're its note.
+                if view.session.update(cx, |session, cx| {
+                    session.stamp_key(&event.keystroke, cx)
+                        || session.drawing_key(&event.keystroke, cx)
+                }) {
                     return;
                 }
                 let plain = !event.keystroke.modifiers.control
                     && !event.keystroke.modifiers.platform
                     && !event.keystroke.modifiers.alt;
+                let (drawing, stamping) = {
+                    let session = view.session.read(cx);
+                    (session.drawing, session.stamping)
+                };
                 match event.keystroke.key.as_str() {
                     "escape" => view.stop(cx),
-                    "c" | "backspace" | "delete" if plain => view
+                    "c" | "backspace" | "delete" if plain && drawing => view
                         .session
                         .update(cx, |session, cx| session.clear_own_drawings(cx)),
-                    "k" if plain => view
+                    "k" if plain && drawing => view
                         .session
                         .update(cx, |session, cx| session.toggle_keep_ink(cx)),
+                    "s" if plain && !stamping => view
+                        .session
+                        .update(cx, |session, cx| session.toggle_stamping(cx)),
+                    "d" if plain && !drawing => view
+                        .session
+                        .update(cx, |session, cx| session.toggle_drawing(cx)),
                     _ => {}
                 }
             }))

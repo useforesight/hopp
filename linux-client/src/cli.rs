@@ -93,6 +93,9 @@ pub enum Command {
     /// Start or stop drawing: on a screen someone shares with you, or on your own while
     /// you share it (Super+Alt+D; Escape or right-click stops).
     Draw,
+    /// Pick up or put down the stamp tool (Super+Alt+P): click a spot on the shared
+    /// screen, then say (while the call is captured) or type a note; Enter finishes it.
+    Stamp,
     /// Open Hopp in the bar, or its window if the bar plugin is off (Super+Alt+H).
     Panel,
     /// Open Hopp's settings.
@@ -294,6 +297,7 @@ pub fn run(command: Command, instance_name: &str) -> Result<bool> {
         Command::Share => Plan::Request(UiRequest::Share, Missing::Error),
         Command::Peek => Plan::Request(UiRequest::Peek, Missing::Quiet),
         Command::Draw => Plan::Request(UiRequest::Draw, Missing::Error),
+        Command::Stamp => Plan::Request(UiRequest::Stamp, Missing::Error),
         Command::Quit => Plan::Request(UiRequest::Quit, Missing::Quiet),
         Command::Settings => Plan::RequestOrStart(UiRequest::Settings),
     };

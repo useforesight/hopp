@@ -322,14 +322,14 @@ impl Shell {
             .filter(|target| target.output_name.is_some());
         let pad_wanted = {
             let state = session.read(cx);
-            state.sharing && state.drawing && Self::allowed(cx, "drawpad")
+            state.sharing && (state.drawing || state.stamping) && Self::allowed(cx, "drawpad")
         };
         let pad_open = cx.global::<Shell>().drawpad.is_some();
         match (pad_wanted, pad_target, pad_open) {
             (true, Some(_), false) if !clean => {
                 // Hyprland would black out the whole share under the pad.
                 session.update(cx, |session, cx| {
-                    session.toggle_drawing(cx);
+                    session.stop_marking(cx);
                     session.push_error(format!(
                         "Drawing on your own screen needs the {} Hyprland plugin (make install, then log out and back in)",
                         hypr::SHARE_PLUGIN
@@ -341,7 +341,7 @@ impl Shell {
                 let handle = drawpad::open(session.clone(), &target, cx);
                 if handle.is_none() {
                     // Nowhere to draw: don't leave drawing on with no way to use it.
-                    session.update(cx, |session, cx| session.toggle_drawing(cx));
+                    session.update(cx, |session, cx| session.stop_marking(cx));
                 }
                 cx.global_mut::<Shell>().drawpad = handle;
             }

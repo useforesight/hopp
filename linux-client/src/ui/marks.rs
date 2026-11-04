@@ -726,8 +726,10 @@ pub struct Stamp {
     pub text: String,
     /// Words still being recognised, shown dimmed after `text`.
     pub draft: String,
-    /// Still taking speech.
+    /// Still taking words.
     pub listening: bool,
+    /// Yours, and hearing what you say (the call is captured), not only what you type.
+    pub voice: bool,
     pub placed: Instant,
     pub removed: Option<Instant>,
 }
@@ -885,9 +887,16 @@ fn paint_bubble(
         body.push_str(&piece);
     }
     if body.is_empty() {
-        // Three dots that fill in turn while it listens.
+        // Three dots that fill in turn while it waits for words: said, or typed.
         let dots = 1 + (age.as_millis() / 380 % 3) as usize;
-        let piece = format!("Listening{}", ".".repeat(dots));
+        let waiting = if !stamp.owner.is_empty() {
+            "Adding a note"
+        } else if stamp.voice {
+            "Listening: talk or type"
+        } else {
+            "Type a note"
+        };
+        let piece = format!("{waiting}{}", ".".repeat(dots));
         runs.push(run(piece.len(), 0.5 * shown, true));
         body.push_str(&piece);
     }

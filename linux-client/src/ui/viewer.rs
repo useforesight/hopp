@@ -202,17 +202,10 @@ impl ViewerView {
         let key = event.keystroke.key.as_str();
         let modifiers = event.keystroke.modifiers;
         // Typing into your stamp: Enter finishes it, Escape takes it away.
-        if self.session.read(cx).active_stamp.is_some() && !modifiers.control && !modifiers.alt {
-            self.session.update(cx, |session, cx| match key {
-                "enter" => session.finish_stamp(cx),
-                "escape" => session.cancel_stamp(cx),
-                "backspace" => session.stamp_typed(None, cx),
-                _ => {
-                    if let Some(typed) = event.keystroke.key_char.as_deref() {
-                        session.stamp_typed(Some(typed), cx);
-                    }
-                }
-            });
+        if self
+            .session
+            .update(cx, |session, cx| session.stamp_key(&event.keystroke, cx))
+        {
             return true;
         }
         // Ctrl+Z while drawing takes back your last stroke.
@@ -1197,15 +1190,39 @@ impl Render for ViewerView {
             }
         };
         self.painted.finish(window);
-        stage.when(controlling && !idle && !docked, |stage| {
-            stage.child(
-                div()
-                    .absolute()
-                    .bottom(px(12.))
-                    .left(px(12.))
-                    .child(style::muted_text("Esc releases control", cx)),
-            )
-        })
+        let stamp_hint = {
+            let session = self.session.read(cx);
+            session.stamping.then(|| session.stamp_hint())
+        };
+        stage
+            .when_some(stamp_hint, |stage, hint| {
+                stage.child(
+                    div()
+                        .absolute()
+                        .bottom(px(12.))
+                        .left_0()
+                        .right_0()
+                        .flex()
+                        .justify_center()
+                        .child(
+                            div()
+                                .px(px(12.))
+                                .py(px(5.))
+                                .rounded(px(12.))
+                                .bg(cx.omarchy().background.opacity(0.9))
+                                .child(style::muted_text(hint, cx)),
+                        ),
+                )
+            })
+            .when(controlling && !idle && !docked, |stage| {
+                stage.child(
+                    div()
+                        .absolute()
+                        .bottom(px(12.))
+                        .left(px(12.))
+                        .child(style::muted_text("Esc releases control", cx)),
+                )
+            })
     }
 }
 

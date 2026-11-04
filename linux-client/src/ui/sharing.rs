@@ -1,9 +1,10 @@
 //! While you share, a small pill under the bar says so, says who can control your
-//! screen, and offers Draw (on your own screen, see `drawpad`), Revoke and Stop.
+//! screen, and offers Draw and Stamp (on your own screen, see `drawpad`), Revoke and Stop.
 //!
 //! It is the one control you see while you share. When you draw, it turns into the
-//! drawing bar (Keep ink, Undo, Clear, Done) rather than a second overlay appearing: the
-//! draw pad underneath only catches the pen, with a hole where this pill is. It is a
+//! drawing bar (Keep ink, Undo, Clear, Stamp, Done); with the stamp tool, it says how to
+//! leave a stamp and what to do next. No second overlay appears: the draw pad underneath
+//! only catches the pen, with a hole where this pill is. It is a
 //! layer-shell surface on the shared monitor, excluded from screen sharing by Hopp's
 //! Hyprland rules, so viewers never see it.
 use gpui_kit::{
@@ -21,7 +22,7 @@ use super::{
 };
 
 /// The pill's window: wide enough for the drawing bar; the pill is centred in it.
-pub const WIDTH: f32 = 600.;
+pub const WIDTH: f32 = 720.;
 pub const HEIGHT: f32 = 40.;
 /// Below the top of the usable area (under the bar).
 pub const MARGIN: f32 = 38.;
@@ -57,12 +58,19 @@ impl Render for SharingView {
             .as_ref()
             .is_some_and(|target| target.output_name.is_some());
         let drawing = session.drawing && can_draw;
+        let stamping = session.stamping && can_draw;
+        let stamp_hint = session.stamp_hint();
+        let active_stamp = session.active_stamp_number();
         let keep_ink = session.keep_ink;
         let has_ink = session
             .paths
             .iter()
             .any(|path| path.sender.is_empty() && path.fading.is_none());
-        let edge = if drawing { theme.accent } else { theme.danger };
+        let edge = if drawing || stamping {
+            theme.accent
+        } else {
+            theme.danger
+        };
         let chip = |id: &'static str, label: &'static str, glyph, tone, cx: &Context<Self>| {
             style::chip(id, label, glyph, tone, cx).rounded(px(12.))
         };
@@ -120,6 +128,14 @@ impl Render for SharingView {
                     })),
             )
             .child(
+                chip("stamp", "Stamp", Some(IconName::MapPin), Tone::Plain, cx).on_click(
+                    cx.listener(|view, _, _, cx| {
+                        view.session
+                            .update(cx, |session, cx| session.toggle_stamping(cx))
+                    }),
+                ),
+            )
+            .child(
                 chip("done", "Done", Some(IconName::Check), Tone::On, cx).on_click(cx.listener(
                     |view, _, _, cx| {
                         view.session
@@ -127,6 +143,54 @@ impl Render for SharingView {
                     },
                 )),
             )
+        } else if stamping {
+            // The stamp tool: how to leave one, and once it's down, how to finish it.
+            let pill = pill
+                .child(
+                    div()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.bright)
+                        .child(match active_stamp {
+                            Some(number) => format!("Stamp {number}"),
+                            None => "Stamps".into(),
+                        }),
+                )
+                .child(style::muted_text(stamp_hint, cx));
+            if active_stamp.is_some() {
+                pill.child(
+                    chip("unstamp", "Remove", Some(IconName::X), Tone::Plain, cx).on_click(
+                        cx.listener(|view, _, _, cx| {
+                            view.session
+                                .update(cx, |session, cx| session.cancel_stamp(cx))
+                        }),
+                    ),
+                )
+                .child(
+                    chip("finish", "Finish", Some(IconName::Check), Tone::On, cx).on_click(
+                        cx.listener(|view, _, _, cx| {
+                            view.session
+                                .update(cx, |session, cx| session.finish_stamp(cx))
+                        }),
+                    ),
+                )
+            } else {
+                pill.child(
+                    chip("pen", "Draw", Some(IconName::Pencil), Tone::Plain, cx).on_click(
+                        cx.listener(|view, _, _, cx| {
+                            view.session
+                                .update(cx, |session, cx| session.toggle_drawing(cx))
+                        }),
+                    ),
+                )
+                .child(
+                    chip("done", "Done", Some(IconName::Check), Tone::On, cx).on_click(
+                        cx.listener(|view, _, _, cx| {
+                            view.session
+                                .update(cx, |session, cx| session.stop_marking(cx))
+                        }),
+                    ),
+                )
+            }
         } else {
             pill.child(
                 div()
@@ -148,6 +212,14 @@ impl Render for SharingView {
                         cx.listener(|view, _, _, cx| {
                             view.session
                                 .update(cx, |session, cx| session.toggle_drawing(cx))
+                        }),
+                    ),
+                )
+                .child(
+                    chip("stamp", "Stamp", Some(IconName::MapPin), Tone::Plain, cx).on_click(
+                        cx.listener(|view, _, _, cx| {
+                            view.session
+                                .update(cx, |session, cx| session.toggle_stamping(cx))
                         }),
                     ),
                 )

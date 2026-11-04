@@ -422,7 +422,7 @@ fn main() {
         });
         send(Event::Ui(hopp_visual_fixture::engine::UiRequest::Draw));
     }
-    if scene == "sharing" || scene == "sharing-draw" {
+    if scene == "sharing" || scene == "sharing-draw" || scene == "sharing-stamp" {
         send(Event::Sharing {
             active: true,
             target: Some(hopp_visual_fixture::screencast::CaptureTarget {
@@ -434,6 +434,9 @@ fn main() {
         });
         if scene == "sharing" {
             send(Event::ControlGranted(Some("mira:audio".into())));
+        } else if scene == "sharing-stamp" {
+            // The stamp tool on your own screen: the pill says how to leave one.
+            send(Event::Ui(hopp_visual_fixture::engine::UiRequest::Stamp));
         } else {
             // Drawing on your own screen: the pill becomes the drawing bar.
             send(Event::Ui(hopp_visual_fixture::engine::UiRequest::Draw));
@@ -500,7 +503,7 @@ fn main() {
         "signin" | "home" | "home-call" => "home",
         "faces" | "faces-sharing" => "faces",
         // The pill alone: the pad (transparent) would cover it in the harness.
-        "sharing-draw" => "sharing",
+        "sharing-draw" | "sharing-stamp" => "sharing",
         other => other,
     };
     ui::open(
