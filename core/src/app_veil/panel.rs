@@ -157,7 +157,7 @@ pub(super) fn content(
     (background, button)
 }
 
-fn color(token: ColorToken) -> Retained<NSColor> {
+pub(crate) fn color(token: ColorToken) -> Retained<NSColor> {
     let color = token.to_color();
     NSColor::colorWithSRGBRed_green_blue_alpha(
         color.r as f64,
@@ -188,7 +188,7 @@ extern "C" {
     fn CTFontManagerRegisterGraphicsFont(font: CFTypeRef, error: *mut *const c_void) -> bool;
 }
 
-fn register_font() {
+pub(crate) fn register_font() {
     static REGISTER: Once = Once::new();
     REGISTER.call_once(|| unsafe {
         let data = CFData::from_buffer(GEIST_MEDIUM_BYTES);

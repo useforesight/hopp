@@ -29,7 +29,7 @@ use crate::room_service::{ClientEvent, ClientPoint};
 const _: () = assert!(LIVEKIT_SAMPLE_RATE as usize == hopp_capture::vad::RATE);
 
 /// The helper is only built and bundled for the Mac.
-const SUPPORTED: bool = cfg!(target_os = "macos");
+pub const SUPPORTED: bool = cfg!(target_os = "macos");
 const TELLING_THE_CALL: Duration = Duration::from_secs(5);
 /// How long quitting waits for a capture's last words. One that takes longer is closed
 /// next time as "ended unexpectedly", with everything said up to then.
@@ -238,6 +238,9 @@ pub struct CallCapture {
     state: Arc<Mutex<State>>,
     stills: Arc<Stills>,
     changed: Arc<Mutex<Option<Changed>>>,
+    /// What the call's capture says it's in: the room's name, or nothing for a call between
+    /// two people. The server's name for a room is an id.
+    room: Arc<Mutex<String>>,
 }
 
 type Changed = Box<dyn Fn(Option<String>) + Send>;
@@ -252,6 +255,10 @@ impl CallCapture {
     /// Be told which capture is recording, whenever that changes.
     pub fn on_change(&self, changed: impl Fn(Option<String>) + Send + 'static) {
         *self.changed.lock().unwrap_or_else(PoisonError::into_inner) = Some(Box::new(changed));
+    }
+
+    pub fn set_room(&self, name: Option<String>) {
+        *self.room.lock().unwrap_or_else(PoisonError::into_inner) = name.unwrap_or_default();
     }
 
     fn announce(&self, id: Option<String>) {
@@ -398,15 +405,15 @@ impl CallCapture {
     }
 
     /// Start capturing this call and tell the call, unless it already is.
-    pub async fn start(
-        &self,
-        room: String,
-        local: LocalParticipant,
-        snapshot: Vec<CoreParticipantState>,
-    ) {
+    pub async fn start(&self, local: LocalParticipant, snapshot: Vec<CoreParticipantState>) {
         if !SUPPORTED || self.is_capturing() {
             return;
         }
+        let room = self
+            .room
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
         let capture = self.clone();
         let own_identity = local.identity().as_str().to_string();
         match tokio::task::spawn_blocking(move || capture.begin(room, &own_identity, &snapshot))

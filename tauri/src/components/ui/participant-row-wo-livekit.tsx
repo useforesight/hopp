@@ -136,7 +136,7 @@ export const ParticipantRow = (props: {
       });
 
       try {
-        await tauriUtils.callStarted(tokens.audioToken, tokens.videoToken);
+        await tauriUtils.callStarted(tokens.audioToken, tokens.videoToken, { roomName: targetRoom.name });
       } catch {
         setCallTokens(null);
         toast.error("Failed to start call");

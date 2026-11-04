@@ -205,7 +205,7 @@ export function useJoinRoom() {
         });
 
         try {
-          await tauriUtils.callStarted(tokens.audioToken, tokens.videoToken);
+          await tauriUtils.callStarted(tokens.audioToken, tokens.videoToken, { roomName: room.name });
         } catch {
           setCallTokens(null);
           toast.error("Failed to start call");
@@ -263,7 +263,7 @@ export function useJoinCall() {
         });
 
         try {
-          await tauriUtils.callStarted(tokens.audioToken, tokens.videoToken);
+          await tauriUtils.callStarted(tokens.audioToken, tokens.videoToken, { roomName: tokens.room?.name });
         } catch {
           socketService.send({ type: "call_end", payload: { participant_id: tokens.participant } });
           tauriUtils.endCallCleanup();

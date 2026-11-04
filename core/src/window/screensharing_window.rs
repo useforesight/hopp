@@ -86,7 +86,7 @@ pub fn screensharing_window_attributes() -> WindowAttributes {
     attrs
 }
 
-const SCREENSHARE_CALL_CONTROLS_MIN_WIDTH: f32 = 640.0;
+const SCREENSHARE_CALL_CONTROLS_MIN_WIDTH: f32 = 680.0;
 const SCREENSHARE_SEGMENTED_CONTROLS_WIDTH: f32 = 132.0;
 const SCREENSHARE_SETTINGS_BUTTON_WIDTH: f32 = 44.0;
 

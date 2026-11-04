@@ -1,18 +1,21 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use iced::widget::row;
-use iced::{Element, Theme};
-use socket_lib::{AudioCaptureMessage, CameraStartMessage};
+use iced::widget::{container, mouse_area, row, text, tooltip};
+use iced::{Background, Border, Color, Element, Padding, Theme};
+use socket_lib::{AppAction, AudioCaptureMessage, CameraStartMessage};
 use winit::event_loop::EventLoopProxy;
 
 use crate::audio::capturer::list_audio_inputs;
 use crate::camera::capturer::CameraCapturer;
 use crate::components::split_button::{
-    split_button_dropdown_wrap, split_button_sized, SplitButtonItem, SplitButtonSize,
+    split_button_dropdown_wrap, split_button_sized, svg_button_sized, SplitButtonItem,
+    SplitButtonSize,
 };
+use crate::livekit::call_capture;
 use crate::livekit::participant::ParticipantInfo;
 use crate::windows::colors::ColorToken;
+use crate::windows::shadows::ShadowToken;
 use crate::UserEvent;
 
 const ICON_MICROPHONE_ON: char = '\u{F105}';
@@ -20,6 +23,7 @@ const ICON_MICROPHONE_OFF: char = '\u{F106}';
 const ICON_SCREEN_SHARE: char = '\u{F102}';
 const ICON_VIDEO: char = '\u{F101}';
 const ICON_PHONE_OFF: char = '\u{F103}';
+pub const ICON_CAPTURE: &[u8] = include_bytes!("../../resources/icons/audio-lines.svg");
 
 #[derive(Debug, Clone, Copy)]
 pub enum CallControlsDensity {
@@ -42,25 +46,39 @@ impl CallControlsDensity {
         }
     }
 
-    pub const fn total_width(self) -> f32 {
-        match self {
-            Self::Regular => 237.0,
-            Self::Compact => 189.0,
+    /// The capture control and the space before it, where captures work.
+    const fn capture_width(self) -> f32 {
+        if !call_capture::SUPPORTED {
+            return 0.0;
         }
+        match self {
+            Self::Regular => 44.0,
+            Self::Compact => 34.0,
+        }
+    }
+
+    pub const fn total_width(self) -> f32 {
+        self.capture_width()
+            + match self {
+                Self::Regular => 237.0,
+                Self::Compact => 189.0,
+            }
     }
 
     const fn camera_dropdown_tail(self) -> f32 {
-        match self {
-            Self::Regular => 111.0,
-            Self::Compact => 87.0,
-        }
+        self.capture_width()
+            + match self {
+                Self::Regular => 111.0,
+                Self::Compact => 87.0,
+            }
     }
 
     const fn mic_dropdown_tail(self) -> f32 {
-        match self {
-            Self::Regular => 178.0,
-            Self::Compact => 140.0,
-        }
+        self.capture_width()
+            + match self {
+                Self::Regular => 178.0,
+                Self::Compact => 140.0,
+            }
     }
 }
 
@@ -76,6 +94,8 @@ pub enum CallControlsMessage {
     SelectCamera(String),
     ScreenShare,
     OpenScreenSharePicker,
+    ToggleCapture,
+    OpenCaptures,
     EndCall,
 }
 
@@ -129,15 +149,15 @@ impl CallControlsState {
         participants: &'a Arc<RwLock<HashMap<String, ParticipantInfo>>>,
         density: CallControlsDensity,
     ) -> Element<'a, CallControlsMessage, Theme, iced::Renderer> {
-        let (is_muted, is_screensharing) = participants
+        let (is_muted, is_screensharing, is_capturing) = participants
             .read()
             .ok()
             .and_then(|participants| {
                 participants
                     .get("local")
-                    .map(|local| (local.muted(), local.is_screensharing()))
+                    .map(|local| (local.muted(), local.is_screensharing(), local.capturing()))
             })
-            .unwrap_or((false, false));
+            .unwrap_or((false, false, false));
         let size = density.button_size();
 
         let mic = split_button_sized(
@@ -189,9 +209,13 @@ impl CallControlsState {
             size,
         );
 
-        row![mic, video, screen, end_call]
-            .spacing(density.spacing())
-            .into()
+        let controls = row![mic, video, screen].spacing(density.spacing());
+        let controls = if call_capture::SUPPORTED {
+            controls.push(capture_control(is_capturing, size))
+        } else {
+            controls
+        };
+        controls.push(end_call).into()
     }
 
     pub fn wrap_dropdown<'a, Message, Map>(
@@ -341,7 +365,56 @@ impl CallControlsState {
                 });
             }
             CallControlsMessage::OpenScreenSharePicker => send(UserEvent::GetAvailableContent),
+            CallControlsMessage::ToggleCapture => {
+                send(UserEvent::AppAction(AppAction::ToggleCapture));
+            }
+            CallControlsMessage::OpenCaptures => {
+                send(UserEvent::AppAction(AppAction::OpenCaptures));
+            }
             CallControlsMessage::EndCall => send(UserEvent::CallEnd),
         }
     }
+}
+
+fn capture_control<'a>(
+    is_capturing: bool,
+    size: SplitButtonSize,
+) -> Element<'a, CallControlsMessage, Theme, iced::Renderer> {
+    let control = mouse_area(svg_button_sized(
+        ICON_CAPTURE,
+        if is_capturing {
+            ColorToken::Rose500.to_color()
+        } else {
+            ColorToken::Gray400.to_color()
+        },
+        CallControlsMessage::ToggleCapture,
+        size,
+    ))
+    .on_right_press(CallControlsMessage::OpenCaptures);
+
+    let hint = container(
+        text(if is_capturing {
+            "Stop capturing · right-click for your captures"
+        } else {
+            "Capture this call · right-click for your captures"
+        })
+        .size(12)
+        .color(Color::WHITE),
+    )
+    .padding(Padding::from([4.0, 8.0]))
+    .style(|_theme: &Theme| container::Style {
+        background: Some(Background::Color(ColorToken::Gray600.to_color())),
+        border: Border {
+            color: Color::from_rgba(1.0, 1.0, 1.0, 0.15),
+            width: 1.0,
+            radius: 6.0.into(),
+        },
+        shadow: ShadowToken::Xs.to_shadow(),
+        ..Default::default()
+    });
+
+    tooltip(control, hint, tooltip::Position::Bottom)
+        .gap(4)
+        .snap_within_viewport(true)
+        .into()
 }

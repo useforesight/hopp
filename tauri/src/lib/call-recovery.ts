@@ -48,6 +48,7 @@ const rejoinAfterCoreRestart = async () => {
     await tauriUtils.callStarted(callTokens.audioToken, callTokens.videoToken, {
       micOn: callTokens.hasAudioEnabled,
       cameraOn: callTokens.hasCameraEnabled,
+      roomName: callTokens.room?.name,
     });
   } catch (error) {
     console.error("Failed to rejoin call after core restart:", error);

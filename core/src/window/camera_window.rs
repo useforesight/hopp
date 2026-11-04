@@ -39,7 +39,7 @@ use winit::window::{Window, WindowAttributes, WindowId};
 use thiserror::Error;
 
 use crate::components::call_controls::{
-    CallControlsDensity, CallControlsMessage, CallControlsState,
+    CallControlsDensity, CallControlsMessage, CallControlsState, ICON_CAPTURE,
 };
 use crate::components::fonts::{self as fonts_mod, GEIST_MEDIUM, GEIST_REGULAR, ICONS_FONT};
 use crate::components::toast::{self, ToastPosition, ToastState};
@@ -117,6 +117,8 @@ const HEADER_HEIGHT: f32 = 20.0 + CONTENT_PADDING;
 const SMALL_WIDTH_THRESHOLD: f32 = 450.0;
 const SMALL_HEIGHT_THRESHOLD: f32 = 600.0;
 const COMPACT_WIDTH_THRESHOLD: f32 = 300.0;
+/// Narrower than this, the controls take less room to fit between the sides of the header.
+const REGULAR_CONTROLS_MIN_WIDTH: f32 = 470.0;
 const HIDE_NAME_TILE_THRESHOLD: f32 = 150.0;
 
 const COMPACT_TOP_INSET: f32 = 24.0;
@@ -652,8 +654,13 @@ impl CameraWindow {
         outer_skip: bool,
         last_rendered_frame_ids: &mut HashMap<String, u64>,
     ) -> iced::Element<'a, CameraMessage, Theme, iced::Renderer> {
+        let controls_density = if state.viewport_size.width < REGULAR_CONTROLS_MIN_WIDTH {
+            CallControlsDensity::Compact
+        } else {
+            CallControlsDensity::Regular
+        };
         let controls = call_controls
-            .view(participants, CallControlsDensity::Regular)
+            .view(participants, controls_density)
             .map(CameraMessage::CallControls);
 
         // ── Header with centered controls (space for native traffic lights)
@@ -720,12 +727,11 @@ impl CameraWindow {
             })
             .clip(true);
 
-        let trailing_padding =
-            (state.viewport_size.width - CallControlsDensity::Regular.total_width()) / 2.0;
+        let trailing_padding = (state.viewport_size.width - controls_density.total_width()) / 2.0;
         let base = call_controls.wrap_dropdown(
             base_inner.into(),
             CameraMessage::CallControls,
-            CallControlsDensity::Regular,
+            controls_density,
             HEADER_HEIGHT + 2.0,
             trailing_padding,
         );
@@ -1303,6 +1309,7 @@ struct ParticipantCardProps<'a> {
     pub(super) name: &'a str,
     pub(super) is_speaking: bool,
     pub(super) is_muted: bool,
+    pub(super) is_capturing: bool,
     pub(super) buffers: Arc<VideoBufferManager>,
     pub(super) tile_size: f32,
     pub(super) is_small_window: bool,
@@ -1325,6 +1332,7 @@ fn participant_card<'a>(
         name,
         is_speaking,
         is_muted,
+        is_capturing,
         buffers,
         tile_size,
         is_small_window,
@@ -1406,6 +1414,18 @@ fn participant_card<'a>(
     if let Some(eye_btn) = eye_button_overlay {
         tile_layers.push(eye_btn);
     }
+    // Shown however small the tile: nobody should be captured without knowing.
+    if is_capturing {
+        tile_layers.push(
+            container(capturing_badge())
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_x(Alignment::Start)
+                .align_y(Alignment::Start)
+                .padding(if hide_name { 4.0 } else { overlay_padding })
+                .into(),
+        );
+    }
 
     // Clipped content: video + name label (+ local hide control), masked to rounded corners.
     let clipped_content = container(stack(tile_layers))
@@ -1465,6 +1485,43 @@ fn participant_card<'a>(
     } else {
         tile.into()
     }
+}
+
+fn capturing_badge<'a>() -> iced::Element<'a, CameraMessage, Theme, iced::Renderer> {
+    let rose = ColorToken::Rose400.to_color();
+    let icon = svg(svg::Handle::from_memory(ICON_CAPTURE))
+        .width(Length::Fixed(12.0))
+        .height(Length::Fixed(12.0))
+        .style(move |_theme: &Theme, _status| svg::Style { color: Some(rose) });
+
+    let badge = container(icon)
+        .padding(Padding::from([5.0, 7.0]))
+        .style(|_theme: &Theme| container::Style {
+            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.6))),
+            border: Border {
+                radius: 100.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
+    let hint = container(text("Capturing this call").size(12).color(Color::WHITE))
+        .padding(Padding::from([4.0, 8.0]))
+        .style(|_theme: &Theme| container::Style {
+            background: Some(Background::Color(ColorToken::Gray600.to_color())),
+            border: Border {
+                color: Color::from_rgba(1.0, 1.0, 1.0, 0.15),
+                width: 1.0,
+                radius: 6.0.into(),
+            },
+            shadow: ShadowToken::Xs.to_shadow(),
+            ..Default::default()
+        });
+
+    tooltip(badge, hint, tooltip::Position::Right)
+        .gap(4)
+        .snap_within_viewport(true)
+        .into()
 }
 
 /// Hash an identity string to a u64 for GPU texture keying.
@@ -1602,6 +1659,7 @@ fn create_participant_grid<'a>(
                     name: info.name(),
                     is_speaking: info.is_speaking(),
                     is_muted: info.muted(),
+                    is_capturing: info.capturing(),
                     buffers: camera_buffers,
                     tile_size,
                     is_small_window,

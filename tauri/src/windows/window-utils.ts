@@ -189,10 +189,11 @@ const setSentryMetadata = async (userId: string) => {
 const callStarted = async (
   audioToken: string,
   videoToken: string,
-  // Overrides the user's call start preferences, to keep their state when rejoining.
-  media?: { micOn: boolean; cameraOn: boolean },
+  // micOn and cameraOn override the user's call start preferences, to keep their state when
+  // rejoining. A call in a room says which, for its capture.
+  options?: { micOn?: boolean; cameraOn?: boolean; roomName?: string },
 ) => {
-  return await invoke("call_started", { audioToken, videoToken, ...media });
+  return await invoke("call_started", { audioToken, videoToken, ...options });
 };
 
 /**

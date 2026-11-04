@@ -90,6 +90,16 @@ export function CallCenter() {
   const [controllerCursorState, setControllerCursorState] = useState(true);
   const [accessibilityPermission, setAccessibilityPermission] = useState(true);
 
+  // The sharing pill's Revoke
+  useEffect(() => {
+    const unlisten = listen<boolean>("core_controller_cursor_changed", (event) => {
+      setControllerCursorState(event.payload);
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
   const { data: userSettings } = useQuery({
     queryKey: ["user-settings"],
     queryFn: () => typedInvoke("get_user_settings"),
@@ -281,7 +291,25 @@ function CallTimer({ startedAt }: { startedAt: Date }) {
   return <span className="tabular-nums">{hours > 0 ? `${hours}:${minutes}:${seconds}` : `${minutes}:${seconds}`}</span>;
 }
 
+/** Whether you're capturing this call. The core says when that changes. */
+function useCapturing() {
+  const [capturing, setCapturing] = useState(false);
+
+  useEffect(() => {
+    const unlisten = listen<string | null>("core_capture_changed", (event) => {
+      setCapturing(event.payload !== null);
+    });
+    typedInvoke("captures_current").then((id) => setCapturing(id !== null));
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  return capturing;
+}
+
 function useCallTiles() {
+  const capturing = useCapturing();
   const coreParticipants = useStore((state) => state.callTokens?.participants ?? NO_PARTICIPANTS);
   const hasAudioEnabled = useStore((state) => state.callTokens?.hasAudioEnabled ?? true);
   const hasCameraEnabled = useStore((state) => state.callTokens?.hasCameraEnabled ?? false);
@@ -310,7 +338,7 @@ function useCallTiles() {
           isMicrophoneEnabled: hasAudioEnabled,
           hasCamera: hasCameraEnabled,
           isScreensharing: isSharing,
-          isCapturing: false,
+          isCapturing: capturing,
         }
       : null;
 
@@ -336,7 +364,7 @@ function useCallTiles() {
       });
 
     return localEntry ? [localEntry, ...remoteEntries] : remoteEntries;
-  }, [coreParticipants, teammates, user, hasAudioEnabled, hasCameraEnabled, isSharing]);
+  }, [capturing, coreParticipants, teammates, user, hasAudioEnabled, hasCameraEnabled, isSharing]);
 }
 
 function useCallPeerName() {
@@ -426,9 +454,12 @@ function MicLevelRing() {
 
 /** Who is transcribing the call, so nobody is captured without knowing. */
 function CaptureNotice() {
-  const names = useCallTiles()
-    .filter((tile) => tile.isCapturing)
-    .map((tile) => tile.user?.first_name ?? tile.name);
+  const capturing = useCallTiles().filter((tile) => tile.isCapturing);
+  // You come first, as "You and Mira".
+  const names = [
+    ...capturing.filter((tile) => tile.isLocal).map(() => "You"),
+    ...capturing.filter((tile) => !tile.isLocal).map((tile) => tile.user?.first_name ?? tile.name),
+  ];
   if (names.length === 0) return null;
   const who = names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
   return (
@@ -438,7 +469,7 @@ function CaptureNotice() {
     >
       <LuAudioLines aria-hidden className="size-3.5 shrink-0" />
       <span className="truncate">
-        {who} {names.length === 1 ? "is" : "are"} transcribing this call
+        {who} {names.length === 1 && who !== "You" ? "is" : "are"} transcribing this call
       </span>
     </div>
   );
@@ -576,10 +607,10 @@ function DrawingEnableButton() {
     };
   }, []);
 
-  // `hopp draw`
+  // `hopp draw` and the sharing pill
   useEffect(() => {
-    const unlisten = listen<boolean>("drawing_pen_changed", (event) => {
-      setActiveTool(event.payload ? "draw" : null);
+    const unlisten = listen<"draw" | "stamp" | null>("drawing_tool_changed", (event) => {
+      setActiveTool(event.payload);
     });
     return () => {
       unlisten.then((fn) => fn());

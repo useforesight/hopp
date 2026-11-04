@@ -47,7 +47,17 @@ export const initials = (name: string): string => {
 
 export const plural = (count: number, noun: string): string => `${count} ${noun}${count === 1 ? "" : "s"}`;
 
-export const heading = (call: CaptureCall): string => call.title ?? `Call in ${call.room}`;
+/** Call::heading in crates/hopp-capture/src/store.rs. */
+export const heading = (call: CaptureCall): string => {
+  if (call.title) return call.title;
+  if (call.room) return `Call in ${call.room}`;
+  const [first, second, ...rest] = call.participants;
+  if (!first) return "Call";
+  if (!second) return `Call with ${first}`;
+  if (rest.length === 0) return `Call with ${first} and ${second}`;
+  if (rest.length === 1) return `Call with ${first}, ${second} and ${rest[0]}`;
+  return `Call with ${first}, ${second} and ${rest.length} others`;
+};
 
 /** Ticks every minute for short calls, then wider. */
 export const tickStep = (durationMs: number): number => {

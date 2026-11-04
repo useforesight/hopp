@@ -153,6 +153,7 @@ pub struct CreateRoomParams {
     pub start_mic_on_call: bool,
     pub start_camera_on_call: bool,
     pub capture_by_hand: socket_lib::CaptureByHand,
+    pub room_name: Option<String>,
 }
 
 enum RoomServiceCommand {
@@ -1050,12 +1051,24 @@ async fn room_service_commands(
                 start_mic_on_call,
                 start_camera_on_call,
                 capture_by_hand,
+                room_name,
             }) => {
                 log::info!("room_service_commands: CreateRoom");
                 let told = event_loop_proxy.clone();
+                let everyone = inner.participants.clone();
                 inner.call_capture.on_change(move |id| {
+                    // The attribute comes back under your own identity, which isn't how
+                    // you're kept, and it can't say whether the capture really started.
+                    if let Some(you) = everyone
+                        .write()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .get_mut("local")
+                    {
+                        you.set_capturing(id.is_some());
+                    }
                     let _ = told.send_event(UserEvent::CaptureChanged(id));
                 });
+                inner.call_capture.set_room(room_name);
                 let total_connect_start = Instant::now();
 
                 // Create two oneshot channels so destroy_room() can cancel both
@@ -1388,7 +1401,6 @@ async fn room_service_commands(
                     "room_service_commands: Finished room setup in {}ms",
                     total_connect_start.elapsed().as_millis()
                 );
-                let room_name = room.name();
                 let local_participant = room.local_participant();
                 {
                     let mut inner_room = inner.room.lock().await;
@@ -1431,11 +1443,7 @@ async fn room_service_commands(
                 if wanted {
                     inner
                         .call_capture
-                        .start(
-                            room_name,
-                            local_participant,
-                            inner.snapshot_sender.build_snapshot(),
-                        )
+                        .start(local_participant, inner.snapshot_sender.build_snapshot())
                         .await;
                 }
             }
@@ -1987,19 +1995,19 @@ async fn room_service_commands(
                 tokio::task::spawn_blocking(move || capture.bookmark(label));
             }
             RoomServiceCommand::CaptureStart => {
-                let started = inner
+                let local = inner
                     .room
                     .lock()
                     .await
                     .as_ref()
-                    .map(|room| (room.name(), room.local_participant()));
-                let Some((name, local)) = started else {
+                    .map(|room| room.local_participant());
+                let Some(local) = local else {
                     log::warn!("room_service_commands: CaptureStart without a call");
                     continue;
                 };
                 inner
                     .call_capture
-                    .start(name, local, inner.snapshot_sender.build_snapshot())
+                    .start(local, inner.snapshot_sender.build_snapshot())
                     .await;
             }
             RoomServiceCommand::CaptureStop => {
