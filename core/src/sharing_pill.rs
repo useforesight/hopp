@@ -13,9 +13,10 @@ use objc2::{
 };
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua,
-    NSAttributedStringNSStringDrawing, NSBackingStoreType, NSBox, NSBoxType, NSButton,
-    NSButtonType, NSColor, NSEvent, NSFont, NSFontAttributeName, NSForegroundColorAttributeName,
-    NSLineBreakMode, NSPanel, NSPopUpMenuWindowLevel, NSRunningApplication, NSScreen, NSTextField,
+    NSAttributedStringNSExtendedStringDrawing, NSAttributedStringNSStringDrawing,
+    NSBackingStoreType, NSBox, NSBoxType, NSButton, NSButtonType, NSColor, NSEvent, NSFont,
+    NSFontAttributeName, NSForegroundColorAttributeName, NSLineBreakMode, NSPanel,
+    NSPopUpMenuWindowLevel, NSRunningApplication, NSScreen, NSStringDrawingOptions, NSTextField,
     NSTitlePosition, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindowCollectionBehavior,
     NSWindowSharingType, NSWindowStyleMask,
 };
@@ -41,6 +42,11 @@ const DOT_X: f64 = 16.0;
 const LABEL_X: f64 = DOT_X + DOT_SIZE + 8.0;
 const LABEL_GAP: f64 = 12.0;
 const FONT_SIZE: f64 = 13.0;
+/// The line the words sit on, up from a button's bottom edge. It centres the lowercase letters,
+/// which most of the words are, with the capitals rising a little above them. A button's own
+/// title goes wherever its cell rounds it to, and that differs between 1x and 2x screens.
+const BUTTON_BASELINE: f64 = 10.0;
+const BORDER: f64 = 1.0;
 
 const ALLOW: &str = "Allow";
 const REVOKE: &str = "Revoke";
@@ -92,6 +98,11 @@ objc2::define_class!(
         #[unsafe(method(pillClicked:))]
         fn pill_clicked(&self, _sender: &NSButton) {
             (self.ivars().clicked)();
+        }
+
+        #[unsafe(method(drawRect:))]
+        fn draw_rect(&self, _dirty: NSRect) {
+            self.draw_title();
         }
 
         // This window is never the active one, and the first click is the only one it gets.
@@ -167,6 +178,26 @@ impl PillButton {
 
     fn show_title(&self, title: &str) {
         self.setAttributedTitle(&styled(title));
+    }
+
+    fn draw_title(&self) {
+        let title = self.attributedTitle();
+        let bounds = self.bounds();
+        let size = title.size();
+        let baseline = if self.isFlipped() {
+            bounds.size.height - BUTTON_BASELINE
+        } else {
+            BUTTON_BASELINE
+        };
+        // Without `UsesLineFragmentOrigin`, this is where the line sits and not its corner.
+        title.drawWithRect_options_context(
+            NSRect::new(
+                NSPoint::new(((bounds.size.width - size.width) / 2.0).round(), baseline),
+                size,
+            ),
+            NSStringDrawingOptions::empty(),
+            None,
+        );
     }
 
     fn set_look(&self, look: Look) {
@@ -339,7 +370,7 @@ impl SharingPill {
         background.setBoxType(NSBoxType::Custom);
         background.setTitlePosition(NSTitlePosition::NoTitle);
         background.setContentViewMargins(NSSize::new(0.0, 0.0));
-        background.setBorderWidth(1.0);
+        background.setBorderWidth(BORDER);
         background.setCornerRadius(HEIGHT / 2.0);
         background.setBorderColor(&NSColor::colorWithWhite_alpha(1.0, 0.12));
         background.setFillColor(&color(ColorToken::Zinc900));
@@ -348,6 +379,9 @@ impl SharingPill {
         );
         panel.setContentView(Some(&background));
         let content: Retained<NSView> = background.contentView()?;
+        // The border insets the content view. Measure from the pill's own edges, or everything
+        // sits a point up and to the right.
+        content.setBoundsOrigin(NSPoint::new(BORDER, BORDER));
 
         let dot = |size: f64, alpha: f64| {
             let dot = NSBox::initWithFrame(
@@ -374,7 +408,11 @@ impl SharingPill {
         content.addSubview(&dot(DOT_SIZE, 1.0));
 
         label.setFrame(NSRect::new(
-            NSPoint::new(LABEL_X, ((HEIGHT - label_size.height) / 2.0).round()),
+            // On the same line as the buttons' words.
+            NSPoint::new(
+                LABEL_X,
+                INSET + BUTTON_BASELINE - label.baselineOffsetFromBottom(),
+            ),
             NSSize::new(label_width, label_size.height),
         ));
         content.addSubview(&label);
