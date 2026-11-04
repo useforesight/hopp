@@ -15,7 +15,7 @@ own, from the Linux client's source: both clients run one program.
   a systemd scope. Without one it runs at low priority (`taskpolicy -b` on the Mac, `nice` elsewhere).
 - **Where things go.** `paths`: `~/Library/Application Support/com.hopp.app` on the Mac, the XDG
   directories elsewhere, or `HOPP_CAPTURE_HOME` for tests.
-- **Capturing every call.** `Config::auto` is on by default on Linux and off on the Mac.
+- **Capturing every call.** `Config::auto` is on by default, and Settings turns it off.
 
 ## The `hopp` command
 
