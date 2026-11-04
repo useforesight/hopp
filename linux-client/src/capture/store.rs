@@ -607,7 +607,7 @@ const REACTION_WORDS: usize = 3;
 const REACTION_MS: i64 = 1_500;
 
 /// A short reaction from someone who isn't speaking: words and time both short.
-fn reaction(line: &Line) -> bool {
+pub fn reaction(line: &Line) -> bool {
     line.kind == Kind::Speech
         && line.speaker_id.is_some()
         && line.text.split_whitespace().count() <= REACTION_WORDS

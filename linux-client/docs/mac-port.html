@@ -739,6 +739,7 @@ input.field{font:inherit;font-size:14px;border:1px solid var(--border-strong);bo
     <li><strong>Reactions don't split someone else's turn.</strong> A reaction is at most 3 words and 1.5 s, such as "Yeah" or "Hmm". It's shown after the message it interrupted. On one 17-minute call this took 113 messages down to 85. The stored lines are unchanged.</li>
     <li><strong>One voice on two mics shows once.</strong> Lines from two people within 3 s, with Dice-bigram similarity of 0.6 or more and a length ratio of 0.55 or more, are merged. The first speaker is kept, with "also on Alex's mic, shown once".</li>
     <li><strong>Wake phrases match known mishearings.</strong> Parakeet heard "hey Claude" as "Heckord" and "Hey Cord". "hey claude" also wakes on heckord, hey cord, hey clod, hey cloud, hey claud and hey clawed. Wake phrases match final text only.</li>
+    <li><strong>A wake phrase starts a request; the end of the turn finishes it.</strong> The name can be anywhere in what someone says. The follower waits until they've finished: 2 s with no new line or open draft from them, someone else saying more than a reaction, the call ending, or 20 s after the name. It then wakes with their whole message as <code>asked</code>, the lines before it, a count of earlier lines and frames not shown, and <code>next</code>: an instruction to read back and look at the frames before answering. A timeout without a wake returns only new lines, not the context again.</li>
   </ul>
 </section>
 
@@ -933,7 +934,7 @@ input.field{font:inherit;font-size:14px;border:1px solid var(--border-strong);bo
     <tbody>
       <tr><td><code>call_status</code></td><td>Who's online, the call, capture state</td></tr>
       <tr><td><code>capture_list</code>, <code>capture_search</code>, <code>capture_transcript</code></td><td>Calls, search hits, a call as Markdown</td></tr>
-      <tr><td><code>capture_follow</code></td><td>Waits for new lines (45 s default, 600 s max). Options: <code>wake_phrase</code>, <code>context_lines</code>, <code>include_drafts</code>. The newest 3 frames come as images.</td></tr>
+      <tr><td><code>capture_follow</code></td><td>Waits for new lines (45 s default, 600 s max). Options: <code>wake_phrase</code>, <code>context_lines</code>, <code>include_drafts</code>. The newest 3 frames come as images. On a wake: <code>asked</code> (<code>by</code>, <code>at</code>, <code>words</code>), <code>earlier</code> (<code>lines</code>, <code>frames</code>) and <code>next</code>.</td></tr>
       <tr><td><code>capture_frame</code></td><td>One frame with each mark's bounds and colour; <code>zoom</code> crops to the marks</td></tr>
       <tr><td><code>capture_annotate</code></td><td>Sets a call's title or summary</td></tr>
       <tr><td><code>notify_user</code>, <code>request_user_decision</code>, <code>wait_for_decision</code>, <code>cancel_card</code></td><td>Cards in Hopp; decisions come back as accepted, rejected, dismissed or showing</td></tr>
@@ -944,7 +945,7 @@ input.field{font:inherit;font-size:14px;border:1px solid var(--border-strong);bo
       <ul>
         <li><strong>Calls:</strong> <code>status [--json]</code>, <code>call WHO</code>, <code>join</code>, <code>accept</code>, <code>decline</code>, <code>leave</code>, <code>mute</code>, <code>camera</code>, <code>share</code>, <code>draw</code>.</li>
         <li><strong>Captures:</strong> <code>capture start | stop | window [id|last|live] | bookmark | list | show | search | follow | annotate | delete | model …</code></li>
-        <li><strong>Following:</strong> <code>capture follow --on-wake "hey claude" --drafts --json</code>, or <code>--wake-if PROGRAM</code>.</li>
+        <li><strong>Following:</strong> <code>capture follow --on-wake claude --json</code>; the last JSON line has kind <code>woke</code> with <code>asked</code> and <code>next</code>, or <code>--wake-if PROGRAM</code>.</li>
         <li><strong>Cards:</strong> <code>hopp notify</code>, and <code>hopp ask</code>, which exits 0 on accept, 1 on reject and 2 on timeout.</li>
         <li><strong>Hooks:</strong> executables in <code>~/.config/hopp/hooks/</code> for <code>capture-started</code> and <code>capture-complete</code>, given JSON on stdin and killed after 10 minutes.</li>
       </ul>

@@ -9,7 +9,7 @@ use crate::protocol::UiRequest;
 
 use super::{
     config,
-    follow::{Follower, Wake},
+    follow::{Follower, Tools, Wake, brief, frame_range},
     models,
     recorder::{Input, Options, Recorder, Speaker},
     resample,
@@ -63,14 +63,16 @@ pub enum CaptureCommand {
     /// Print transcript lines as they arrive, until the capture ends.
     ///
     /// With --on-wake or --wake-if, print nothing until woken, then print the lines
-    /// leading up to it and exit: an agent can run this in a loop.
+    /// leading up to it, what was asked and how to read further back, and exit: an
+    /// agent can run this in a loop.
     Follow {
         /// Capture id, or `current` (waits for one to start).
         #[arg(default_value = "current")]
         id: String,
-        /// Wake when someone says this. Separate alternatives with |, as in
-        /// "hey claude|ok computer"; "hey claude" also wakes on how speech
-        /// recognition often mishears it ("Heckord", "Hey Cord").
+        /// Wake when someone says this, anywhere in what they say, once they've
+        /// finished talking. Separate alternatives with |, as in "claude|computer";
+        /// "claude" and "hey claude" also wake on how speech recognition often
+        /// mishears them ("Claud", "Heckord").
         #[arg(long, value_name = "PHRASE")]
         on_wake: Option<String>,
         /// Wake when this program, given the held lines as JSON lines, exits 0.
@@ -593,8 +595,23 @@ fn follow(
             for line in follower.held() {
                 print_line(&line, json)?;
             }
-            if !json {
-                println!("--- woke: {reason} · reply, then run this again to keep listening ---");
+            let (count, frames) = follower.earlier(store)?;
+            let next = brief(&call.id, follower.asked(), count, &frames, Tools::Cli);
+            if json {
+                // The last line says why it woke; its kind tells it from transcript lines.
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "kind": "woke",
+                        "reason": reason,
+                        "asked": follower.asked(),
+                        "earlier_lines": count,
+                        "earlier_frames": frame_range(&frames),
+                        "next": next,
+                    })
+                );
+            } else {
+                println!("--- woke: {reason} ---\n{next}");
             }
             return Ok(());
         }
