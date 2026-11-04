@@ -415,6 +415,7 @@ impl SharingPill {
         if self.state.replace(Some(state)) == Some(state) {
             return;
         }
+        log::info!("sharing_pill: {state:?}");
         let tool = |on: bool| if on { Look::On } else { Look::Plain };
         self.draw.set_look(tool(state.drawing));
         self.stamp.set_look(tool(state.stamping));

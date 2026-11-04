@@ -1488,16 +1488,17 @@ fn participant_card<'a>(
 }
 
 fn capturing_badge<'a>() -> iced::Element<'a, CameraMessage, Theme, iced::Renderer> {
-    let rose = ColorToken::Rose400.to_color();
     let icon = svg(svg::Handle::from_memory(ICON_CAPTURE))
-        .width(Length::Fixed(12.0))
-        .height(Length::Fixed(12.0))
-        .style(move |_theme: &Theme, _status| svg::Style { color: Some(rose) });
+        .width(Length::Fixed(14.0))
+        .height(Length::Fixed(14.0))
+        .style(|_theme: &Theme, _status| svg::Style {
+            color: Some(Color::WHITE),
+        });
 
     let badge = container(icon)
         .padding(Padding::from([5.0, 7.0]))
         .style(|_theme: &Theme| container::Style {
-            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.6))),
+            background: Some(Background::Color(ColorToken::Rose500.to_color())),
             border: Border {
                 radius: 100.0.into(),
                 ..Default::default()

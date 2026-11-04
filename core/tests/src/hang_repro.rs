@@ -31,7 +31,8 @@ pub async fn test_screenshare_reconnect_hang() -> io::Result<()> {
         audio_device_name: String::new(),
         start_mic_on_call: None,
         start_camera_on_call: None,
-        capture_stopped_by_hand: false,
+        capture_by_hand: socket_lib::CaptureByHand::Nothing,
+        room_name: None,
     }))?;
 
     // Wait for CallStartResult
