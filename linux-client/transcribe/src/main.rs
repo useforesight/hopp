@@ -3,9 +3,10 @@
 //! stops it when the capture ends.
 //!
 //! It runs GGUF models of any family transcribe.cpp knows: Parakeet (the default) and
-//! Whisper are the ones Hopp offers. It runs on the GPU through Vulkan, which is faster
-//! and uses less energy, or on the CPU (`--cpu`), in a scope that only gets idle time so
-//! the desktop never notices it. On Apple silicon the GPU is only smooth with a kernel
+//! Whisper are the ones Hopp offers. It runs on the GPU, through Vulkan on Linux and Metal
+//! on the Mac (built from `crates/hopp-transcribe`), which is faster and uses less energy,
+//! or on the CPU (`--cpu`), in a scope that only gets idle time so the desktop never
+//! notices it. On Apple silicon under Linux the GPU is only smooth with a kernel
 //! whose driver lets the firmware preempt compute work; without it the compositor
 //! waits behind each pass and the cursor lags (tasks/capture-bench). Hopp sends several
 //! utterances at once, a second apart, and splits the reply back up by word timings.
@@ -115,12 +116,17 @@ fn options() -> Result<Options> {
     Ok(options)
 }
 
-/// The GPU to run on: the first real one Vulkan offers. Software renderers such as
+#[cfg(target_os = "macos")]
+const GPU_BACKEND: (Backend, &str) = (Backend::Metal, "metal");
+#[cfg(not(target_os = "macos"))]
+const GPU_BACKEND: (Backend, &str) = (Backend::Vulkan, "vulkan");
+
+/// The GPU to run on: the first real one the backend offers. Software renderers such as
 /// llvmpipe run on the CPU anyway, only slower than ggml's own CPU code.
 fn gpu() -> Option<transcribe_cpp::Device> {
     transcribe_cpp::devices().into_iter().find(|device| {
         let name = format!("{} {}", device.name, device.description).to_lowercase();
-        device.kind == "vulkan"
+        device.kind == GPU_BACKEND.1
             && matches!(device.device_type, DeviceType::Gpu | DeviceType::Igpu)
             && !["llvmpipe", "lavapipe", "swiftshader", "softpipe"]
                 .iter()
@@ -214,7 +220,7 @@ fn main() -> Result<()> {
     let device = if options.cpu { None } else { gpu() };
     let model_options = match &device {
         Some(device) => ModelOptions {
-            backend: Backend::Vulkan,
+            backend: GPU_BACKEND.0,
             device: Some(device.clone()),
         },
         None => ModelOptions {

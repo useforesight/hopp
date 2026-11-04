@@ -20,7 +20,7 @@ pub const PALETTE: [[u8; 3]; 8] = [
 ];
 
 /// A participant identity without the suffix of the connection it came from.
-fn canonical_identity(identity: &str) -> &str {
+pub fn canonical_identity(identity: &str) -> &str {
     identity
         .strip_suffix(":audio")
         .or_else(|| identity.strip_suffix(":video"))

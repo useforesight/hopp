@@ -1,0 +1,20 @@
+[package]
+name = "hopp-transcribe"
+version = "0.2.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+description = "Hopp's transcription helper for the Mac app: transcribe.cpp on Metal, in a process of its own"
+
+# Builds linux-client's helper, so both clients run one program. Its own workspace: this
+# C++ engine stays out of hopp_core's build.
+[workspace]
+
+[[bin]]
+name = "hopp-transcribe"
+path = "../../linux-client/transcribe/src/main.rs"
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+transcribe-cpp = "=0.2.4"

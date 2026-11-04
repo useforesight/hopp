@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::livekit::call_capture::CallCapture;
 use crate::livekit::participant::ParticipantInfo;
 
 impl std::fmt::Debug for SnapshotSender {
@@ -12,22 +13,26 @@ impl std::fmt::Debug for SnapshotSender {
 pub(crate) struct SnapshotSender {
     socket: socket_lib::SocketSender,
     participants: Arc<std::sync::RwLock<HashMap<String, ParticipantInfo>>>,
+    call_capture: CallCapture,
 }
 
 impl SnapshotSender {
     pub fn new(
         socket: socket_lib::SocketSender,
         participants: Arc<std::sync::RwLock<HashMap<String, ParticipantInfo>>>,
+        call_capture: CallCapture,
     ) -> Self {
         Self {
             socket,
             participants,
+            call_capture,
         }
     }
 
     /// Builds a participants snapshot and sends it directly over the socket.
     pub fn send_participants_snapshot(&self) {
         let snapshot = self.build_snapshot();
+        self.call_capture.observe(&snapshot);
         if let Err(e) = self
             .socket
             .send(socket_lib::Message::ParticipantsSnapshot(snapshot))
@@ -98,6 +103,7 @@ impl Clone for SnapshotSender {
         Self {
             socket: self.socket.clone(),
             participants: self.participants.clone(),
+            call_capture: self.call_capture.clone(),
         }
     }
 }

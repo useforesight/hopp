@@ -61,6 +61,7 @@ glib = "0.21.1"
 nokhwa = { git = "https://github.com/gethopp/nokhwa", branch = "hopp", default-features = false, features = ["output-threaded", "input-v4l"] }
 
 [dependencies]
+anyhow = "1"
 clap = { version = "4.5", features = ["derive"] }
 winit = { version = "0.30.12", features = [ "rwh_06", "rwh_05" ] }
 wgpu = "27.0.1"
@@ -80,6 +81,7 @@ dirs = "5.0.1"
 socket_lib = { path = "socket_lib" }
 sentry_utils = { path = "sentry_utils" }
 hopp-marks = { path = "../crates/hopp-marks" }
+hopp-capture = { path = "../crates/hopp-capture" }
 thiserror = "2.0.12"
 sysinfo = "0.35.2"
 resvg = "0.45.1"

@@ -105,6 +105,37 @@ jobs:
         working-directory: core
         run: cargo test -p hopp-marks
 
+  # Capture runs on the Mac and Linux. Windows only has to compile it, as part of core.
+  test-capture:
+    name: Test hopp-capture on macos-26
+    runs-on: macos-26
+    needs: check-files
+    if: ${{ needs.check-files.outputs.core-changed == 'true' || github.event_name == 'workflow_dispatch' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.96.1
+        with:
+          toolchain: "1.96.1"
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Run tests
+        working-directory: core
+        run: cargo test -p hopp-capture
+
+      - name: Run tests at Hopp for Linux's sample rate
+        working-directory: crates/hopp-capture
+        run: cargo test --features rate-48k
+
+      # So a release can't be the first to find out the helper doesn't build.
+      - name: Build the transcription helper
+        working-directory: crates/hopp-transcribe
+        run: |
+          cargo build --target aarch64-apple-darwin
+          cargo build --target x86_64-apple-darwin
+
   build:
     name: Build on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
