@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 /// Device pixels per logical pixel the sprites are rendered at: exact on Retina, and halved
 /// cleanly on a 1x screen.
-const SPRITE_SCALE: f32 = 2.0;
+pub(super) const SPRITE_SCALE: f32 = 2.0;
 
 /// Cursor display mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,14 +29,14 @@ pub enum CursorMode {
 
 /// One sprite, ready to draw. Size and offset are in logical pixels.
 #[derive(Debug)]
-struct CursorImage {
+pub(super) struct CursorImage {
     handle: Handle,
     size: (f32, f32),
     offset: (f32, f32),
 }
 
 impl CursorImage {
-    fn new(sprite: Sprite) -> Self {
+    pub(super) fn new(sprite: Sprite) -> Self {
         Self {
             size: (
                 sprite.width as f32 / SPRITE_SCALE,
@@ -51,14 +51,22 @@ impl CursorImage {
     }
 
     fn draw(&self, frame: &mut Frame, x: f32, y: f32, opacity: f32) {
+        self.draw_scaled(frame, x, y, 1., opacity);
+    }
+
+    /// Draws it `scale` times its size, still anchored at the point. Sharp only at full size,
+    /// where it stays on whole pixels.
+    pub(super) fn draw_scaled(&self, frame: &mut Frame, x: f32, y: f32, scale: f32, opacity: f32) {
         frame.draw_image(
             Rectangle {
-                x: x + self.offset.0,
-                y: y + self.offset.1,
-                width: self.size.0,
-                height: self.size.1,
+                x: x + self.offset.0 * scale,
+                y: y + self.offset.1 * scale,
+                width: self.size.0 * scale,
+                height: self.size.1 * scale,
             },
-            Image::new(self.handle.clone()).opacity(opacity).snap(true),
+            Image::new(self.handle.clone())
+                .opacity(opacity)
+                .snap(scale == 1.),
         );
     }
 }
@@ -229,7 +237,7 @@ impl Cursor {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     const BLUE: [u8; 3] = [0x0a, 0x84, 0xff];
@@ -341,12 +349,12 @@ mod tests {
     }
 
     /// Paints through the real renderer, on the real GPU, with no window.
-    struct Screen {
+    pub(crate) struct Screen {
         renderer: iced::Renderer,
     }
 
     impl Screen {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
             let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
             let adapter = pollster::block_on(
                 instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
@@ -362,7 +370,8 @@ mod tests {
                 device,
                 queue,
                 format,
-                None,
+                // What the windows use.
+                Some(iced_wgpu::graphics::Antialiasing::MSAAx4),
                 iced_wgpu::graphics::Shell::headless(),
             );
             crate::components::fonts::load_fonts();
@@ -375,7 +384,7 @@ mod tests {
             }
         }
 
-        fn paint(
+        pub(crate) fn paint(
             &mut self,
             size: (u32, u32),
             scale: f32,
@@ -402,7 +411,7 @@ mod tests {
         }
     }
 
-    fn near(pixel: &image::Rgba<u8>, expected: [u8; 3], tolerance: i16) -> bool {
+    pub(crate) fn near(pixel: &image::Rgba<u8>, expected: [u8; 3], tolerance: i16) -> bool {
         (0..3).all(|i| (i16::from(pixel[i]) - i16::from(expected[i])).abs() <= tolerance)
     }
 

@@ -8,7 +8,7 @@ import {
   LuScreenShare,
   LuScreenShareOff,
 } from "react-icons/lu";
-import { PiScribbleLoopBold, PiCursorBold } from "react-icons/pi";
+import { PiScribbleLoopBold, PiCursorBold, PiMapPinBold } from "react-icons/pi";
 import useStore, { CallState, ParticipantRole } from "@/store/store";
 import {
   DropdownMenu,
@@ -550,7 +550,10 @@ function CallParticipants() {
 
 function DrawingEnableButton() {
   const [drawingPermanent, setDrawingPermanent] = useState(false);
-  const [drawingEnabled, setDrawingEnabled] = useState(false);
+  // Drawing and stamps turn each other off.
+  const [activeTool, setActiveTool] = useState<"draw" | "stamp" | null>(null);
+  const drawingEnabled = activeTool === "draw";
+  const stampEnabled = activeTool === "stamp";
   const [dropdownOpen, setDropdownOpen] = useState(false);
 
   useEffect(() => {
@@ -566,7 +569,7 @@ function DrawingEnableButton() {
 
   useEffect(() => {
     const unlisten = listen("core_drawing_disabled", () => {
-      setDrawingEnabled(false);
+      setActiveTool(null);
     });
     return () => {
       unlisten.then((fn) => fn());
@@ -582,14 +585,15 @@ function DrawingEnableButton() {
     }
   };
 
-  const handleToggleDrawing = async () => {
-    const newEnabled = !drawingEnabled;
+  const handleToggleTool = async (tool: "draw" | "stamp") => {
+    const newEnabled = activeTool !== tool;
+    const label = tool === "draw" ? "drawing" : "stamps";
     try {
-      await tauriUtils.setDrawingEnabled(newEnabled, drawingPermanent);
-      setDrawingEnabled(newEnabled);
+      await tauriUtils.setDrawingEnabled(newEnabled, drawingPermanent, tool === "stamp");
+      setActiveTool(newEnabled ? tool : null);
     } catch (error) {
-      console.error("Failed to toggle drawing:", error);
-      toast.error("Failed to toggle drawing", { duration: 2500 });
+      console.error(`Failed to toggle ${label}:`, error);
+      toast.error(`Failed to toggle ${label}`, { duration: 2500 });
     }
   };
 
@@ -602,7 +606,7 @@ function DrawingEnableButton() {
               type="button"
               aria-label={drawingEnabled ? "Disable drawing" : "Enable drawing"}
               aria-pressed={drawingEnabled}
-              onClick={handleToggleDrawing}
+              onClick={() => handleToggleTool("draw")}
               className={clsx(
                 sharingToolClass,
                 drawingEnabled ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-subtle-strong",
@@ -644,6 +648,27 @@ function DrawingEnableButton() {
           </DropdownMenuCheckboxItem>
         </DropdownMenuContent>
       </DropdownMenu>
+      <TooltipProvider>
+        <Tooltip delayDuration={100}>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              aria-label={stampEnabled ? "Stop stamping" : "Place stamps"}
+              aria-pressed={stampEnabled}
+              onClick={() => handleToggleTool("stamp")}
+              className={clsx(
+                sharingToolClass,
+                stampEnabled ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-subtle-strong",
+              )}
+            >
+              {stampEnabled ?
+                <PiCursorBold className="size-4" />
+              : <PiMapPinBold className="size-4" />}
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="top">{stampEnabled ? "Stop stamping" : "Place stamps"}</TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
     </div>
   );
 }

@@ -9,7 +9,10 @@ pub fn test_local_drawing_permanent() -> io::Result<()> {
     let (sender, _event_socket) = screenshare_client::start_screenshare_session()?;
 
     // Enable permanent drawing mode
-    sender.send(Message::DrawingEnabled(DrawingEnabled { permanent: true }))?;
+    sender.send(Message::DrawingEnabled(DrawingEnabled {
+        permanent: true,
+        stamp: false,
+    }))?;
     println!("Permanent drawing enabled. Draw with mouse, press Escape to exit.");
     println!("You have 15 seconds to test drawing...");
 
@@ -30,7 +33,10 @@ pub fn test_local_drawing_non_permanent() -> io::Result<()> {
     let (sender, _event_socket) = screenshare_client::start_screenshare_session()?;
 
     // Enable non-permanent drawing mode
-    sender.send(Message::DrawingEnabled(DrawingEnabled { permanent: false }))?;
+    sender.send(Message::DrawingEnabled(DrawingEnabled {
+        permanent: false,
+        stamp: false,
+    }))?;
     println!("Non-permanent drawing enabled. Draw with mouse, press Escape to exit.");
     println!("You have 15 seconds to test drawing...");
 

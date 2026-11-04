@@ -388,24 +388,26 @@ fn get_drawing_enabled(app: tauri::AppHandle) -> bool {
 }
 
 #[tauri::command(async)]
-fn set_drawing_enabled(app: tauri::AppHandle, enabled: bool, permanent: bool) {
-    log::info!("set_drawing_enabled: enabled={enabled} permanent={permanent}");
+fn set_drawing_enabled(app: tauri::AppHandle, enabled: bool, permanent: bool, stamp: bool) {
+    log::info!("set_drawing_enabled: enabled={enabled} permanent={permanent} stamp={stamp}");
     let data = app.state::<Mutex<AppData>>();
     let mut data = data.lock().unwrap();
 
-    if data.drawing_enabled == enabled {
+    // Going from drawing to stamps, it stays enabled but the tool changes.
+    if data.drawing_enabled == enabled && (!enabled || data.drawing_stamp == stamp) {
         return;
     }
 
     if let Err(e) = data
         .sender
-        .send(Message::DrawingEnabled(DrawingEnabled { permanent }))
+        .send(Message::DrawingEnabled(DrawingEnabled { permanent, stamp }))
     {
         log::error!("set_drawing_enabled: failed to send message: {e:?}");
         return;
     }
 
     data.drawing_enabled = enabled;
+    data.drawing_stamp = stamp;
     drop(data);
 
     if let Some(window) = app.get_webview_window("main") {

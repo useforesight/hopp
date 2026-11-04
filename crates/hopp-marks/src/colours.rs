@@ -102,6 +102,13 @@ fn similar(a: [u8; 3], b: [u8; 3]) -> bool {
     }
 }
 
+/// `a` moved towards `b` by `t`, from 0 to 1.
+pub fn mix(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
+    std::array::from_fn(|i| {
+        (f32::from(a[i]) + (f32::from(b[i]) - f32::from(a[i])) * t).round() as u8
+    })
+}
+
 pub fn hex([r, g, b]: [u8; 3]) -> String {
     format!("#{r:02x}{g:02x}{b:02x}")
 }

@@ -114,6 +114,8 @@ pub struct AppData {
 
     /// Whether drawing mode is currently enabled (runtime state).
     pub drawing_enabled: bool,
+    /// Drawing's tool is stamps, not the pen.
+    pub drawing_stamp: bool,
 
     /// Whether a call is currently active.
     pub call_active: bool,
@@ -171,6 +173,7 @@ impl AppData {
             activation_policy_regular: false,
             suppress_hide_on_call_end,
             drawing_enabled: false,
+            drawing_stamp: false,
             call_active: false,
             is_camera_on: false,
             is_screensharing: false,

@@ -216,6 +216,23 @@ pub fn tag(name: &str, rgb: [u8; 3], scale: f32) -> Option<Sprite> {
     render(&body, (w, h), (PAD, PAD), scale)
 }
 
+/// A stamp's marker in `rgb`: a round head with `number` in it, on a short point whose
+/// foot is the anchor.
+pub fn marker(rgb: [u8; 3], number: u32, scale: f32) -> Option<Sprite> {
+    let (w, h) = (24. + PAD * 2., 32. + PAD * 2.);
+    let (fx, fy) = (12. + PAD, 30. + PAD);
+    let digits = number.to_string();
+    let size = if digits.len() > 2 { 9. } else { 11.5 };
+    let body = format!(
+        r##"<g filter="url(#s)"><g transform="translate({fx} {fy})"><path d="M0 0 L-5 -8 A 11 11 0 1 1 5 -8 Z" fill="{color}" stroke="white" stroke-width="1.6" stroke-linejoin="round"/>
+<text x="0" y="-13.6" font-family="{FONT}" font-size="{size}" font-weight="700" fill="{ink}" text-anchor="middle">{digits}</text></g></g><defs>{shadow}</defs>"##,
+        color = hex(rgb),
+        ink = text_on(rgb),
+        shadow = shadow("s", w, h),
+    );
+    render(&body, (w, h), (fx, fy), scale)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,6 +280,7 @@ mod tests {
             hand(blue, 2.).expect("hand"),
             pencil(blue, 2.).expect("pencil"),
             tag("Mira", blue, 2.).expect("tag"),
+            marker(blue, 12, 2.).expect("marker"),
         ] {
             let alpha = |x: u32, y: u32| sprite.rgba[((y * sprite.width + x) * 4 + 3) as usize];
             let (last_x, last_y) = (sprite.width - 1, sprite.height - 1);
@@ -291,6 +309,26 @@ mod tests {
         assert!(!under_tag(&pencil, tag_offset_pencil()), "the pencil");
         let hand = hand(blue, scale).expect("hand");
         assert!(!under_tag(&hand, tag_offset_hand()), "the hand");
+    }
+
+    /// The foot is on the point, the head where stamps expect it, and three digits fit.
+    #[test]
+    fn a_marker_stands_on_its_point() {
+        use crate::stamps::{MARKER_RADIUS, MARKER_RISE};
+        let blue = [0x0a, 0x84, 0xff];
+        for scale in [1., 2.] {
+            let marker = marker(blue, 3, scale).expect("marker");
+            assert!(alpha_at(&marker, 0., -2. * scale) > 0, "the foot");
+            assert_eq!(alpha_at(&marker, 0., -MARKER_RISE * scale), 255, "the head");
+            let inside_edge = (MARKER_RADIUS - 1.) * scale;
+            assert_eq!(
+                alpha_at(&marker, inside_edge, -MARKER_RISE * scale),
+                255,
+                "its radius"
+            );
+        }
+        // More digits are smaller, not clipped: all of them render.
+        assert!(marker(blue, 128, 2.).is_some());
     }
 
     /// Light colours get dark text; the rest white.

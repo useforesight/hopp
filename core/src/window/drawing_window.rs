@@ -26,6 +26,7 @@ use crate::graphics::graphics_window_context::{
 use crate::room_service::DrawingMode;
 use crate::utils::geometry::{Frame, Position};
 use crate::window::drawing_helpers;
+use hopp_marks::stamps::StampInput;
 
 pub fn drawing_window_attributes() -> WindowAttributes {
     use winit::window::WindowLevel;
@@ -146,6 +147,7 @@ pub(crate) enum DrawingWindowInputEvent {
     DrawEnd { x: f64, y: f64 },
     DrawClearAllPaths,
     DrawClearPaths(Vec<u64>),
+    Stamp(StampInput),
     Escape,
 }
 
@@ -211,6 +213,12 @@ pub struct DrawingWindow {
     modifiers: ModifiersState,
     local_stroke: drawing_helpers::LocalStroke,
     drawing_hint: drawing_helpers::DrawingHint,
+    stamp_hint: drawing_helpers::DrawingHint,
+    /// Clicks place stamps instead of drawing. The stamps themselves are on the overlay
+    /// underneath, with everyone else's, so they share one set of numbers.
+    stamping: bool,
+    /// You've a stamp taking words, so keys go into it. The overlay knows; see [`Self::set_typing_stamp`].
+    typing_stamp: bool,
     last_cursor_position: Option<(f64, f64)>,
     capture_frame: Option<Arc<Mutex<Frame>>>,
     draw_y_scale: f64,
@@ -353,6 +361,9 @@ impl DrawingWindow {
             modifiers: ModifiersState::default(),
             local_stroke: Default::default(),
             drawing_hint: Default::default(),
+            stamp_hint: Default::default(),
+            stamping: false,
+            typing_stamp: false,
             last_cursor_position: None,
             capture_frame,
             draw_y_scale: 1.0,
@@ -367,7 +378,6 @@ impl DrawingWindow {
             custom_cursor_pencil,
         };
         s.update_draw_y_transform();
-        s.drawing_hint.show_once();
         Ok(s)
     }
 
@@ -463,6 +473,34 @@ impl DrawingWindow {
         );
     }
 
+    pub fn is_stamping(&self) -> bool {
+        self.stamping
+    }
+
+    /// Picks the tool clicks use, drawing or stamps, and shows its controls once.
+    pub fn set_stamping(&mut self, stamping: bool) {
+        self.stamping = stamping;
+        self.typing_stamp = false;
+        self.local_stroke.cancel();
+        if stamping {
+            self.participants_manager
+                .draw_clear_all_paths(drawing_helpers::LOCAL_PARTICIPANT_IDENTITY);
+            self.stamp_hint.show_once();
+        } else {
+            self.drawing_hint.show_once();
+        }
+        // Picking a tool from the app hides the app, and this window has to have the keys.
+        self.window.focus_window();
+        self.set_tool_cursor();
+        self.signal_activity();
+        self.window.request_redraw();
+    }
+
+    /// What the overlay's stamps say after each thing you do to them.
+    pub fn set_typing_stamp(&mut self, typing: bool) {
+        self.typing_stamp = typing;
+    }
+
     fn set_default_cursor(&self) {
         #[cfg(target_os = "macos")]
         {
@@ -477,16 +515,26 @@ impl DrawingWindow {
         }
     }
 
-    fn set_pencil_cursor(&self) {
+    fn set_tool_cursor(&self) {
         #[cfg(target_os = "macos")]
         {
-            self.ns_cursor_pencil.set();
+            if self.stamping {
+                objc2_app_kit::NSCursor::crosshairCursor().set();
+            } else {
+                self.ns_cursor_pencil.set();
+            }
         }
         #[cfg(not(target_os = "macos"))]
         {
-            self.window.set_cursor(winit::window::Cursor::Custom(
-                self.custom_cursor_pencil.clone(),
-            ));
+            if self.stamping {
+                self.window.set_cursor(winit::window::Cursor::Icon(
+                    winit::window::CursorIcon::Crosshair,
+                ));
+            } else {
+                self.window.set_cursor(winit::window::Cursor::Custom(
+                    self.custom_cursor_pencil.clone(),
+                ));
+            }
         }
     }
 
@@ -584,7 +632,7 @@ impl DrawingWindow {
         overlay_position: LogicalPosition<f64>,
         source_y_scale: f64,
         source_y_offset: f64,
-        drawing_hint: &drawing_helpers::DrawingHint,
+        hint: iced::Element<'a, DrawingMessage, Theme, iced::Renderer>,
     ) -> iced::Element<'a, DrawingMessage, Theme, iced::Renderer> {
         let canvas_overlay = canvas(DrawingOverlay {
             participants,
@@ -596,7 +644,7 @@ impl DrawingWindow {
         .width(Length::Fill)
         .height(Length::Fill);
 
-        container(stack![canvas_overlay, drawing_hint.view(true)])
+        container(stack![canvas_overlay, hint])
             .width(Length::Fill)
             .height(Length::Fill)
             .style(|_theme: &Theme| container::Style {
@@ -634,7 +682,7 @@ impl DrawingWindow {
             }
             WindowEvent::CursorEntered { .. } => {
                 log::info!("drawing_window: cursor entered");
-                self.set_pencil_cursor();
+                self.set_tool_cursor();
             }
             WindowEvent::CursorLeft { .. } => {
                 if self.local_stroke.is_active() {
@@ -643,7 +691,7 @@ impl DrawingWindow {
                 self.set_default_cursor();
             }
             WindowEvent::Focused(true) => {
-                self.set_pencil_cursor();
+                self.set_tool_cursor();
             }
             WindowEvent::Focused(false) => {
                 if self.local_stroke.is_active() {
@@ -652,7 +700,7 @@ impl DrawingWindow {
                 self.set_default_cursor();
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                self.set_pencil_cursor();
+                self.set_tool_cursor();
                 let source = match &self.cursor {
                     mouse::Cursor::Available(pos) => self.source_position(Position {
                         x: pos.x as f64,
@@ -661,7 +709,25 @@ impl DrawingWindow {
                     _ => None,
                 };
 
-                if *button == winit::event::MouseButton::Left {
+                if self.stamping {
+                    if state.is_pressed() {
+                        match (button, source) {
+                            (winit::event::MouseButton::Left, Some(source)) => {
+                                input_events.push(DrawingWindowInputEvent::Stamp(
+                                    StampInput::Place {
+                                        x: source.x,
+                                        y: source.y,
+                                    },
+                                ));
+                            }
+                            (winit::event::MouseButton::Right, _) => {
+                                input_events
+                                    .push(DrawingWindowInputEvent::Stamp(StampInput::ClearMine));
+                            }
+                            _ => {}
+                        }
+                    }
+                } else if *button == winit::event::MouseButton::Left {
                     if state.is_pressed() {
                         let Some(source) = source else {
                             return input_events;
@@ -689,9 +755,21 @@ impl DrawingWindow {
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state.is_pressed() {
-                    if let Key::Named(NamedKey::Escape) = event.logical_key {
-                        input_events.push(DrawingWindowInputEvent::Escape);
-                    } else if drawing_helpers::is_undo_shortcut(&event.logical_key, self.modifiers)
+                    if self.typing_stamp {
+                        if let Some(input) = drawing_helpers::stamp_key(
+                            &event.logical_key,
+                            event.text.as_deref(),
+                            self.modifiers,
+                        ) {
+                            input_events.push(DrawingWindowInputEvent::Stamp(input));
+                        }
+                    } else if let Key::Named(NamedKey::Escape) = event.logical_key {
+                        // Holding Esc to cancel a stamp shouldn't go on to close the tool.
+                        if !event.repeat {
+                            input_events.push(DrawingWindowInputEvent::Escape);
+                        }
+                    } else if !self.stamping
+                        && drawing_helpers::is_undo_shortcut(&event.logical_key, self.modifiers)
                     {
                         if let Some(undone) = self.local_stroke.undo(&mut self.participants_manager)
                         {
@@ -766,7 +844,11 @@ impl DrawingWindow {
                             .unwrap_or(LogicalPosition::new(0.0, 0.0)),
                         self.draw_y_scale,
                         self.draw_y_offset,
-                        &self.drawing_hint,
+                        if self.stamping {
+                            self.stamp_hint.stamp_view()
+                        } else {
+                            self.drawing_hint.view(true)
+                        },
                     ),
                     self.viewport.logical_size(),
                     cache,
@@ -803,7 +885,10 @@ impl DrawingWindow {
         self.participants_manager.hide_inactive_cursors();
 
         let cleared = self.participants_manager.update_auto_clear();
-        if self.participants_manager.is_ink_animating() || self.drawing_hint.is_visible() {
+        if self.participants_manager.is_ink_animating()
+            || self.drawing_hint.is_visible()
+            || self.stamp_hint.is_visible()
+        {
             self.signal_activity();
         }
 
@@ -828,7 +913,11 @@ impl DrawingWindow {
                     .unwrap_or(LogicalPosition::new(0.0, 0.0)),
                 self.draw_y_scale,
                 self.draw_y_offset,
-                &self.drawing_hint,
+                if self.stamping {
+                    self.stamp_hint.stamp_view()
+                } else {
+                    self.drawing_hint.view(true)
+                },
             ),
             self.viewport.logical_size(),
             cache,

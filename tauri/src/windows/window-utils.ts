@@ -157,8 +157,8 @@ const getDrawingEnabled = async (): Promise<boolean> => {
   return await invoke<boolean>("get_drawing_enabled");
 };
 
-const setDrawingEnabled = async (enabled: boolean, permanent: boolean): Promise<void> => {
-  return await invoke("set_drawing_enabled", { enabled, permanent });
+const setDrawingEnabled = async (enabled: boolean, permanent: boolean, stamp: boolean): Promise<void> => {
+  return await invoke("set_drawing_enabled", { enabled, permanent, stamp });
 };
 
 const getDrawingHintShown = async (): Promise<boolean> => {

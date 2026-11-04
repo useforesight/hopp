@@ -5,6 +5,7 @@
 
 use crate::utils::geometry::Position;
 use hopp_marks::colours::{self, Colours};
+use hopp_marks::stamps::{StampInput, StampMessage, Stamps};
 use iced::widget::canvas::{Frame, Geometry};
 use iced::{Rectangle, Renderer};
 use std::collections::HashMap;
@@ -22,10 +23,18 @@ use cursor::Cursor;
 // Re-export CursorMode for external use
 pub use cursor::CursorMode;
 
+#[path = "stamp.rs"]
+mod stamp;
+use stamp::{StampKey, StampVisual};
+
 use crate::room_service::DrawingMode;
 
 /// How the manager knows you, whoever you are in the call.
 const LOCAL_IDENTITY: &str = "local";
+/// What your own stamps say they're from.
+const YOUR_STAMP_NAME: &str = "You";
+/// What a stamp says it's from when its sender's name isn't known.
+const UNKNOWN_STAMP_NAME: &str = "Someone";
 
 /// Errors that can occur during participant management.
 #[derive(Error, Debug)]
@@ -166,6 +175,8 @@ pub struct ParticipantsManager {
     call_colours: Colours,
     /// Who you are in this call, for your own color.
     local_identity: Option<String>,
+    stamps: Stamps,
+    stamp_visuals: HashMap<StampKey, StampVisual>,
 }
 
 impl ParticipantsManager {
@@ -181,6 +192,74 @@ impl ParticipantsManager {
             Colours::for_call(people.iter().map(String::as_str).chain(local_identity));
         for (identity, participant) in &mut self.participants {
             participant.set_colour(colour_of(&self.call_colours, local_identity, identity));
+        }
+        self.refresh_stamp_visuals();
+    }
+
+    /// Does what you asked with your stamps, and returns what everyone else needs to hear.
+    pub fn stamp_input(&mut self, input: StampInput) -> Vec<StampMessage> {
+        let messages = self.stamps.apply(input, YOUR_STAMP_NAME, Instant::now());
+        self.refresh_stamp_visuals();
+        messages
+    }
+
+    /// A stamp message from someone else in the call.
+    pub fn receive_stamp(&mut self, sender: &str, message: StampMessage) {
+        let name = self.stamp_name(sender);
+        self.stamps.receive(sender, &name, message, Instant::now());
+        self.refresh_stamp_visuals();
+    }
+
+    /// You've a stamp taking words, so keys go into it.
+    pub fn is_stamp_typing(&self) -> bool {
+        self.stamps.is_typing()
+    }
+
+    pub fn is_stamp_animating(&self) -> bool {
+        self.stamps.animating(Instant::now())
+    }
+
+    /// Their connection sending the stamp isn't always the one that has their cursor.
+    fn stamp_name(&self, sender: &str) -> String {
+        let person = colours::person(sender);
+        self.participants
+            .iter()
+            .find(|(identity, _)| colours::person(identity) == person)
+            .map_or(UNKNOWN_STAMP_NAME.to_owned(), |(_, participant)| {
+                participant.cursor().visible_name().trim().to_owned()
+            })
+    }
+
+    /// Brings what's drawn for each stamp up to date. Rendering and measuring happen here
+    /// and not while drawing, so the only stamps that cost anything are ones that changed.
+    fn refresh_stamp_visuals(&mut self) {
+        let Self {
+            stamps,
+            stamp_visuals,
+            call_colours,
+            local_identity,
+            ..
+        } = self;
+        stamp_visuals.retain(|(owner, id), _| {
+            stamps
+                .iter()
+                .any(|stamp| stamp.owner == *owner && stamp.id == *id)
+        });
+        for stamp in stamps.iter() {
+            let identity = if stamp.is_mine() {
+                LOCAL_IDENTITY
+            } else {
+                stamp.owner.as_str()
+            };
+            let rgb = colour_of(call_colours, local_identity.as_deref(), identity);
+            let key = (stamp.owner.clone(), stamp.id);
+            if let Some(visual) = stamp_visuals.get_mut(&key) {
+                visual.update(stamp, rgb);
+            } else if let Some(visual) = StampVisual::new(stamp, rgb) {
+                stamp_visuals.insert(key, visual);
+            } else {
+                log::warn!("refresh_stamp_visuals: couldn't render stamp {}", stamp.id);
+            }
         }
     }
 
@@ -261,6 +340,7 @@ impl ParticipantsManager {
             "ParticipantsManager::remove_participant: identity={}",
             identity
         );
+        self.stamps.sender_left(identity);
         if self.participants.remove(identity).is_none() {
             log::warn!(
                 "ParticipantsManager::remove_participant: participant {} not found",
@@ -475,6 +555,13 @@ impl ParticipantsManager {
         }
 
         let now = Instant::now();
+        stamp::paint_stamps(
+            &mut in_progress_frame,
+            &self.stamps,
+            &self.stamp_visuals,
+            translate,
+            now,
+        );
         for participant in self.participants.values() {
             participant.cursor().draw(
                 &mut in_progress_frame,
@@ -492,6 +579,104 @@ impl ParticipantsManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two machines in a call: what one does with stamps reaches the other as they should see it.
+    #[test]
+    fn stamps_get_from_one_machine_to_another() {
+        let sender = "room:r:usr_mira:video";
+        let mut mine = ParticipantsManager::new();
+        let mut theirs = ParticipantsManager::new();
+        theirs
+            .add_participant(sender.to_owned(), "Mira Jones", false, DrawingMode::Any)
+            .unwrap();
+
+        let mut send = |manager: &mut ParticipantsManager, input| {
+            for message in manager.stamp_input(input) {
+                // Over the wire, as it really goes.
+                let packet = serde_json::to_vec(&message).unwrap();
+                let received = StampMessage::from_packet(&packet).expect("a good packet");
+                theirs.receive_stamp(sender, received);
+            }
+        };
+        send(&mut mine, StampInput::Place { x: 0.25, y: 0.75 });
+        send(&mut mine, StampInput::Typed("Blue".into()));
+
+        let (ours, seen) = (
+            mine.stamps.iter().next().unwrap(),
+            theirs.stamps.iter().next().unwrap(),
+        );
+        assert_eq!(ours.name, YOUR_STAMP_NAME);
+        assert_eq!(ours.owner, "");
+        assert_eq!(seen.name, "Mira", "their first name, as on their cursor");
+        assert_eq!(seen.owner, sender);
+        assert_eq!(seen.point, (0.25, 0.75));
+        assert_eq!(seen.text, "Blue");
+        assert!(seen.listening);
+        assert_eq!(mine.stamp_visuals.len(), 1);
+        assert_eq!(theirs.stamp_visuals.len(), 1);
+        assert!(theirs.is_stamp_animating());
+
+        // They leave without finishing: it stops waiting for them, and stays.
+        theirs.remove_participant(sender);
+        let seen = theirs.stamps.iter().next().unwrap();
+        assert!(!seen.listening);
+        assert_eq!(seen.text, "Blue");
+    }
+
+    #[test]
+    fn a_stamp_from_someone_unknown_is_still_named() {
+        let mut manager = ParticipantsManager::new();
+        let place = StampMessage::StampPlace {
+            id: 1,
+            x: 0.5,
+            y: 0.5,
+        };
+        manager.receive_stamp("room:r:usr_new:video", place);
+        assert_eq!(
+            manager.stamps.iter().next().unwrap().name,
+            UNKNOWN_STAMP_NAME
+        );
+    }
+
+    /// Their camera connection knows their name, even if it isn't the one that sent the stamp.
+    #[test]
+    fn a_stamp_finds_its_name_from_any_of_their_connections() {
+        let mut manager = ParticipantsManager::new();
+        manager
+            .add_participant(
+                identity("usr_sam", "audio"),
+                "Sam Taylor",
+                false,
+                DrawingMode::Any,
+            )
+            .unwrap();
+        let place = StampMessage::StampPlace {
+            id: 1,
+            x: 0.5,
+            y: 0.5,
+        };
+        manager.receive_stamp(&identity("usr_sam", "video"), place);
+        assert_eq!(manager.stamps.iter().next().unwrap().name, "Sam");
+    }
+
+    #[test]
+    fn stamp_visuals_keep_up() {
+        let mut manager = ParticipantsManager::new();
+        manager.stamp_input(StampInput::Place { x: 0.5, y: 0.5 });
+        let key = |manager: &ParticipantsManager| {
+            let stamp = manager.stamps.iter().next().unwrap();
+            (stamp.owner.clone(), stamp.id)
+        };
+        let id = key(&manager);
+        assert!(manager.stamp_visuals.contains_key(&id));
+
+        // Cancelled, then gone after its fade: the next thing you do lets go of what it drew.
+        manager.stamp_input(StampInput::Cancel);
+        assert!(manager.stamp_visuals.contains_key(&id), "still fading");
+        std::thread::sleep(std::time::Duration::from_millis(280));
+        manager.stamp_input(StampInput::Finish);
+        assert!(manager.stamp_visuals.is_empty());
+    }
 
     /// Two user ids that want the same color, so one of them has to move.
     fn clashing_people() -> (String, String) {
