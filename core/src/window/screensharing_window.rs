@@ -457,6 +457,8 @@ struct ScreensharingState {
     stamp_held: bool,
     /// The call is captured, so holding a stamp down can hear you.
     capturing: bool,
+    /// You clicked a stamp with your microphone muted, so it can't hear you.
+    stamp_muted: bool,
     /// Last cursor position (percentage 0.0-1.0) inside participant area.
     last_draw_cursor: Option<(f64, f64)>,
     /// Whether the settings dropdown is open.
@@ -496,6 +498,7 @@ impl Default for ScreensharingState {
             note_press: false,
             stamp_held: false,
             capturing: false,
+            stamp_muted: false,
             last_draw_cursor: None,
             dropdown_open: false,
             draw_persist: true,
@@ -1100,6 +1103,17 @@ impl ScreensharingWindow {
         self.participants_manager.is_stamp_typing()
     }
 
+    /// You've a stamp hearing you here.
+    pub fn is_stamp_hearing(&self) -> bool {
+        self.participants_manager.is_stamp_hearing()
+    }
+
+    /// You clicked a stamp with your microphone muted, so it can't hear you.
+    pub fn set_stamp_muted(&mut self, muted: bool) {
+        self.state.stamp_muted = muted;
+        self.window.request_redraw();
+    }
+
     pub fn set_capturing(&mut self, capturing: bool) {
         self.state.capturing = capturing;
         self.window.request_redraw();
@@ -1495,7 +1509,9 @@ impl ScreensharingWindow {
                             winit::event::MouseButton::Left if down => {
                                 Some(StampInput::Place { x: pct_x, y: pct_y })
                             }
-                            winit::event::MouseButton::Right if down => Some(StampInput::ClearMine),
+                            winit::event::MouseButton::Right if down => {
+                                self.participants_manager.stamp_right_click((pct_x, pct_y))
+                            }
                             _ => None,
                         };
                         let pressed = left && down;
@@ -2243,6 +2259,7 @@ impl ScreensharingWindow {
                     hearing: participants.is_stamp_hearing(),
                     held: state.stamp_held,
                     capturing: state.capturing,
+                    muted: state.stamp_muted,
                 }
                 .view()
             } else if state.active_tab == "draw" {

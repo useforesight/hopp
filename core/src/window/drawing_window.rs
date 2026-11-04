@@ -158,6 +158,8 @@ pub(crate) enum DrawingWindowInputEvent {
     DrawClearAllPaths,
     DrawClearPaths(Vec<u64>),
     Stamp(StampInput),
+    /// A right click with the stamp tool, at this point on the shared screen if it's over it.
+    StampRightClick(Option<(f64, f64)>),
     /// You pressed the left button on a stamp you just placed, or let it go.
     StampHold(bool),
     /// You pressed the key for the other tool: `true` for the stamp.
@@ -238,6 +240,8 @@ pub struct DrawingWindow {
     stamp_held: bool,
     /// The call is captured, so holding a stamp down can hear you.
     capturing: bool,
+    /// You clicked a stamp with your microphone muted, so it can't hear you.
+    stamp_muted: bool,
     last_cursor_position: Option<(f64, f64)>,
     capture_frame: Option<Arc<Mutex<Frame>>>,
     draw_y_scale: f64,
@@ -385,6 +389,7 @@ impl DrawingWindow {
             hearing_stamp: false,
             stamp_held: false,
             capturing: false,
+            stamp_muted: false,
             last_cursor_position: None,
             capture_frame,
             draw_y_scale: 1.0,
@@ -522,6 +527,12 @@ impl DrawingWindow {
         self.window.request_redraw();
     }
 
+    /// You clicked a stamp with your microphone muted, so it can't hear you.
+    pub fn set_stamp_muted(&mut self, muted: bool) {
+        self.stamp_muted = muted;
+        self.window.request_redraw();
+    }
+
     pub fn set_capturing(&mut self, capturing: bool) {
         self.capturing = capturing;
         self.window.request_redraw();
@@ -534,6 +545,7 @@ impl DrawingWindow {
             hearing: self.hearing_stamp,
             held: self.stamp_held,
             capturing: self.capturing,
+            muted: self.stamp_muted,
         }
     }
 
@@ -771,9 +783,10 @@ impl DrawingWindow {
                                 self.stamp_held = true;
                                 input_events.push(DrawingWindowInputEvent::StampHold(true));
                             }
-                            (winit::event::MouseButton::Right, _) => {
-                                input_events
-                                    .push(DrawingWindowInputEvent::Stamp(StampInput::ClearMine));
+                            (winit::event::MouseButton::Right, source) => {
+                                input_events.push(DrawingWindowInputEvent::StampRightClick(
+                                    source.map(|source| (source.x, source.y)),
+                                ));
                             }
                             _ => {}
                         }

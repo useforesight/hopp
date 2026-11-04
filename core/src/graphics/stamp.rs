@@ -28,6 +28,8 @@ const NAME_DEEPENED: f32 = 0.22;
 const SHADOW_LAYERS: usize = 6;
 /// A card this faded no longer hides the words under it.
 const CARD_HIDES_FROM: f32 = 0.5;
+/// How far outside a marker a click still counts as on it, in logical pixels.
+const TARGET_SLACK: f32 = 4.;
 
 /// Where a stamp is known from: who sent it and their id for it.
 pub(super) type StampKey = (String, u64);
@@ -414,15 +416,67 @@ impl Placed<'_> {
     }
 }
 
-/// Draws every stamp, oldest underneath. `translate` turns a point on the shared screen into
-/// a place on this frame.
+/// Where a stamp was last drawn, to tell which one a click is on.
+#[derive(Clone, Debug)]
+struct StampTarget {
+    id: u64,
+    mine: bool,
+    head: Point,
+    radius: f32,
+    card: Option<Rectangle>,
+}
+
+impl StampTarget {
+    fn contains(&self, point: Point) -> bool {
+        let on_head = point.distance(self.head) <= self.radius + TARGET_SLACK;
+        // The marker's stem runs down from its head to the point it marks.
+        let on_stem = (point.x - self.head.x).abs() <= self.radius
+            && point.y >= self.head.y
+            && point.y <= self.head.y + MARKER_RISE + TARGET_SLACK;
+        on_head || on_stem || self.card.is_some_and(|card| card.contains(point))
+    }
+}
+
+/// Where stamps were last drawn on a frame, and how the shared screen sits on that frame.
+#[derive(Clone, Debug, Default)]
+pub(super) struct StampTargets {
+    targets: Vec<StampTarget>,
+    origin: Position,
+    span: Position,
+}
+
+/// What's under a point on the shared screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum StampUnder {
+    Yours(u64),
+    Theirs,
+}
+
+impl StampTargets {
+    /// The top one at `point`, which is a fraction of the shared screen like a stamp's.
+    pub(super) fn under(&self, point: (f64, f64)) -> Option<StampUnder> {
+        let point = Point::new(
+            (self.origin.x + point.0 * self.span.x) as f32,
+            (self.origin.y + point.1 * self.span.y) as f32,
+        );
+        let target = self.targets.iter().rev().find(|t| t.contains(point))?;
+        Some(if target.mine {
+            StampUnder::Yours(target.id)
+        } else {
+            StampUnder::Theirs
+        })
+    }
+}
+
+/// Draws every stamp, oldest underneath, and returns where they are. `translate` turns a point on
+/// the shared screen into a place on this frame.
 pub(super) fn paint_stamps<'a>(
     frame: &mut Frame,
     stamps: impl Iterator<Item = &'a Stamp>,
     visuals: &HashMap<StampKey, StampVisual>,
     translate: &dyn Fn(Position) -> Position,
     now: Instant,
-) {
+) -> StampTargets {
     let area = frame.size();
     let placed: Vec<Placed> = stamps
         .filter(|stamp| !stamp.gone(now))
@@ -448,6 +502,27 @@ pub(super) fn paint_stamps<'a>(
             .filter_map(|newer| newer.card)
             .collect();
         stamp.paint_card_words(frame, card, &covers, now);
+    }
+
+    let origin = translate(Position { x: 0., y: 0. });
+    let far_corner = translate(Position { x: 1., y: 1. });
+    StampTargets {
+        targets: placed
+            .iter()
+            .filter(|placed| !placed.stamp.ghost && placed.stamp.removed.is_none())
+            .map(|placed| StampTarget {
+                id: placed.stamp.id,
+                mine: placed.stamp.is_mine(),
+                head: placed.head,
+                radius: MARKER_RADIUS * placed.pose.grow,
+                card: placed.card,
+            })
+            .collect(),
+        span: Position {
+            x: far_corner.x - origin.x,
+            y: far_corner.y - origin.y,
+        },
+        origin,
     }
 }
 
@@ -490,6 +565,36 @@ mod tests {
         // Two cards, overlapping each other as well.
         let covers = [rect(0., 0., 50., 50.), rect(25., 0., 50., 50.)];
         assert_eq!(area_of(&uncovered(card, &covers)), 25. * 50.);
+    }
+
+    #[test]
+    fn a_click_finds_the_top_stamp_on_its_marker_or_its_card() {
+        let head = |x, y| Point::new(x, y);
+        let target = |id, mine, at, card| StampTarget {
+            id,
+            mine,
+            head: at,
+            radius: MARKER_RADIUS,
+            card,
+        };
+        let targets = StampTargets {
+            targets: vec![
+                target(1, true, head(100., 100.), Some(rect(120., 80., 100., 50.))),
+                target(2, false, head(300., 100.), None),
+                target(3, true, head(150., 100.), None),
+            ],
+            // The shared screen sits inside the frame, as it does in a viewer's window.
+            origin: Position { x: 0., y: 10. },
+            span: Position { x: 400., y: 200. },
+        };
+        let at = |x: f64, y: f64| targets.under((x / 400., (y - 10.) / 200.));
+
+        assert_eq!(at(100., 100.), Some(StampUnder::Yours(1)), "its head");
+        assert_eq!(at(100., 115.), Some(StampUnder::Yours(1)), "its stem");
+        assert_eq!(at(210., 120.), Some(StampUnder::Yours(1)), "its card");
+        assert_eq!(at(300., 100.), Some(StampUnder::Theirs));
+        assert_eq!(at(150., 100.), Some(StampUnder::Yours(3)), "the newest");
+        assert_eq!(at(20., 180.), None);
     }
 
     #[test]

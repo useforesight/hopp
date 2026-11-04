@@ -110,7 +110,11 @@ pub enum StampInput {
     Cancel,
     /// Take all your stamps away.
     ClearMine,
-    /// Your stamp hears what you say, as well as what you type.
+    /// Take this stamp of yours away, finished or not.
+    Remove {
+        id: u64,
+    },
+    /// Your stamp hears what you say, until you type on it.
     Listen,
     /// All it's heard so far: final `said`, then `draft` words still being recognised.
     Heard {
@@ -357,18 +361,21 @@ impl Stamps {
         match input {
             StampInput::Place { x, y } => self.place((x, y), own_name, now),
             StampInput::Typed(typed) => {
+                self.keys_take_over();
                 if self.active.is_some() && self.typed.len() + typed.len() <= STAMP_TEXT_MAX {
                     self.typed.push_str(&typed);
                 }
                 self.show_words(None)
             }
             StampInput::Backspace => {
+                self.keys_take_over();
                 self.typed.pop();
                 self.show_words(None)
             }
             StampInput::Finish => self.finish(now).into_iter().collect(),
             StampInput::Cancel => self.cancel(now).into_iter().collect(),
             StampInput::ClearMine => self.clear_mine(now),
+            StampInput::Remove { id } => self.remove(id, now).into_iter().collect(),
             StampInput::Listen => {
                 if let Some(stamp) = self.own_active() {
                     stamp.voice = true;
@@ -534,6 +541,26 @@ impl Stamps {
         self.show_words(Some(String::new()))
     }
 
+    /// You've started typing on a stamp that hears you: it stops, and what it heard stays, for
+    /// you to add to or correct.
+    fn keys_take_over(&mut self) {
+        let draft = match self.own_active() {
+            Some(stamp) if stamp.voice => {
+                stamp.voice = false;
+                std::mem::take(&mut stamp.draft)
+            }
+            _ => return,
+        };
+        let mut words = std::mem::take(&mut self.said);
+        if !words.is_empty() && !draft.is_empty() {
+            words.push(' ');
+        }
+        words.push_str(&draft);
+        words.push_str(&self.typed);
+        truncate(&mut words, STAMP_TEXT_MAX);
+        self.typed = words;
+    }
+
     /// Puts what's been heard and typed on your stamp and says so. `draft` is `None` for
     /// keys, which leave the words still being recognised alone.
     fn show_words(&mut self, draft: Option<String>) -> Vec<StampMessage> {
@@ -597,6 +624,18 @@ impl Stamps {
             stamp.removed = Some(now);
         }
         self.active = None;
+        Some(StampMessage::StampRemove { id })
+    }
+
+    fn remove(&mut self, id: u64, now: Instant) -> Option<StampMessage> {
+        if self.active == Some(id) {
+            return self.cancel(now);
+        }
+        let stamp = self
+            .stamps
+            .iter_mut()
+            .find(|stamp| stamp.is_mine() && stamp.id == id && stamp.removed.is_none())?;
+        stamp.removed = Some(now);
         Some(StampMessage::StampRemove { id })
     }
 
@@ -791,6 +830,45 @@ mod tests {
     }
 
     #[test]
+    fn you_can_take_away_one_of_your_stamps() {
+        let now = Instant::now();
+        let mut stamps = Stamps::default();
+        let first = place(&mut stamps, now);
+        stamps.apply(StampInput::Typed("One".into()), "You", now);
+        let second = place(&mut stamps, now);
+        stamps.apply(StampInput::Typed("Two".into()), "You", now);
+        let them = StampMessage::StampPlace {
+            id: first,
+            x: 0.2,
+            y: 0.2,
+        };
+        stamps.receive("them", "Mira", them, now);
+
+        // A finished one goes, and the one you're on carries on.
+        let sent = stamps.apply(StampInput::Remove { id: first }, "You", now);
+        assert_eq!(sent, [StampMessage::StampRemove { id: first }]);
+        assert!(stamps.is_typing());
+        let again = stamps.apply(StampInput::Remove { id: first }, "You", now);
+        assert!(again.is_empty(), "it's on its way already");
+
+        // The one you're on goes too, and takes its words with it.
+        let sent = stamps.apply(StampInput::Remove { id: second }, "You", now);
+        assert_eq!(sent, [StampMessage::StampRemove { id: second }]);
+        assert!(!stamps.is_typing());
+        place(&mut stamps, now);
+        stamps.apply(StampInput::Typed("Three".into()), "You", now);
+        assert_eq!(text_of(&stamps).0, "Three");
+
+        let later = at_ms(now, 300);
+        let kept: Vec<&str> = stamps
+            .iter()
+            .filter(|stamp| !stamp.gone(later))
+            .map(|stamp| stamp.owner.as_str())
+            .collect();
+        assert_eq!(kept, ["them", ""], "theirs isn't yours to take away");
+    }
+
+    #[test]
     fn text_stops_at_the_limit() {
         let now = Instant::now();
         let mut stamps = Stamps::default();
@@ -854,27 +932,71 @@ mod tests {
     }
 
     #[test]
-    fn typing_while_it_listens_goes_after_what_was_said() {
+    fn typing_takes_over_from_listening_and_keeps_what_was_heard() {
         let now = Instant::now();
         let mut stamps = Stamps::default();
         place(&mut stamps, now);
         apply(&mut stamps, StampInput::Listen, now);
-        apply(&mut stamps, heard("Change this", ""), now);
+        apply(&mut stamps, heard("Change this", "now"), now);
+
         apply(&mut stamps, StampInput::Typed("!".into()), now);
-        assert_eq!(text_of(&stamps).0, "Change this !");
+        assert_eq!(text_of(&stamps), ("Change this now!".into(), String::new()));
+        assert!(!stamps.is_hearing() && stamps.is_typing());
+
+        assert!(
+            apply(&mut stamps, heard("More talk", ""), now).is_empty(),
+            "it's stopped hearing you"
+        );
+        assert_eq!(text_of(&stamps).0, "Change this now!");
+    }
+
+    #[test]
+    fn backspace_corrects_what_was_heard() {
+        let now = Instant::now();
+        let mut stamps = Stamps::default();
+        place(&mut stamps, now);
+        apply(&mut stamps, StampInput::Listen, now);
+        apply(&mut stamps, heard("Too far", ""), now);
         apply(&mut stamps, StampInput::Backspace, now);
+        assert_eq!(text_of(&stamps).0, "Too fa");
+        assert!(!stamps.is_hearing());
+    }
+
+    #[test]
+    fn enter_ends_it_with_what_was_heard() {
+        let now = Instant::now();
+        let mut stamps = Stamps::default();
+        let id = place(&mut stamps, now);
+        apply(&mut stamps, StampInput::Listen, now);
+        apply(&mut stamps, heard("Change this", "too"), now);
+        let sent = apply(&mut stamps, StampInput::Finish, now);
         assert_eq!(
-            text_of(&stamps).0,
-            "Change this",
-            "only typing is rubbed out"
+            sent,
+            [StampMessage::StampText {
+                id,
+                text: "Change this too".into(),
+                draft: String::new(),
+                done: true,
+            }]
         );
-        apply(&mut stamps, heard("Change this now", "ok"), now);
-        apply(&mut stamps, StampInput::Typed(" yes".into()), now);
-        assert_eq!(
-            text_of(&stamps),
-            ("Change this now yes".into(), "ok".into()),
-            "keys leave what's still being recognised, and no double space"
+        assert!(!stamps.is_typing() && !stamps.is_hearing());
+        assert!(
+            apply(&mut stamps, heard("And then this", ""), now).is_empty(),
+            "nothing more reaches it"
         );
+        assert_eq!(text_of(&stamps).0, "Change this too");
+    }
+
+    #[test]
+    fn the_words_heard_are_kept_to_the_limit_when_keys_take_over() {
+        let now = Instant::now();
+        let mut stamps = Stamps::default();
+        place(&mut stamps, now);
+        apply(&mut stamps, StampInput::Listen, now);
+        let long = "é".repeat(STAMP_TEXT_MAX);
+        apply(&mut stamps, heard(&long, &long), now);
+        let sent = apply(&mut stamps, StampInput::Typed("x".into()), now);
+        assert!(sent[0].valid());
     }
 
     #[test]

@@ -1,12 +1,12 @@
-//! Holding the stamp down to say its note: which window's stamp it's for, whether it's a hold
-//! or only a click, and whether it unmuted you. What's heard is `hopp_capture::heard`'s.
+//! Saying a stamp's note: which window's stamp it's for, whether you held it or only clicked it,
+//! and whether it unmuted you. What's heard is `hopp_capture::heard`'s.
 
 use std::time::{Duration, Instant};
 
 use hopp_capture::heard::StampListener;
 
-/// Holding the stamp down this long records what you say; a shorter click gives a stamp to type
-/// into.
+/// Holding the stamp down this long records what you say until you let go. A shorter click goes
+/// on hearing you until you pause, if your microphone's on.
 const HOLD: Duration = Duration::from_millis(350);
 
 /// Whose stamps you're holding one of.
@@ -47,8 +47,9 @@ impl StampVoice {
         self.unmuted = true;
     }
 
-    /// You let go. Returns whether that makes it only a click, to type into. After a real hold
-    /// the listener goes on until your words are written down.
+    /// You let go. Returns whether that was a click with your microphone muted, so it can't hear
+    /// you: a click isn't to leave you unmuted for who knows how long. Otherwise the listener
+    /// goes on until your words are written down.
     pub(crate) fn release(&mut self, now: Instant) -> bool {
         let Some(pressed) = self.pressed.take() else {
             return false;
@@ -56,11 +57,15 @@ impl StampVoice {
         let Some(listener) = &self.listener else {
             return false;
         };
-        if now.duration_since(pressed) < HOLD {
+        if now.duration_since(pressed) >= HOLD {
+            listener.let_go();
+            return false;
+        }
+        if self.unmuted {
             self.listener = None;
             return true;
         }
-        listener.let_go();
+        listener.clicked();
         false
     }
 
@@ -116,14 +121,27 @@ mod tests {
     }
 
     #[test]
-    fn a_quick_press_is_a_click() {
+    fn a_click_goes_on_hearing_you_with_your_microphone_on() {
         let start = Instant::now();
         let mut voice = StampVoice::default();
         let press = voice.press(StampHolder::Sharer, start);
         voice.hear_with(listener());
         assert!(voice.is_hearing(press));
+        assert!(!voice.release(after(start, 349)));
+        assert!(voice.is_hearing(press));
+        assert!(voice.is_on());
+    }
+
+    #[test]
+    fn a_click_with_your_microphone_muted_gives_it_back_and_leaves_typing() {
+        let start = Instant::now();
+        let mut voice = StampVoice::default();
+        let press = voice.press(StampHolder::Sharer, start);
+        voice.hear_with(listener());
+        voice.set_unmuted();
         assert!(voice.release(after(start, 349)));
         assert!(!voice.is_hearing(press), "it's for typing now");
+        assert!(voice.take_unmuted());
         assert!(!voice.is_on());
     }
 

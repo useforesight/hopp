@@ -1122,17 +1122,35 @@ impl<'a> Application<'a> {
         self.sync_stamp_voice();
     }
 
+    /// A right click with the stamp tool on your own screen.
+    fn your_stamp_right_click(&mut self, point: Option<(f64, f64)>) {
+        use hopp_marks::stamps::StampInput;
+        let input = match point {
+            Some(point) => self
+                .window_manager
+                .as_mut()
+                .and_then(|wm| wm.active_gfx_mut())
+                .and_then(|gfx| gfx.participants_manager_mut().stamp_right_click(point)),
+            None => Some(StampInput::ClearMine),
+        };
+        if let Some(input) = input {
+            self.your_stamp_input(input);
+        }
+    }
+
     /// You pressed or let go of a stamp you just placed. Held down, it records what you say
     /// while the call is captured, so you're heard: it unmutes you until you let go.
     fn stamp_hold_changed(&mut self, held: bool, holder: StampHolder) {
         if !held {
-            let click = self.stamp_voice.release(Instant::now());
+            let cannot_hear = self.stamp_voice.release(Instant::now());
             self.give_back_microphone();
-            if click {
+            if cannot_hear {
+                self.set_stamp_muted(true);
                 self.input_for_held_stamp(hopp_marks::stamps::StampInput::StopListening);
             }
             return;
         }
+        self.set_stamp_muted(false);
         let press = self.stamp_voice.press(holder, Instant::now());
         let Some(room_service) = &self.room_service else {
             return;
@@ -1191,24 +1209,43 @@ impl<'a> Application<'a> {
         }
     }
 
-    /// A stamp that's finished, however that happened, has nothing left to hear.
+    fn set_stamp_muted(&mut self, muted: bool) {
+        if let Some(window) = &mut self.screensharing_window {
+            window.set_stamp_muted(muted);
+        }
+        if let Some(window) = &mut self.drawing_window {
+            window.set_stamp_muted(muted);
+        }
+    }
+
+    /// A stamp that's finished, however that happened, has nothing left to hear. Nor has one
+    /// you've started typing on, and it mustn't be finished for you when your words settle.
     fn sync_stamp_voice(&mut self) {
         if !self.stamp_voice.is_on() {
             return;
         }
-        let typing = match self.stamp_voice.holder() {
+        let (typing, hearing) = match self.stamp_voice.holder() {
             StampHolder::Viewer => self
                 .screensharing_window
                 .as_ref()
-                .is_some_and(|window| window.is_stamp_typing()),
+                .map(|window| (window.is_stamp_typing(), window.is_stamp_hearing())),
             StampHolder::Sharer => self
                 .window_manager
                 .as_mut()
                 .and_then(|wm| wm.active_gfx_mut())
-                .is_some_and(|gfx| gfx.participants_manager_mut().is_stamp_typing()),
-        };
+                .map(|gfx| {
+                    let participants = gfx.participants_manager_mut();
+                    (
+                        participants.is_stamp_typing(),
+                        participants.is_stamp_hearing(),
+                    )
+                }),
+        }
+        .unwrap_or_default();
         if !typing {
             self.end_stamp_voice();
+        } else if !hearing {
+            self.stamp_voice.stop_hearing();
         }
     }
 
@@ -3091,6 +3128,12 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                         self.your_stamp_input(input);
                         continue;
                     }
+                    if let window::drawing_window::DrawingWindowInputEvent::StampRightClick(point) =
+                        event
+                    {
+                        self.your_stamp_right_click(point);
+                        continue;
+                    }
                     if let window::drawing_window::DrawingWindowInputEvent::StampHold(held) = event
                     {
                         self.stamp_hold_changed(held, StampHolder::Sharer);
@@ -3155,6 +3198,7 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                                 rs.publish_draw_clear_paths(ids);
                             }
                             window::drawing_window::DrawingWindowInputEvent::Stamp(_)
+                            | window::drawing_window::DrawingWindowInputEvent::StampRightClick(_)
                             | window::drawing_window::DrawingWindowInputEvent::StampHold(_)
                             | window::drawing_window::DrawingWindowInputEvent::SwitchTool(_)
                             | window::drawing_window::DrawingWindowInputEvent::Escape => {}
