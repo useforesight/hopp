@@ -25,24 +25,28 @@ const ICON_VIDEO: char = '\u{F101}';
 const ICON_PHONE_OFF: char = '\u{F103}';
 pub const ICON_CAPTURE: &[u8] = include_bytes!("../../resources/icons/audio-lines.svg");
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CallControlsDensity {
     Regular,
     Compact,
+    /// Without the device menus, for a window too narrow to have them.
+    Icons,
+    /// Only the mic, the camera and ending the call, for the narrowest windows.
+    Essentials,
 }
 
 impl CallControlsDensity {
     const fn button_size(self) -> SplitButtonSize {
         match self {
             Self::Regular => SplitButtonSize::regular(),
-            Self::Compact => SplitButtonSize::compact(),
+            Self::Compact | Self::Icons | Self::Essentials => SplitButtonSize::compact(),
         }
     }
 
     const fn spacing(self) -> f32 {
         match self {
             Self::Regular => 8.0,
-            Self::Compact => 4.0,
+            Self::Compact | Self::Icons | Self::Essentials => 4.0,
         }
     }
 
@@ -53,8 +57,13 @@ impl CallControlsDensity {
         }
         match self {
             Self::Regular => 44.0,
-            Self::Compact => 34.0,
+            Self::Compact | Self::Icons => 34.0,
+            Self::Essentials => 0.0,
         }
+    }
+
+    const fn has_device_menus(self) -> bool {
+        matches!(self, Self::Regular | Self::Compact)
     }
 
     pub const fn total_width(self) -> f32 {
@@ -62,6 +71,8 @@ impl CallControlsDensity {
             + match self {
                 Self::Regular => 237.0,
                 Self::Compact => 189.0,
+                Self::Icons => 132.0,
+                Self::Essentials => 98.0,
             }
     }
 
@@ -69,7 +80,7 @@ impl CallControlsDensity {
         self.capture_width()
             + match self {
                 Self::Regular => 111.0,
-                Self::Compact => 87.0,
+                _ => 87.0,
             }
     }
 
@@ -77,7 +88,7 @@ impl CallControlsDensity {
         self.capture_width()
             + match self {
                 Self::Regular => 178.0,
-                Self::Compact => 140.0,
+                _ => 140.0,
             }
     }
 }
@@ -159,6 +170,7 @@ impl CallControlsState {
             })
             .unwrap_or((false, false, false));
         let size = density.button_size();
+        let has_menus = density.has_device_menus();
 
         let mic = split_button_sized(
             if is_muted {
@@ -172,7 +184,7 @@ impl CallControlsState {
                 ColorToken::Orange400.to_color()
             },
             CallControlsMessage::MicToggle,
-            Some(CallControlsMessage::MicDropdownToggle),
+            has_menus.then_some(CallControlsMessage::MicDropdownToggle),
             self.mic_dropdown_open,
             size,
         );
@@ -184,7 +196,7 @@ impl CallControlsState {
                 ColorToken::Gray400.to_color()
             },
             CallControlsMessage::VideoToggle,
-            Some(CallControlsMessage::CameraDropdownToggle),
+            has_menus.then_some(CallControlsMessage::CameraDropdownToggle),
             self.camera_dropdown_open,
             size,
         );
@@ -196,7 +208,7 @@ impl CallControlsState {
                 ColorToken::Gray400.to_color()
             },
             CallControlsMessage::ScreenShare,
-            Some(CallControlsMessage::OpenScreenSharePicker),
+            has_menus.then_some(CallControlsMessage::OpenScreenSharePicker),
             false,
             size,
         );
@@ -209,12 +221,13 @@ impl CallControlsState {
             size,
         );
 
-        let controls = row![mic, video, screen].spacing(density.spacing());
-        let controls = if call_capture::SUPPORTED {
-            controls.push(capture_control(is_capturing, size))
-        } else {
-            controls
-        };
+        let mut controls = row![mic, video].spacing(density.spacing());
+        if density != CallControlsDensity::Essentials {
+            controls = controls.push(screen);
+            if call_capture::SUPPORTED {
+                controls = controls.push(capture_control(is_capturing, density));
+            }
+        }
         controls.push(end_call).into()
     }
 
@@ -378,7 +391,7 @@ impl CallControlsState {
 
 fn capture_control<'a>(
     is_capturing: bool,
-    size: SplitButtonSize,
+    density: CallControlsDensity,
 ) -> Element<'a, CallControlsMessage, Theme, iced::Renderer> {
     let control = mouse_area(svg_button_sized(
         ICON_CAPTURE,
@@ -388,7 +401,7 @@ fn capture_control<'a>(
             ColorToken::Gray400.to_color()
         },
         CallControlsMessage::ToggleCapture,
-        size,
+        density.button_size(),
     ))
     .on_right_press(CallControlsMessage::OpenCaptures);
 
@@ -413,7 +426,13 @@ fn capture_control<'a>(
         ..Default::default()
     });
 
-    tooltip(control, hint, tooltip::Position::Bottom)
+    // Without the menus the controls are at the bottom of the window, with no room below them.
+    let hint_position = if density.has_device_menus() {
+        tooltip::Position::Bottom
+    } else {
+        tooltip::Position::Top
+    };
+    tooltip(control, hint, hint_position)
         .gap(4)
         .snap_within_viewport(true)
         .into()

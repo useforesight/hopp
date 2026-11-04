@@ -119,6 +119,17 @@ const SMALL_HEIGHT_THRESHOLD: f32 = 600.0;
 const COMPACT_WIDTH_THRESHOLD: f32 = 300.0;
 /// Narrower than this, the controls take less room to fit between the sides of the header.
 const REGULAR_CONTROLS_MIN_WIDTH: f32 = 470.0;
+/// Keeps the native traffic lights clear, and balances them on the other side of the controls.
+const HEADER_SIDE_WIDTH: f32 = 80.0;
+/// Narrower than this, the controls don't fit in the header at all.
+const HEADER_CONTROLS_MIN_WIDTH: f32 =
+    CallControlsDensity::Compact.total_width() + 2.0 * (HEADER_SIDE_WIDTH + CONTENT_PADDING);
+/// The controls' height, and the margin below them. The grid's padding is the margin above.
+const CONTROLS_STRIP_HEIGHT: f32 = 26.0 + MIN_GRID_PADDING;
+/// Shorter than this, a strip would leave too little video, so the controls show on hover.
+const CONTROLS_STRIP_MIN_WINDOW_HEIGHT: f32 = 140.0;
+/// Narrower than this, the controls are down to the essentials.
+const ICON_CONTROLS_MIN_WIDTH: f32 = CallControlsDensity::Icons.total_width() + 8.0;
 const HIDE_NAME_TILE_THRESHOLD: f32 = 150.0;
 
 const COMPACT_TOP_INSET: f32 = 24.0;
@@ -167,8 +178,10 @@ struct CameraState {
     self_hidden: bool,
     /// True while the pointer is over the local tile (show hide-self control).
     local_tile_hovered: bool,
-    /// Window narrower than `COMPACT_WIDTH_THRESHOLD` hides header, name labels, etc.
+    /// Window narrower than `COMPACT_WIDTH_THRESHOLD` has no pin button, and is taken to be pinned.
     is_compact: bool,
+    /// True while the pointer is on the window (`ControlsPlacement::Hover` shows the controls).
+    pointer_over_window: bool,
     toast: Option<ToastState>,
 }
 
@@ -179,6 +192,7 @@ impl Default for CameraState {
             self_hidden: false,
             local_tile_hovered: false,
             is_compact: false,
+            pointer_over_window: false,
             toast: None,
         }
     }
@@ -479,6 +493,8 @@ impl CameraWindow {
                         iced::mouse::Event::CursorLeft => mouse::Cursor::Unavailable,
                         _ => self.cursor,
                     };
+                    self.state.pointer_over_window =
+                        matches!(self.cursor, mouse::Cursor::Available(_));
                 }
 
                 // Build user interface, process the event, and collect messages
@@ -647,6 +663,7 @@ impl CameraWindow {
     /// - Outer container: macOS near-transparent (vibrancy); otherwise Zinc900
     /// - Header row: traffic-light space + centered controls + balance space
     /// - Responsive participant grid with name labels
+    /// - Without room for the controls in the header, they go below the grid (see `controls_layout`)
     fn view<'a>(
         state: &'a CameraState,
         call_controls: &'a CallControlsState,
@@ -654,57 +671,76 @@ impl CameraWindow {
         outer_skip: bool,
         last_rendered_frame_ids: &mut HashMap<String, u64>,
     ) -> iced::Element<'a, CameraMessage, Theme, iced::Renderer> {
-        let controls_density = if state.viewport_size.width < REGULAR_CONTROLS_MIN_WIDTH {
-            CallControlsDensity::Compact
-        } else {
-            CallControlsDensity::Regular
-        };
+        let (controls_placement, controls_density) = controls_layout(state.viewport_size);
         let controls = call_controls
             .view(participants, controls_density)
             .map(CameraMessage::CallControls);
 
-        // ── Header with centered controls (space for native traffic lights)
-        let header = row![
-            Space::new().width(Length::Fixed(80.0)), // Space for native macOS traffic lights
-            Space::new().width(Length::Fill),
-            controls,
-            Space::new().width(Length::Fill),
-            Space::new().width(Length::Fixed(80.0)), // Balance spacing
-        ]
-        .padding(Padding {
-            top: CONTENT_PADDING,
-            right: CONTENT_PADDING,
-            bottom: 0.0,
-            left: CONTENT_PADDING,
-        })
-        .align_y(Alignment::Center);
-
         // ── Participant grid ─────────────────────────────────────────────
+        // Without a header, this much is still kept clear of the traffic lights and the pin button.
+        let top_inset = if state.is_compact {
+            COMPACT_TOP_INSET
+        } else {
+            HEADER_HEIGHT
+        };
+        let strip_height = if controls_placement == ControlsPlacement::Strip {
+            CONTROLS_STRIP_HEIGHT
+        } else {
+            0.0
+        };
         let video_grid = create_participant_grid(
             state.viewport_size,
             participants,
             state.self_hidden,
             state.local_tile_hovered,
-            state.is_compact,
+            top_inset + strip_height,
             outer_skip,
             last_rendered_frame_ids,
         );
 
         // ── Main layout ─────────────────────────────────────────────────
-        let content = if state.is_compact {
-            column![video_grid]
-                .width(Length::Fill)
-                .height(Length::Fill)
+        let top_space = Space::new().height(Length::Fixed(top_inset));
+        let mut hover_controls = None;
+        let content = match controls_placement {
+            ControlsPlacement::Header => {
+                // ── Header with centered controls (space for native traffic lights)
+                let header = row![
+                    Space::new().width(Length::Fixed(HEADER_SIDE_WIDTH)),
+                    Space::new().width(Length::Fill),
+                    controls,
+                    Space::new().width(Length::Fill),
+                    Space::new().width(Length::Fixed(HEADER_SIDE_WIDTH)),
+                ]
                 .padding(Padding {
-                    top: COMPACT_TOP_INSET,
-                    right: 0.0,
+                    top: CONTENT_PADDING,
+                    right: CONTENT_PADDING,
                     bottom: 0.0,
-                    left: 0.0,
+                    left: CONTENT_PADDING,
                 })
+                .align_y(Alignment::Center);
+                column![header, video_grid]
+            }
+            ControlsPlacement::Strip => {
+                let strip = container(controls)
+                    .center_x(Length::Fill)
+                    .height(Length::Fixed(CONTROLS_STRIP_HEIGHT));
+                column![top_space, video_grid, strip]
+            }
+            ControlsPlacement::Hover => {
+                if state.pointer_over_window {
+                    hover_controls = Some(controls);
+                }
+                column![top_space, video_grid]
+            }
+        }
+        .width(Length::Fill)
+        .height(Length::Fill);
+
+        // What the controls take from the bottom of the window, for what floats there to avoid.
+        let bottom_inset = if hover_controls.is_some() {
+            CONTROLS_STRIP_HEIGHT
         } else {
-            column![header, video_grid]
-                .width(Length::Fill)
-                .height(Length::Fill)
+            strip_height
         };
 
         let base_inner = container(content)
@@ -727,6 +763,7 @@ impl CameraWindow {
             })
             .clip(true);
 
+        // Only the header's controls have these menus, see `sync_compact_constraints`.
         let trailing_padding = (state.viewport_size.width - controls_density.total_width()) / 2.0;
         let base = call_controls.wrap_dropdown(
             base_inner.into(),
@@ -743,7 +780,7 @@ impl CameraWindow {
                     .height(Length::Fill)
                     .align_x(Alignment::End)
                     .align_y(Alignment::End)
-                    .padding(4.0)
+                    .padding(Padding::new(4.0).bottom(4.0 + bottom_inset))
                     .into(),
             )
         } else {
@@ -754,7 +791,7 @@ impl CameraWindow {
             ToastPosition {
                 top: None,
                 right: Some(15.0),
-                bottom: Some(15.0),
+                bottom: Some(15.0 + bottom_inset),
                 left: None,
             }
         } else {
@@ -769,6 +806,16 @@ impl CameraWindow {
         let mut layers: Vec<iced::Element<'a, CameraMessage, Theme, iced::Renderer>> = vec![base];
         if let Some(floating) = floating_show_btn {
             layers.push(floating);
+        }
+        if let Some(controls) = hover_controls {
+            layers.push(
+                container(controls)
+                    .center_x(Length::Fill)
+                    .height(Length::Fill)
+                    .align_y(Alignment::End)
+                    .padding(Padding::new(0.0).bottom(4.0))
+                    .into(),
+            );
         }
         if !state.is_compact {
             layers.push(
@@ -832,9 +879,15 @@ impl CameraWindow {
         }
     }
 
-    /// Recompute `is_compact` from the current viewport width.
+    /// Recompute what follows from the current viewport size.
     fn sync_compact_constraints(&mut self) {
         self.state.is_compact = self.state.viewport_size.width < COMPACT_WIDTH_THRESHOLD;
+
+        // Only the header has the device menus. One left open would come back with the header.
+        let (controls_placement, _) = controls_layout(self.state.viewport_size);
+        if controls_placement != ControlsPlacement::Header {
+            self.call_controls.dismiss_dropdowns();
+        }
     }
 
     /// Resize and reposition the window to the top-right corner of the current monitor,
@@ -842,6 +895,9 @@ impl CameraWindow {
     fn pin_to_corner(&mut self) {
         self.state.self_hidden = true;
         self.state.local_tile_hovered = false;
+        // The window is about to move out from under the pointer.
+        self.cursor = mouse::Cursor::Unavailable;
+        self.state.pointer_over_window = false;
 
         let monitor = self
             .window
@@ -1534,6 +1590,38 @@ fn identity_to_id(identity: &str) -> u64 {
     hasher.finish()
 }
 
+/// Where the call controls go, in a window of this size.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ControlsPlacement {
+    /// In the header, between the traffic lights and the pin button.
+    Header,
+    /// In a strip of their own, below the video.
+    Strip,
+    /// Over the bottom of the video, while the pointer is on the window.
+    Hover,
+}
+
+/// Where the call controls go in a window of this size, and how much of them fits there.
+fn controls_layout(viewport_size: IcedSize) -> (ControlsPlacement, CallControlsDensity) {
+    if viewport_size.width >= REGULAR_CONTROLS_MIN_WIDTH {
+        return (ControlsPlacement::Header, CallControlsDensity::Regular);
+    }
+    if viewport_size.width >= HEADER_CONTROLS_MIN_WIDTH {
+        return (ControlsPlacement::Header, CallControlsDensity::Compact);
+    }
+    let placement = if viewport_size.height >= CONTROLS_STRIP_MIN_WINDOW_HEIGHT {
+        ControlsPlacement::Strip
+    } else {
+        ControlsPlacement::Hover
+    };
+    let density = if viewport_size.width >= ICON_CONTROLS_MIN_WIDTH {
+        CallControlsDensity::Icons
+    } else {
+        CallControlsDensity::Essentials
+    };
+    (placement, density)
+}
+
 /// Create the responsive participant grid.
 ///
 /// Calculates optimal grid layout based on available size, maximizing tile size
@@ -1543,7 +1631,7 @@ fn create_participant_grid<'a>(
     participants: &'a Arc<RwLock<HashMap<String, ParticipantInfo>>>,
     self_hidden: bool,
     local_tile_hovered: bool,
-    is_compact: bool,
+    reserved_height: f32,
     outer_skip: bool,
     last_rendered_frame_ids: &mut HashMap<String, u64>,
 ) -> iced::Element<'a, CameraMessage, Theme, iced::Renderer> {
@@ -1564,17 +1652,12 @@ fn create_participant_grid<'a>(
 
     let participant_count = sorted.len();
     if participant_count == 0 {
-        return Space::new().into();
+        return Space::new().width(Length::Fill).height(Length::Fill).into();
     }
 
-    // Subtract header height from vertical space, then apply grid padding
-    let header_offset = if is_compact {
-        COMPACT_TOP_INSET
-    } else {
-        HEADER_HEIGHT
-    };
+    // Subtract the header or the strip of controls from vertical space, then apply grid padding
     let available_width = available_size.width - (MIN_GRID_PADDING * 2.0);
-    let available_height = (available_size.height - header_offset) - (MIN_GRID_PADDING * 2.0);
+    let available_height = (available_size.height - reserved_height) - (MIN_GRID_PADDING * 2.0);
 
     // Determine if this is a small window for styling purposes
     let is_small_window = available_size.width < SMALL_WIDTH_THRESHOLD
@@ -1617,7 +1700,7 @@ fn create_participant_grid<'a>(
         (tile_size * num_rows as f32) + (TILE_SPACING * (num_rows - 1) as f32);
 
     // Calculate dynamic padding to center the grid within the grid area (below header)
-    let grid_area_height = available_size.height - header_offset;
+    let grid_area_height = available_size.height - reserved_height;
     let h_padding = ((available_size.width - grid_content_width) / 2.0).max(MIN_GRID_PADDING);
     let v_padding = ((grid_area_height - grid_content_height) / 2.0).max(MIN_GRID_PADDING);
 
@@ -1695,4 +1778,70 @@ fn create_participant_grid<'a>(
                 .right(h_padding),
         )
         .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn layout(width: f32, height: f32) -> (ControlsPlacement, CallControlsDensity) {
+        controls_layout(IcedSize::new(width, height))
+    }
+
+    #[test]
+    fn controls_fit_where_they_are_at_every_width() {
+        for width in CAMERA_WINDOW_MIN_WIDTH as u32..=1200 {
+            let width = width as f32;
+            let (placement, density) = layout(width, 600.0);
+            let room = match placement {
+                ControlsPlacement::Header => width - 2.0 * (HEADER_SIDE_WIDTH + CONTENT_PADDING),
+                ControlsPlacement::Strip | ControlsPlacement::Hover => width,
+            };
+            assert!(
+                density.total_width() <= room,
+                "{density:?} is {} wide, with {room} at a width of {width}",
+                density.total_width()
+            );
+        }
+    }
+
+    #[test]
+    fn a_wide_window_keeps_them_in_the_header() {
+        assert_eq!(
+            layout(CAMERA_WINDOW_WIDTH as f32, CAMERA_WINDOW_HEIGHT as f32),
+            (ControlsPlacement::Header, CallControlsDensity::Regular)
+        );
+        assert_eq!(
+            layout(HEADER_CONTROLS_MIN_WIDTH, 600.0),
+            (ControlsPlacement::Header, CallControlsDensity::Compact)
+        );
+    }
+
+    #[test]
+    fn a_narrow_window_moves_them_below_the_video() {
+        for width in [
+            HEADER_CONTROLS_MIN_WIDTH - 1.0,
+            314.0,
+            283.0,
+            ICON_CONTROLS_MIN_WIDTH,
+        ] {
+            assert_eq!(
+                layout(width, 400.0),
+                (ControlsPlacement::Strip, CallControlsDensity::Icons),
+                "at a width of {width}"
+            );
+        }
+        assert_eq!(
+            layout(ICON_CONTROLS_MIN_WIDTH - 1.0, 400.0),
+            (ControlsPlacement::Strip, CallControlsDensity::Essentials)
+        );
+    }
+
+    #[test]
+    fn a_pinned_window_keeps_its_video_and_shows_them_on_hover() {
+        assert_eq!(
+            layout(PIN_CORNER_WIDTH as f32, PIN_CORNER_HEIGHT as f32),
+            (ControlsPlacement::Hover, CallControlsDensity::Essentials)
+        );
+    }
 }
