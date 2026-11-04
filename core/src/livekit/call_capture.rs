@@ -968,10 +968,14 @@ mod tests {
             y: 0.40 + 0.09 * (step as f64 / 60. * std::f64::consts::TAU).sin(),
         };
 
+        let mut voices = alex.chunks(frame).zip(sam.chunks(frame));
         let started = Instant::now();
-        for (index, (alex, sam)) in alex.chunks(frame).zip(sam.chunks(frame)).enumerate() {
-            mic.hear(alex);
-            remote.hear(sam);
+        // The share goes on a little after the last words, as the new slide settles.
+        for index in 0..2_500 {
+            if let Some((alex, sam)) = voices.next() {
+                mic.hear(alex);
+                remote.hear(sam);
+            }
             match index {
                 50 => {
                     capture.screen_changed();
@@ -1043,7 +1047,7 @@ mod tests {
                 _ => {}
             }
             if index % 3 == 0 && index >= 50 {
-                capture.offer_screen(if index < 1500 { &first } else { &second });
+                capture.offer_screen(if index < 1700 { &first } else { &second });
             }
             let next = Duration::from_millis(10) * (index as u32 + 1);
             std::thread::sleep(next.saturating_sub(started.elapsed()));

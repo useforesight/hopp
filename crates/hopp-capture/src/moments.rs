@@ -1483,6 +1483,51 @@ mod tests {
         out
     }
 
+    /// What a frame costs the moments thread. Run with `--release`: debug builds are many
+    /// times slower.
+    #[test]
+    #[ignore = "a measurement, it asserts nothing"]
+    fn what_a_frame_costs() -> Result<()> {
+        // Busy like a code editor: columns of short lines, no two rows alike.
+        let (width, height) = (2560_u32, 1440_u32);
+        let mut bgra = vec![30; (width * height * 4) as usize];
+        for y in 0..height {
+            let indent = (y / 24 * 37 % 300) * 2;
+            let length = 200 + (y / 24 * 131 % 1200);
+            for x in 0..width {
+                let inside = x >= indent && x < indent + length && y % 24 < 14;
+                if inside && (x / 7 + y / 24).wrapping_mul(2_654_435_761) % 5 != 0 {
+                    let pixel = ((y * width + x) * 4) as usize;
+                    bgra[pixel] = 210;
+                    bgra[pixel + 1] = (x / 11 % 200 + 40) as u8;
+                    bgra[pixel + 2] = (y / 13 % 200 + 40) as u8;
+                }
+            }
+        }
+        let frame = VideoFrame {
+            width,
+            height,
+            bgra,
+        };
+        let directory = tempfile::tempdir()?;
+        let (feed, receiver) = Feed::for_tests();
+        let mut moments = Moments::start_in(directory.path().into(), feed)?;
+        let started = Instant::now();
+        moments.sample(frame);
+        while !matches!(receiver.recv()?, Input::Frame { .. }) {}
+        let took = started.elapsed();
+        let mut bytes = 0;
+        for file in std::fs::read_dir(directory.path())? {
+            let file = file?;
+            let size = file.metadata()?.len();
+            println!("{:?}: {size} bytes", file.file_name());
+            bytes += size;
+        }
+        println!("{width}x{height}: {took:?} on the moments thread, {bytes} bytes");
+        moments.finish();
+        Ok(())
+    }
+
     #[test]
     fn a_stalled_thread_holds_only_a_few_copies_of_the_screen() {
         let (sender, receiver) = sync_channel(64);

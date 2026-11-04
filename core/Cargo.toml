@@ -101,3 +101,16 @@ tract-onnx = "=0.21.4"
 tract-core = "=0.21.4"
 realfft = "3.4"
 rustfft = "6.2"
+
+# The capture's frames take seconds to encode unoptimised, which throws its timing out.
+[profile.dev.package.libwebp-sys]
+opt-level = 3
+
+[profile.dev.package.image]
+opt-level = 3
+
+[profile.dev.package.tiny-skia]
+opt-level = 3
+
+[profile.dev.package.tiny-skia-path]
+opt-level = 3
