@@ -249,16 +249,18 @@ impl CallCapture {
         state.seen = now;
     }
 
+    /// A full reconnect comes back without the attribute, while the capture goes on.
+    pub fn tell_the_call_again(&self, local: LocalParticipant) {
+        tokio::spawn(tell_the_call(local));
+    }
+
     /// Stop capturing. Leaving a call never waits for its transcript: the last words finish
     /// on a thread of their own.
     pub fn stop(&self) {
-        let recorder = {
-            let mut state = self.state();
-            self.tap.set(None);
-            state.seen.clear();
-            state.recorder.take()
-        };
-        let Some(recorder) = recorder else {
+        let mut state = self.state();
+        self.tap.set(None);
+        state.seen.clear();
+        let Some(recorder) = state.recorder.take() else {
             return;
         };
         let id = recorder.id();

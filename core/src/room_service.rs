@@ -8,7 +8,7 @@ use livekit::participant::ConnectionQuality;
 use livekit::track::{LocalTrack, LocalVideoTrack, TrackSource, VideoQuality};
 use livekit::webrtc::prelude::{RtcVideoSource, VideoResolution};
 use livekit::webrtc::video_source::native::NativeVideoSource;
-use livekit::{DataPacket, Room, RoomEvent, RoomOptions};
+use livekit::{DataPacket, DisconnectReason, Room, RoomEvent, RoomOptions};
 use thread_priority::{set_current_thread_priority, ThreadPriority};
 use tokio::runtime::Handle as TokioHandle;
 
@@ -267,6 +267,13 @@ pub(crate) struct RoomServiceInner {
     call_capture: CallCapture,
 }
 
+// Replacing the room service, as a change of server does, must not wait for a transcript.
+impl Drop for RoomService {
+    fn drop(&mut self) {
+        self.inner.call_capture.stop();
+    }
+}
+
 impl RoomServiceInner {
     async fn clear(&self) {
         self.call_capture.stop();
@@ -496,13 +503,11 @@ impl RoomService {
     }
 
     /// Destroys the current room connection.
-    /// Quitting during a capture leaves the call first, so you aren't still in it while
-    /// its last words finish.
+    /// Quitting leaves the call first, so you aren't still in it while the last words of a
+    /// capture finish.
     pub fn finish_capture_before_exit(&self) {
-        if self.inner.call_capture.is_capturing() {
-            self.inner.call_capture.stop();
-            self.destroy_room();
-        }
+        self.inner.call_capture.stop();
+        self.destroy_room();
         crate::livekit::call_capture::wait_for_finishing();
     }
 
@@ -3147,6 +3152,20 @@ async fn handle_room_events(ctx: RoomEventContext) {
             RoomEvent::Reconnected => {
                 let _ = service_command_tx
                     .send(RoomServiceCommand::PublishAppVeilSnapshot { force: true });
+                if inner.call_capture.is_capturing() {
+                    if let Some(room) = inner.room.lock().await.as_ref() {
+                        inner
+                            .call_capture
+                            .tell_the_call_again(room.local_participant());
+                    }
+                }
+            }
+            // Removed from the room, or reconnecting failed: the call is over here, even
+            // if the window doesn't say so yet. Leaving is `clear()`'s, and could reach here
+            // after the next call has started.
+            RoomEvent::Disconnected { reason } if reason != DisconnectReason::ClientInitiated => {
+                log::info!("handle_room_events: disconnected: {reason:?}");
+                inner.call_capture.stop();
             }
             // Someone started or stopped capturing (transcribing) the call.
             RoomEvent::ParticipantAttributesChanged {
