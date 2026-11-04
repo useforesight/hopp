@@ -77,6 +77,7 @@ pub fn private_dir(path: &Path) -> Result<()> {
 
 /// Options that create a file only this user can read.
 pub fn private_file_options() -> OpenOptions {
+    #[allow(unused_mut)]
     let mut options = OpenOptions::new();
     #[cfg(unix)]
     {

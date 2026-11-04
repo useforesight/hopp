@@ -52,8 +52,12 @@ pub fn start(app: AppHandle) {
     }
 }
 
+/// No socket on Windows yet, so nothing calls `answer` there. This keeps it, and what only it
+/// uses, compiled rather than reported as dead.
 #[cfg(not(unix))]
-pub fn start(_app: AppHandle) {}
+pub fn start(_app: AppHandle) {
+    let _ = answer;
+}
 
 fn answer(app: &AppHandle, request: AppRequest) -> AppReply {
     log::info!("app_socket: {request:?}");

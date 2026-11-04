@@ -11,6 +11,7 @@ use serde_json::Value;
 use crate::paths;
 
 /// Nothing asked of the app is long, and a client can't make it hold more than this.
+#[cfg(unix)]
 const MAX_REQUEST: u64 = 64 * 1024;
 /// The app's state lists the whole team.
 #[cfg(unix)]
