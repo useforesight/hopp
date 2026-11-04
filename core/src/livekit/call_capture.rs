@@ -13,7 +13,7 @@ use hopp_capture::moments::{
     DrawEvent, Moments, PathPoint, Point, Sampler, VideoFrame, AGENT_EDGE,
 };
 use hopp_capture::recorder::{self, Recorder, Speaker};
-use hopp_capture::{config, liveness, models, store, Tap};
+use hopp_capture::{config, hooks, liveness, models, store, Tap};
 use hopp_marks::colours::{canonical_identity, person};
 use hopp_marks::stamps::StampMessage;
 use livekit::participant::LocalParticipant;
@@ -440,7 +440,8 @@ impl CallCapture {
         log::info!("Capture {id}: started");
         let feed = recorder.feed();
         let seen = people(snapshot);
-        feed.participants(seen.values().map(|p| p.name.clone()).collect());
+        let participants: Vec<String> = seen.values().map(|p| p.name.clone()).collect();
+        feed.participants(participants.clone());
         for sharer in seen.values().filter(|p| p.sharing) {
             feed.event(format!("{} is sharing their screen", sharer.name));
         }
@@ -456,6 +457,11 @@ impl CallCapture {
         state.seen = seen;
         state.own_identity = own_identity.to_string();
         state.recorder = Some(recorder);
+        drop(state);
+        // From here, because the recorder hasn't necessarily written them down yet.
+        let mut payload = hooks::payload("capture-started", &id);
+        payload["participants"] = participants.into();
+        hooks::run("capture-started", payload);
         Ok(id)
     }
 
@@ -535,6 +541,7 @@ impl CallCapture {
                 if let Err(error) = recorder.finish() {
                     log::error!("Capture {id}: didn't finish cleanly: {error:#}");
                 }
+                hooks::run("capture-complete", hooks::payload("capture-complete", &id));
                 if let Err(error) = hopp_capture::prune() {
                     log::error!("Capture: deleting old captures: {error:#}");
                 }

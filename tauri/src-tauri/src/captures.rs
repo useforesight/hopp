@@ -6,7 +6,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use hopp_capture::{
     browse::{self, Listed, Reading, Update},
     config, disk_usage, liveness, models,
-    paths::{data_dir, private_dir},
+    paths::{config_dir, data_dir, private_dir},
     prune_in,
     store::{self, Store},
 };
@@ -162,6 +162,8 @@ pub struct CaptureSettings {
     models: Vec<CaptureModel>,
     captures_bytes: u64,
     models_bytes: u64,
+    /// The command line, for what the window offers to copy.
+    cli_path: String,
 }
 
 #[derive(Serialize)]
@@ -222,7 +224,13 @@ pub fn capture_settings() -> Result<CaptureSettings, String> {
             .collect(),
         captures_bytes,
         models_bytes,
+        cli_path: cli_path().map_err(describe)?.to_string_lossy().into_owned(),
     })
+}
+
+/// In the bundle beside the app, whose own binary is already called `hopp`.
+fn cli_path() -> std::io::Result<std::path::PathBuf> {
+    Ok(std::env::current_exe()?.with_file_name("hopp-cli"))
 }
 
 /// Saves one capture setting. Read afresh when a capture starts, so a capture already running
@@ -276,11 +284,19 @@ pub fn capture_model_delete(captures: State<'_, Captures>, name: String) -> Resu
     models::delete(open.existing_store()?, model).map_err(describe)
 }
 
-#[tauri::command(async)]
-pub fn capture_open_folder(app: tauri::AppHandle) -> Result<(), String> {
-    let folder = data_dir().map_err(describe)?.join("capture");
-    private_dir(&folder).map_err(describe)?;
+fn open_folder(app: &tauri::AppHandle, folder: &std::path::Path) -> Result<(), String> {
+    private_dir(folder).map_err(describe)?;
     app.opener()
         .open_path(folder.to_string_lossy(), None::<&str>)
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command(async)]
+pub fn capture_open_folder(app: tauri::AppHandle) -> Result<(), String> {
+    open_folder(&app, &data_dir().map_err(describe)?.join("capture"))
+}
+
+#[tauri::command(async)]
+pub fn capture_open_hooks(app: tauri::AppHandle) -> Result<(), String> {
+    open_folder(&app, &config_dir().map_err(describe)?.join("hooks"))
 }

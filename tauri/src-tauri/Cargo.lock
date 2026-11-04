@@ -2477,10 +2477,12 @@ name = "hopp-capture"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "chrono",
  "clap",
  "hopp-marks",
  "image",
+ "libc",
  "log",
  "reqwest 0.12.28",
  "rusqlite",

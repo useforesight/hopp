@@ -90,6 +90,7 @@ export interface CaptureSettings {
   models: CaptureModel[];
   captures_bytes: number;
   models_bytes: number;
+  cli_path: string;
 }
 
 export type CaptureChange =
@@ -320,6 +321,7 @@ export interface CommandMap {
   capture_model_download: { args: { name: string }; return: void };
   capture_model_delete: { args: { name: string }; return: void };
   capture_open_folder: { args: void; return: void };
+  capture_open_hooks: { args: void; return: void };
   show_call_alert_window: { args: void; return: void };
   write_launcher_directory: { args: { contents: string }; return: void };
   close_call_alert_window: { args: void; return: void };

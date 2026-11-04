@@ -1789,6 +1789,7 @@ fn main() {
             hopp::captures::capture_model_download,
             hopp::captures::capture_model_delete,
             hopp::captures::capture_open_folder,
+            hopp::captures::capture_open_hooks,
             stop_sharing,
             get_available_content,
             store_token_cmd,

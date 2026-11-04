@@ -119,6 +119,8 @@ tasks:
         if [[ "{{.OS}}" == "mac" ]]; then
           (cd ../crates/hopp-transcribe && cargo build --release --target {{.TARGET_ARCH}}-{{.TARGET_OS}})
           cp ../crates/hopp-transcribe/target/{{.TARGET_ARCH}}-{{.TARGET_OS}}/release/hopp-transcribe ../core/target/release/hopp-transcribe-{{.TARGET_ARCH}}-{{.TARGET_OS}}
+          (cd ../core && cargo build --release --target {{.TARGET_ARCH}}-{{.TARGET_OS}} -p hopp-capture --bin hopp)
+          cp ../core/target/{{.TARGET_ARCH}}-{{.TARGET_OS}}/release/hopp ../core/target/release/hopp-cli-{{.TARGET_ARCH}}-{{.TARGET_OS}}
         fi
       - |
         yarn tauri build --target {{.TARGET_ARCH}}-{{.TARGET_OS}} --config src-tauri/tauri.conf.rel.json {{if eq .OS "mac"}}--config src-tauri/tauri.conf.rel.macos.json{{end}}

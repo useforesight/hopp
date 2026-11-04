@@ -209,6 +209,15 @@ jobs:
           cargo build --release --target ${{ matrix.target }}
           cp target/${{ matrix.target }}/release/hopp-transcribe ../../core/target/release/hopp-transcribe-${{ matrix.target }}
 
+      # The command line and agents' way in. `hopp` is taken in the bundle: it's the app itself.
+      - name: Build the command line
+        if: matrix.platform == 'macos-26'
+        shell: bash
+        run: |
+          cd core
+          cargo build --release --target ${{ matrix.target }} -p hopp-capture --bin hopp
+          cp target/${{ matrix.target }}/release/hopp target/release/hopp-cli-${{ matrix.target }}
+
       - name: Set Vite environment variables
         shell: bash
         id: vite_vars
