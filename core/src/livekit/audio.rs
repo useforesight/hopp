@@ -4,12 +4,15 @@ use livekit::webrtc::audio_frame::AudioFrame;
 use livekit::webrtc::audio_source::native::NativeAudioSource;
 use livekit::webrtc::prelude::{AudioSourceOptions, RtcAudioSource};
 use livekit::Room;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokio::runtime::Handle as TokioHandle;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 
 use crate::audio::denoiser::Denoiser;
 use crate::audio::mixer::{AudioSource, MixerHandle, SharedProcessor, MIXER_SAMPLE_RATE};
+use crate::livekit::call_capture::{MicTap, TrackTap};
 
 pub const LIVEKIT_SAMPLE_RATE: u32 = 16000;
 pub const AUDIO_NUM_CHANNELS: u32 = 1;
@@ -19,6 +22,8 @@ const AUDIO_QUEUE_SIZE: u32 = 100;
 pub struct AudioPublisher {
     audio_track: LocalAudioTrack,
     processing_task: tokio::task::JoinHandle<()>,
+    /// Muting only mutes the track: the microphone keeps running. See `MicTap`.
+    muted: Arc<AtomicBool>,
 }
 
 impl AudioPublisher {
@@ -29,6 +34,7 @@ impl AudioPublisher {
         processor: SharedProcessor,
         audio_handle: &TokioHandle,
         denoiser: Option<Denoiser>,
+        capture: hopp_capture::Tap,
     ) -> Result<Self, String> {
         let audio_source_options = AudioSourceOptions {
             echo_cancellation: false,
@@ -64,12 +70,20 @@ impl AudioPublisher {
             .map_err(|e| format!("Failed to publish audio track: {e}"))?;
         log::info!("audio_publish: took {}", now.elapsed().as_millis());
 
+        let local = room.local_participant();
+        let muted = Arc::new(AtomicBool::new(false));
         let processing_task = audio_handle.spawn(process_audio_samples(
             sample_rx,
             native_source,
             sample_rate,
             processor,
             denoiser,
+            MicTap::new(
+                capture,
+                local.identity().as_str(),
+                &local.name(),
+                muted.clone(),
+            ),
         ));
 
         log::info!("AudioPublisher: audio track published ({}Hz)", sample_rate,);
@@ -77,6 +91,7 @@ impl AudioPublisher {
         Ok(Self {
             audio_track: track,
             processing_task,
+            muted,
         })
     }
 
@@ -91,10 +106,12 @@ impl AudioPublisher {
     }
 
     pub fn mute(&self) {
+        self.muted.store(true, Ordering::Relaxed);
         self.audio_track.mute();
     }
 
     pub fn unmute(&self) {
+        self.muted.store(false, Ordering::Relaxed);
         self.audio_track.unmute();
     }
 }
@@ -105,6 +122,7 @@ async fn process_audio_samples(
     sample_rate: u32,
     processor: SharedProcessor,
     mut denoiser: Option<Denoiser>,
+    capture: MicTap,
 ) {
     assert_eq!(
         sample_rate, MIXER_SAMPLE_RATE,
@@ -155,6 +173,7 @@ async fn process_audio_samples(
             if let Some(ref mut denoiser) = denoiser {
                 denoiser.process(&mut chunk);
             }
+            capture.hear(&chunk);
             capture_frame(&audio_source, &chunk, samples_per_unit, sample_rate).await;
         }
     }
@@ -183,6 +202,7 @@ pub fn play_remote_audio_track(
     mixer: MixerHandle,
     participant_id: &str,
     audio_handle: &TokioHandle,
+    capture: TrackTap,
 ) -> AudioTrackHandle {
     let source = mixer.add_source(LIVEKIT_SAMPLE_RATE, AUDIO_NUM_CHANNELS as u16);
     let source_clone = source.clone();
@@ -203,6 +223,8 @@ pub fn play_remote_audio_track(
         let mut last_log = start;
 
         while let Some(frame) = stream.next().await {
+            // This person's own track, before it's mixed with anyone else's.
+            capture.hear(&frame.data);
             source_clone.push_samples(&frame.data);
             frame_count += 1;
             total_samples += frame.data.len() as u64;

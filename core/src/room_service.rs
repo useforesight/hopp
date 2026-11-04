@@ -14,6 +14,7 @@ use tokio::runtime::Handle as TokioHandle;
 
 use crate::audio::mixer::SharedProcessor;
 use crate::livekit::audio::AudioPublisher;
+use crate::livekit::call_capture::CallCapture;
 use crate::livekit::participant::{capturing_from, ParticipantInfo, CAPTURE_ATTRIBUTE};
 use crate::livekit::video::{process_video_stream, VideoBufferManager};
 
@@ -263,10 +264,12 @@ pub(crate) struct RoomServiceInner {
     published_app_veil_snapshot: std::sync::Mutex<Option<AppVeilSnapshot>>,
     /// Your identity in the room, while you're in one.
     local_identity: std::sync::Mutex<Option<String>>,
+    call_capture: CallCapture,
 }
 
 impl RoomServiceInner {
     async fn clear(&self) {
+        self.call_capture.stop();
         {
             let mut inner_room = self.room.lock().await;
             if let Some(room) = inner_room.take() {
@@ -406,7 +409,9 @@ impl RoomService {
             .build()?;
 
         let participants = Arc::new(std::sync::RwLock::new(HashMap::new()));
-        let snapshot_sender = SnapshotSender::new(socket, participants.clone());
+        let call_capture = CallCapture::default();
+        let snapshot_sender =
+            SnapshotSender::new(socket, participants.clone(), call_capture.clone());
 
         let inner = Arc::new(RoomServiceInner {
             room: Mutex::new(None),
@@ -430,6 +435,7 @@ impl RoomService {
             app_veil_snapshot: std::sync::Mutex::new(None),
             published_app_veil_snapshot: std::sync::Mutex::new(None),
             local_identity: std::sync::Mutex::new(None),
+            call_capture,
         });
         let audio_runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -490,6 +496,16 @@ impl RoomService {
     }
 
     /// Destroys the current room connection.
+    /// Quitting during a capture leaves the call first, so you aren't still in it while
+    /// its last words finish.
+    pub fn finish_capture_before_exit(&self) {
+        if self.inner.call_capture.is_capturing() {
+            self.inner.call_capture.stop();
+            self.destroy_room();
+        }
+        crate::livekit::call_capture::wait_for_finishing();
+    }
+
     pub fn destroy_room(&self) {
         log::info!("destroy_room");
         if let Ok(summary) = self.inner.video_health_summary.lock() {
@@ -1040,6 +1056,7 @@ async fn room_service_commands(
                         audio_processor,
                         &audio_handle,
                         denoiser,
+                        inner_clone.call_capture.tap(),
                     )
                     .await
                     .map_err(|e| e.to_string())?;
@@ -1328,6 +1345,8 @@ async fn room_service_commands(
                     "room_service_commands: Finished room setup in {}ms",
                     total_connect_start.elapsed().as_millis()
                 );
+                let room_name = room.name();
+                let local_participant = room.local_participant();
                 {
                     let mut inner_room = inner.room.lock().await;
                     *inner_room = Some(room);
@@ -1359,6 +1378,14 @@ async fn room_service_commands(
                     tokio::spawn(drain_video_room_events(video_rx));
                     log::info!("room_service_commands: Spawned video_room event drainer");
                 }
+                inner
+                    .call_capture
+                    .auto_start(
+                        room_name,
+                        local_participant,
+                        inner.snapshot_sender.build_snapshot(),
+                    )
+                    .await;
             }
             RoomServiceCommand::DestroyRoom => {
                 if let Some(task) = stats_task.take() {
@@ -2918,6 +2945,9 @@ async fn handle_room_events(ctx: RoomEventContext) {
                             mixer.clone(),
                             &participant_identity,
                             &audio_handle,
+                            inner
+                                .call_capture
+                                .track_tap(&participant_identity, &participant.name()),
                         );
 
                         let mut participants_guard = participants.write().unwrap();

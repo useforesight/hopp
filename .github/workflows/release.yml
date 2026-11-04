@@ -77,10 +77,10 @@ jobs:
       matrix:
         include:
           - platform: "macos-26"
-            args: "--target x86_64-apple-darwin --config src-tauri/tauri.conf.rel.json"
+            args: "--target x86_64-apple-darwin --config src-tauri/tauri.conf.rel.json --config src-tauri/tauri.conf.rel.macos.json"
             target: "x86_64-apple-darwin"
           - platform: "macos-26"
-            args: "--target aarch64-apple-darwin --config src-tauri/tauri.conf.rel.json"
+            args: "--target aarch64-apple-darwin --config src-tauri/tauri.conf.rel.json --config src-tauri/tauri.conf.rel.macos.json"
             target: "aarch64-apple-darwin"
           - platform: "windows-latest"
             args: "--target x86_64-pc-windows-msvc --config src-tauri/tauri.conf.rel.json"
@@ -194,6 +194,16 @@ jobs:
         run: |
           cd core
           task release OS=${{ steps.task_vars.outputs.task_os }} ARCH=${{ steps.task_vars.outputs.task_arch }}
+
+      # Transcribes captured calls in a process of its own. Bundled like the core, which also
+      # gets it signed.
+      - name: Build the transcription helper
+        if: matrix.platform == 'macos-26'
+        shell: bash
+        run: |
+          cd crates/hopp-transcribe
+          cargo build --release --target ${{ matrix.target }}
+          cp target/${{ matrix.target }}/release/hopp-transcribe ../../core/target/release/hopp-transcribe-${{ matrix.target }}
 
       - name: Set Vite environment variables
         shell: bash

@@ -9,6 +9,7 @@ pub mod audio {
 
 pub mod livekit {
     pub mod audio;
+    pub mod call_capture;
     pub mod participant;
     pub mod stats;
     pub mod video;
@@ -1407,6 +1408,9 @@ impl<'a> Application<'a> {
 
 impl Drop for Application<'_> {
     fn drop(&mut self) {
+        if let Some(room_service) = self.room_service.as_ref() {
+            room_service.finish_capture_before_exit();
+        }
         let screen_capturer = self.screen_capturer.lock();
         if let Err(e) = screen_capturer {
             log::error!("Error locking screen capturer: {e:?}");
@@ -3498,6 +3502,7 @@ impl RenderEventLoop {
                                 );
                             }
                             std::thread::sleep(std::time::Duration::from_secs(1));
+                            livekit::call_capture::wait_for_finishing();
                             std::process::exit(PROCESS_EXIT_CODE_ERROR);
                         }
                         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
@@ -3512,6 +3517,7 @@ impl RenderEventLoop {
                                 );
                             }
                             std::thread::sleep(std::time::Duration::from_secs(1));
+                            livekit::call_capture::wait_for_finishing();
                             std::process::exit(PROCESS_EXIT_CODE_ERROR);
                         }
                     };
