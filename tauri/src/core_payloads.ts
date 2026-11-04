@@ -1,6 +1,88 @@
 import { invoke } from "@tauri-apps/api/core";
 
 /**
+ * A captured call, from crates/hopp-capture/src/store.rs and browse.rs.
+ */
+export interface CaptureCall {
+  id: string;
+  room: string;
+  title?: string;
+  summary?: string;
+  /** Unix time in milliseconds. */
+  started_ms: number;
+  ended_ms?: number;
+  participants: string[];
+  model?: string;
+  lines: number;
+}
+
+export interface CaptureListed extends CaptureCall {
+  /** While searching, who said what matched, with the matches in [brackets]. */
+  found?: string;
+}
+
+export interface CaptureMark {
+  by: string;
+  /** `circle`, `underline`, `line`, `stroke` or `pin`. */
+  shape: string;
+  pin?: number;
+  text?: string;
+  /** Fractions of the screen from the top left: `[left, top, right, bottom]`. */
+  bounds: [number, number, number, number];
+  colour: string;
+}
+
+/** One row of a call's timeline, from crates/hopp-capture/src/timeline.rs. */
+export type CaptureRow =
+  | { kind: "event"; t_ms: number; text: string }
+  | { kind: "bookmark"; t_ms: number; who: string | null; text: string }
+  | { kind: "gap"; t_ms: number; text: string }
+  | { kind: "said"; t_ms: number; speaker: string; text: string; draft: boolean; also: string | null }
+  | {
+      kind: "drawing";
+      t_ms: number;
+      end_ms: number;
+      frame: number;
+      frames: number;
+      width: number;
+      height: number;
+      marks: CaptureMark[];
+      /** The part of the frame to show: `[left, top, width, height]` as fractions. */
+      crop: [number, number, number, number];
+    }
+  | { kind: "screen"; t_ms: number; end_ms: number; count: number; thumbs: [number, number][] };
+
+export interface CaptureOverview {
+  duration_ms: number;
+  /** `[speaker, t_ms, end_ms]` */
+  speech: [string, number, number][];
+  /** `[t_ms, first person who drew]` */
+  drawings: [number, string][];
+  /** `[t_ms, end_ms]` */
+  screens: [number, number][];
+}
+
+export interface CapturePicture {
+  frame: number;
+  title: string;
+  detail: string;
+  width: number;
+  height: number;
+  marks: CaptureMark[];
+}
+
+export interface CaptureUpdate {
+  call: CaptureCall;
+  /** The rows from this one on replace those the window has. */
+  from: number;
+  rows: CaptureRow[];
+  overview: CaptureOverview;
+  colours: Record<string, string>;
+  /** Every picture in the call, when they've changed. */
+  pictures?: CapturePicture[];
+}
+
+/**
  * Socket lib types are defined in (core/socket_lib/src/lib.rs).
  *
  * At some point we could use:
@@ -194,6 +276,17 @@ export interface CommandMap {
   // Windows
   create_feedback_window: { args: { teamId: string; roomId: string; participantId: string }; return: void };
   create_settings_window: { args: void; return: void };
+
+  // Captures window
+  create_captures_window: { args: void; return: void };
+  captures_list: { args: { query: string }; return: CaptureListed[] };
+  captures_open: { args: { which: string }; return: CaptureUpdate };
+  captures_poll: { args: void; return: CaptureUpdate | null };
+  captures_frame: { args: { callId: string; number: number; full: boolean }; return: ArrayBuffer };
+  captures_delete: { args: { callId: string }; return: void };
+  captures_open_markdown: { args: { callId: string }; return: void };
+  captures_bookmark: { args: void; return: void };
+  captures_stop: { args: void; return: void };
   show_call_alert_window: { args: void; return: void };
   write_launcher_directory: { args: { contents: string }; return: void };
   close_call_alert_window: { args: void; return: void };

@@ -57,6 +57,16 @@ impl AppActivationObserver {
                     return;
                 }
 
+                // Coming back to the captures window keeps its focus, and leaves the rest alone.
+                if app_handle
+                    .get_webview_window("captures")
+                    .and_then(|w| w.is_focused().ok())
+                    .unwrap_or(false)
+                {
+                    log::info!("app_activation: captures window focused, skipping");
+                    return;
+                }
+
                 // Regular mode is either when permissions/notification windows are open, or when we are in a call.
                 if app_handle
                     .state::<Mutex<AppData>>()

@@ -3,6 +3,7 @@ pub mod app_activation;
 pub mod app_state;
 pub mod application_catalog;
 pub mod call_alert;
+pub mod captures;
 pub mod permissions;
 #[cfg(target_os = "macos")]
 pub mod sleep_prevention;
@@ -120,6 +121,9 @@ pub struct AppData {
     /// Whether a call is currently active.
     pub call_active: bool,
 
+    /// This call's capture was stopped by hand. Kept here so that it outlives a core restart.
+    pub capture_stopped_by_hand: bool,
+
     /// Whether the local camera is currently on (pushed from frontend snapshots).
     pub is_camera_on: bool,
 
@@ -175,6 +179,7 @@ impl AppData {
             drawing_enabled: false,
             drawing_stamp: false,
             call_active: false,
+            capture_stopped_by_hand: false,
             is_camera_on: false,
             is_screensharing: false,
             pending_call_end_acks: 0,

@@ -365,16 +365,20 @@ impl CallCapture {
 
     /// Mark this moment in the transcript and on a frame. False if nothing's being captured.
     pub fn bookmark(&self, label: Option<String>) -> bool {
-        let state = self.state();
-        let Some(recorder) = state.recorder.as_ref() else {
-            return false;
+        // Not with `state` held: the stills thread may be busy, and others need it meanwhile.
+        let (feed, who) = {
+            let state = self.state();
+            let Some(recorder) = state.recorder.as_ref() else {
+                return false;
+            };
+            let who = state.seen.get("local").map(|you| you.name.clone());
+            (recorder.feed(), who)
         };
-        let who = state.seen.get("local").map(|you| you.name.clone());
         let label = label.unwrap_or_else(|| "Bookmark".to_string());
         if let Some(moments) = self.moments().as_mut() {
             moments.bookmark(who.clone(), &label);
         }
-        recorder.feed().bookmark(who, label);
+        feed.bookmark(who, label);
         true
     }
 
@@ -397,7 +401,7 @@ impl CallCapture {
             Ok(Ok(id)) => {
                 let capture = self.clone();
                 tokio::spawn(async move {
-                    tell_the_call(local).await;
+                    tell_the_call(local, true).await;
                     capture.listen(&id);
                 });
             }
@@ -484,9 +488,29 @@ impl CallCapture {
         state.seen = now;
     }
 
-    /// A full reconnect comes back without the attribute, while the capture goes on.
+    /// A full reconnect comes back without the attribute, while the capture goes on. And a
+    /// stop told while the connection was down never got through, so others still see it.
     pub fn tell_the_call_again(&self, local: LocalParticipant) {
-        tokio::spawn(tell_the_call(local));
+        let capturing = self.is_capturing();
+        let they_think_so = local
+            .attributes()
+            .get(CAPTURE_ATTRIBUTE)
+            .is_some_and(|value| !value.is_empty());
+        if capturing || they_think_so {
+            tokio::spawn(tell_the_call(local, capturing));
+        }
+    }
+
+    /// Stop capturing because you said so, and tell the call. Only starting by hand, or the
+    /// next call, captures again: a reconnect leaves it stopped.
+    pub fn stop_by_hand(&self, local: Option<LocalParticipant>) {
+        if !self.is_capturing() {
+            return;
+        }
+        self.stop();
+        if let Some(local) = local {
+            tokio::spawn(tell_the_call(local, false));
+        }
     }
 
     /// Stop capturing. Leaving a call never waits for its transcript: the last words finish
@@ -540,10 +564,11 @@ pub fn wait_for_finishing() {
     log::error!("Capture: quitting before its last words finished");
 }
 
-/// Lets others in the call show that it's being captured, before a word of it is heard.
-/// Best effort, as on Linux: the capture goes ahead either way.
-async fn tell_the_call(local: LocalParticipant) {
-    let attributes = HashMap::from([(CAPTURE_ATTRIBUTE.to_string(), "1".to_string())]);
+/// Lets others in the call show that it's being captured, before a word of it is heard, or
+/// that it no longer is. Best effort, as on Linux: the capture goes ahead either way.
+async fn tell_the_call(local: LocalParticipant, capturing: bool) {
+    let value = if capturing { "1" } else { "" };
+    let attributes = HashMap::from([(CAPTURE_ATTRIBUTE.to_string(), value.to_string())]);
     match tokio::time::timeout(TELLING_THE_CALL, local.set_attributes(attributes)).await {
         Ok(Ok(())) => {}
         Ok(Err(error)) => log::error!("Capture: telling the call: {error:?}"),
@@ -591,6 +616,13 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn stopping_by_hand_with_nothing_capturing_does_nothing() {
+        let capture = CallCapture::default();
+        capture.stop_by_hand(None);
+        assert!(!capture.is_capturing());
     }
 
     #[test]
@@ -1183,7 +1215,8 @@ mod tests {
             std::thread::sleep(next.saturating_sub(started.elapsed()));
         }
         capture.observe(std::slice::from_ref(&you));
-        capture.stop();
+        capture.stop_by_hand(None);
+        assert!(!capture.is_capturing());
         assert!(!capture.is_capturing());
         assert!(capture.tap().feed().is_none());
         wait_for_finishing();

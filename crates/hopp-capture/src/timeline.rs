@@ -11,6 +11,8 @@
 //!
 //! Pure: the captures window and its tests build it from lines and frame records.
 
+use serde::Serialize;
+
 use crate::{
     frame_files::{FrameInfo, MarkInfo},
     store::{Kind, Line},
@@ -31,7 +33,8 @@ const ECHO_SIMILARITY: f64 = 0.6;
 /// starts the same way ("I just don't know…, but anyway, cool man") is not an echo.
 const ECHO_LENGTHS: f64 = 0.55;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Row {
     /// A join, a share, control changing hands.
     Event {
@@ -105,7 +108,7 @@ pub enum Filter {
     Screen,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Drawing {
     pub t_ms: i64,
     pub end_ms: i64,
@@ -134,7 +137,7 @@ impl Drawing {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Burst {
     pub t_ms: i64,
     pub end_ms: i64,
@@ -380,7 +383,7 @@ fn bursts(frames: &[FrameInfo]) -> Vec<Burst> {
 }
 
 /// The scrubber across the top of a call: who spoke when, drawings and screen bursts.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Overview {
     pub duration_ms: i64,
     /// `(speaker, t_ms, end_ms)`.

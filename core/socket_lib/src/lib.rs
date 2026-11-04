@@ -127,6 +127,8 @@ pub struct CallStartMessage {
     pub audio_device_name: String,
     pub start_mic_on_call: Option<bool>,
     pub start_camera_on_call: Option<bool>,
+    /// Rejoining a call whose capture was stopped by hand: it stays stopped.
+    pub capture_stopped_by_hand: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -274,6 +276,10 @@ pub enum Message {
     MicrophoneSilent(String),
     /// A mic reported through `MicrophoneSilent` is producing sound again.
     MicrophoneRecovered,
+    /// Mark this moment in the capture of the current call, with this label if given.
+    CaptureBookmark(Option<String>),
+    /// Stop capturing the current call. It stays stopped until the next call.
+    CaptureStop,
 }
 
 impl Message {
@@ -672,6 +678,7 @@ mod tests {
                 audio_device_name: String::new(),
                 start_mic_on_call: None,
                 start_camera_on_call: None,
+                capture_stopped_by_hand: false,
             }))
             .unwrap();
         client_sender.send(Message::CallEnd).unwrap();
