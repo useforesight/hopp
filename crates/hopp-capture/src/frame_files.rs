@@ -96,7 +96,7 @@ pub struct FrameInfo {
     pub ink: Vec<MarkInfo>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MarkInfo {
     pub by: String,
     /// `circle`, `underline`, `line`, `stroke` or `pin`.

@@ -53,3 +53,7 @@ runs that through the real recorder and helper, and `what_a_still_costs` and `wh
 it. On an Apple M5: 1.46 µs per video frame at worst when not capturing; a 5120x2880 frame costs
 the video thread a median of 680 µs (worst 3.8 ms, debug build) when a still is wanted; a 2560x1440
 still takes 182 ms on its own thread (release).
+
+`browse` is what the Mac's captures window reads: the list, a call's rows and pictures, and what
+changed since it last looked, all from the store and the frame files. Its rules are tested here;
+the window itself is in `tauri/src/windows/captures/`.

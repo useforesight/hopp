@@ -152,6 +152,7 @@ pub struct CreateRoomParams {
     pub noise_cancellation_enabled: Arc<AtomicBool>,
     pub start_mic_on_call: bool,
     pub start_camera_on_call: bool,
+    pub capture_stopped_by_hand: bool,
 }
 
 enum RoomServiceCommand {
@@ -182,6 +183,8 @@ enum RoomServiceCommand {
     PublishClipboardData(ClipboardDataPayload),
     PublishClickAnimation(ClientPoint),
     PublishStamp(StampMessage),
+    CaptureBookmark(Option<String>),
+    CaptureStop,
     PublishAppVeilSnapshot { force: bool },
 }
 
@@ -219,6 +222,8 @@ impl std::fmt::Debug for RoomServiceCommand {
             Self::PublishClipboardData(..) => write!(f, "PublishClipboardData"),
             Self::PublishClickAnimation(..) => write!(f, "PublishClickAnimation"),
             Self::PublishStamp(..) => write!(f, "PublishStamp"),
+            Self::CaptureBookmark(..) => write!(f, "CaptureBookmark"),
+            Self::CaptureStop => write!(f, "CaptureStop"),
             Self::PublishAppVeilSnapshot { force } => {
                 write!(f, "PublishAppVeilSnapshot {{ force: {force} }}")
             }
@@ -598,6 +603,20 @@ impl RoomService {
     /// For the share's video path, whose frames go into the capture.
     pub fn call_capture(&self) -> CallCapture {
         self.inner.call_capture.clone()
+    }
+
+    /// Mark this moment in the capture, if there is one.
+    pub fn bookmark_capture(&self, label: Option<String>) {
+        let _ = self
+            .service_command_tx
+            .send(RoomServiceCommand::CaptureBookmark(label));
+    }
+
+    /// Stop capturing this call and tell the call. Nothing starts it again until the next one.
+    pub fn stop_capture(&self) {
+        let _ = self
+            .service_command_tx
+            .send(RoomServiceCommand::CaptureStop);
     }
 
     pub fn get_participants(&self) -> Vec<ParticipantData> {
@@ -1021,6 +1040,7 @@ async fn room_service_commands(
                 noise_cancellation_enabled,
                 start_mic_on_call,
                 start_camera_on_call,
+                capture_stopped_by_hand,
             }) => {
                 log::info!("room_service_commands: CreateRoom");
                 let total_connect_start = Instant::now();
@@ -1388,14 +1408,16 @@ async fn room_service_commands(
                     tokio::spawn(drain_video_room_events(video_rx));
                     log::info!("room_service_commands: Spawned video_room event drainer");
                 }
-                inner
-                    .call_capture
-                    .auto_start(
-                        room_name,
-                        local_participant,
-                        inner.snapshot_sender.build_snapshot(),
-                    )
-                    .await;
+                if !capture_stopped_by_hand {
+                    inner
+                        .call_capture
+                        .auto_start(
+                            room_name,
+                            local_participant,
+                            inner.snapshot_sender.build_snapshot(),
+                        )
+                        .await;
+                }
             }
             RoomServiceCommand::DestroyRoom => {
                 if let Some(task) = stats_task.take() {
@@ -1938,6 +1960,20 @@ async fn room_service_commands(
                 if let Err(e) = res {
                     log::error!("room_service_commands: Failed to publish click animation: {e:?}");
                 }
+            }
+            // A frame can wait for room in the frames thread's queue.
+            RoomServiceCommand::CaptureBookmark(label) => {
+                let capture = inner.call_capture.clone();
+                tokio::task::spawn_blocking(move || capture.bookmark(label));
+            }
+            RoomServiceCommand::CaptureStop => {
+                let local = inner
+                    .room
+                    .lock()
+                    .await
+                    .as_ref()
+                    .map(|room| room.local_participant());
+                inner.call_capture.stop_by_hand(local);
             }
             RoomServiceCommand::PublishStamp(message) => {
                 let inner_room = inner.room.lock().await;
@@ -3172,12 +3208,10 @@ async fn handle_room_events(ctx: RoomEventContext) {
             RoomEvent::Reconnected => {
                 let _ = service_command_tx
                     .send(RoomServiceCommand::PublishAppVeilSnapshot { force: true });
-                if inner.call_capture.is_capturing() {
-                    if let Some(room) = inner.room.lock().await.as_ref() {
-                        inner
-                            .call_capture
-                            .tell_the_call_again(room.local_participant());
-                    }
+                if let Some(room) = inner.room.lock().await.as_ref() {
+                    inner
+                        .call_capture
+                        .tell_the_call_again(room.local_participant());
                 }
             }
             // Removed from the room, or reconnecting failed: the call is over here, even

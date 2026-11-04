@@ -7,6 +7,7 @@ import {
   HiOutlineArrowRightOnRectangle,
   HiOutlineBugAnt,
   HiOutlineComputerDesktop,
+  HiOutlineChatBubbleBottomCenterText,
   HiOutlineCog6Tooth,
   HiOutlineLockOpen,
   HiOutlineMinus,
@@ -435,6 +436,10 @@ export const Sidebar = () => {
               <DropdownMenuItem onClick={() => openUrl(Constants.webAppUrl)}>
                 <HiOutlineUserCircle />
                 Profile
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => tauriUtils.openCapturesWindow()}>
+                <HiOutlineChatBubbleBottomCenterText />
+                Captures
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => tauriUtils.openSettingsWindow()}>
                 <HiOutlineCog6Tooth />

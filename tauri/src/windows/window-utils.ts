@@ -227,6 +227,16 @@ const setCallFeedbackPopup = async (enabled: boolean): Promise<void> => {
   await invoke("set_call_feedback_popup", { enabled });
 };
 
+const openCapturesWindow = async (): Promise<void> => {
+  if (isTauri) {
+    try {
+      await invoke("create_captures_window");
+    } catch (error) {
+      console.error("Failed to open captures window:", error);
+    }
+  }
+};
+
 const openSettingsWindow = async (): Promise<void> => {
   if (isTauri) {
     try {
@@ -338,6 +348,7 @@ export const tauriUtils = {
   loadCustomServerUrl,
   setHoppServerUrl,
   setCallFeedbackPopup,
+  openCapturesWindow,
   openSettingsWindow,
   createFeedbackWindow,
   showFeedbackWindowIfEnabled,

@@ -539,6 +539,7 @@ fn call_started(
             audio_device_name,
             start_mic_on_call: Some(mic_on.unwrap_or(user_settings.start_mic_on_call)),
             start_camera_on_call: Some(camera_on.unwrap_or(user_settings.start_camera_on_call)),
+            capture_stopped_by_hand: data.capture_stopped_by_hand,
         }))
     {
         log::error!("call_started: failed to send: {e:?}");
@@ -650,6 +651,57 @@ async fn create_feedback_window(
             background_color: Some(tauri::webview::Color(0, 0, 0, 0)),
         },
     )
+}
+
+/// Hidden from shares: what was said on a call is no one else's to read over your shoulder.
+#[tauri::command(async)]
+async fn create_captures_window(app: tauri::AppHandle) -> Result<(), String> {
+    log::info!("create_captures_window");
+    hopp::create_media_window(
+        &app,
+        hopp::MediaWindowConfig {
+            label: "captures",
+            title: "Hopp captures",
+            url: "captures.html",
+            width: 1180.0,
+            height: 820.0,
+            resizable: true,
+            always_on_top: false,
+            content_protected: true,
+            maximizable: true,
+            minimizable: true,
+            decorations: true,
+            transparent: false,
+            background_color: None,
+        },
+    )?;
+    if let Some(window) = app.get_webview_window("captures") {
+        if let Err(e) = window.set_min_size(Some(tauri::LogicalSize::new(360.0, 320.0))) {
+            log::warn!("create_captures_window: minimum size: {e}");
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command(async)]
+fn captures_bookmark(app: tauri::AppHandle) {
+    log::info!("captures_bookmark");
+    let data = app.state::<Mutex<AppData>>();
+    let data = data.lock().unwrap();
+    if let Err(e) = data.sender.send(Message::CaptureBookmark(None)) {
+        log::error!("captures_bookmark: failed to send message: {e:?}");
+    }
+}
+
+#[tauri::command(async)]
+fn captures_stop(app: tauri::AppHandle) {
+    log::info!("captures_stop");
+    let data = app.state::<Mutex<AppData>>();
+    let mut data = data.lock().unwrap();
+    data.capture_stopped_by_hand = data.call_active;
+    if let Err(e) = data.sender.send(Message::CaptureStop) {
+        log::error!("captures_stop: failed to send message: {e:?}");
+    }
 }
 
 #[tauri::command(async)]
@@ -1127,6 +1179,7 @@ fn end_call(app: tauri::AppHandle) {
         log::error!("end_call: failed to send: {e:?}");
     }
     data.call_active = false;
+    data.capture_stopped_by_hand = false;
     data.is_camera_on = false;
     data.is_screensharing = false;
     #[cfg(target_os = "macos")]
@@ -1198,6 +1251,7 @@ fn forward_core_events(events_rx: std_mpsc::Receiver<Message>, app: tauri::AppHa
                     continue;
                 }
                 data.call_active = false;
+                data.capture_stopped_by_hand = false;
                 data.is_camera_on = false;
                 data.is_screensharing = false;
                 #[cfg(target_os = "macos")]
@@ -1711,7 +1765,17 @@ fn main() {
                 }
             }
         })
+        .manage(hopp::captures::Captures::default())
         .invoke_handler(tauri::generate_handler![
+            create_captures_window,
+            captures_bookmark,
+            captures_stop,
+            hopp::captures::captures_list,
+            hopp::captures::captures_open,
+            hopp::captures::captures_poll,
+            hopp::captures::captures_frame,
+            hopp::captures::captures_delete,
+            hopp::captures::captures_open_markdown,
             stop_sharing,
             get_available_content,
             store_token_cmd,

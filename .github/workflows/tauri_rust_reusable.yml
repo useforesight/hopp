@@ -27,6 +27,8 @@ jobs:
           filters: |
             tauri:
               - 'tauri/src-tauri/**'
+              - 'crates/**'
+              - 'core/socket_lib/**'
       - run: |
           echo "Last commit:"
           git --no-pager log --decorate=short --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cr) %C(bold blue)<%an>%Creset' -n1
