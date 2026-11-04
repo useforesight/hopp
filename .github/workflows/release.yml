@@ -23,6 +23,10 @@ on:
         default: ""
         type: string
 
+# cargo's own git client stalls and gives up fetching big repositories on the Mac runners.
+env:
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
 jobs:
   prepare-notes:
     runs-on: ubuntu-latest
