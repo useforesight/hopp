@@ -10,7 +10,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use hopp_capture::moments::{
-    DrawEvent, Moments, PathPoint, Point, Sampler, VideoFrame, AGENT_EDGE,
+    DrawEvent, DrawingMode, Moments, OwnWindows, PathPoint, Point, Sampler, VideoFrame, AGENT_EDGE,
 };
 use hopp_capture::recorder::{self, Recorder, Speaker};
 use hopp_capture::{config, hooks, liveness, models, store, Tap};
@@ -133,6 +133,12 @@ fn draw_event(event: &ClientEvent) -> Option<DrawEvent> {
         ClientEvent::DrawEnd(point) => DrawEvent::DrawEnd(at(point)),
         ClientEvent::DrawClearPath { path_id } => DrawEvent::DrawClearPath { path_id: *path_id },
         ClientEvent::DrawClearAllPaths => DrawEvent::DrawClearAllPaths,
+        ClientEvent::DrawingMode(crate::room_service::DrawingMode::Draw(settings)) => {
+            DrawEvent::DrawingMode(DrawingMode::Draw {
+                permanent: settings.permanent,
+            })
+        }
+        ClientEvent::DrawingMode(_) => DrawEvent::DrawingMode(DrawingMode::Off),
         ClientEvent::ClickAnimation(point) => DrawEvent::ClickAnimation(at(point)),
         _ => return None,
     })
@@ -230,6 +236,8 @@ struct Stills {
     converting: AtomicBool,
     /// Counts changes of the shared screen, to drop a copy of the old one still on its way.
     screen: AtomicU64,
+    /// Finds Hopp's windows on the screen you share, for a capture that starts during it.
+    own_windows: Mutex<Option<OwnWindows>>,
 }
 
 /// Held while a copy of the screen is being converted, however that ends.
@@ -333,11 +341,17 @@ impl CallCapture {
     }
 
     /// The shared screen started, stopped or changed hands. Say so before its first frame,
-    /// which is the only one if the screen stays still.
-    pub fn screen_changed(&self) {
+    /// which is the only one if the screen stays still. `own_windows` finds Hopp's windows
+    /// on it, when it's your whole display.
+    pub fn screen_changed(&self, own_windows: Option<OwnWindows>) {
         self.stills.screen.fetch_add(1, Ordering::AcqRel);
+        *self
+            .stills
+            .own_windows
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = own_windows.clone();
         if let Some(moments) = self.moments().as_mut() {
-            moments.screen_changed();
+            moments.screen_changed(own_windows);
         }
     }
 
@@ -481,6 +495,11 @@ impl CallCapture {
         match Moments::start(&id, feed) {
             Ok(mut moments) => {
                 moments.people(everyone(own_identity, &seen));
+                let own_windows = self.stills.own_windows.lock();
+                let own_windows = own_windows.unwrap_or_else(PoisonError::into_inner).clone();
+                if own_windows.is_some() {
+                    moments.screen_changed(own_windows);
+                }
                 *self.moments() = Some(moments);
             }
             Err(error) => log::error!("Capture {id}: no screen frames: {error:#}"),
@@ -906,6 +925,18 @@ mod tests {
                 Some(DrawEvent::DrawClearAllPaths),
             ),
             (
+                ClientEvent::DrawingMode(crate::room_service::DrawingMode::Draw(
+                    crate::room_service::DrawSettings { permanent: true },
+                )),
+                Some(DrawEvent::DrawingMode(DrawingMode::Draw {
+                    permanent: true,
+                })),
+            ),
+            (
+                ClientEvent::DrawingMode(crate::room_service::DrawingMode::Disabled),
+                Some(DrawEvent::DrawingMode(DrawingMode::Off)),
+            ),
+            (
                 ClientEvent::ClickAnimation(point()),
                 Some(DrawEvent::ClickAnimation(at)),
             ),
@@ -946,7 +977,7 @@ mod tests {
     fn marks_on_a_still_screen_still_get_a_frame() -> anyhow::Result<()> {
         let (capture, directory) = capture_with_moments("still");
         capture.stills.watching.store(true, Ordering::Relaxed);
-        capture.screen_changed();
+        capture.screen_changed(None);
         capture.offer_screen(&slide(800, 500, RED));
         std::thread::sleep(Duration::from_millis(300));
         capture.mark(
@@ -969,9 +1000,9 @@ mod tests {
         let (capture, directory) = capture_with_moments("old");
         capture.stills.watching.store(true, Ordering::Relaxed);
         for _ in 0..50 {
-            capture.moments().as_mut().unwrap().screen_changed();
+            capture.moments().as_mut().unwrap().screen_changed(None);
             capture.offer_screen(&slide(2560, 1440, RED));
-            capture.screen_changed();
+            capture.screen_changed(None);
             while capture.stills.converting.load(Ordering::Acquire) {
                 std::thread::yield_now();
             }
@@ -1003,7 +1034,7 @@ mod tests {
         capture.stills.watching.store(true, Ordering::Relaxed);
         let mut copying = Vec::new();
         for _ in 0..8 {
-            capture.moments().as_mut().unwrap().screen_changed();
+            capture.moments().as_mut().unwrap().screen_changed(None);
             std::thread::sleep(Duration::from_millis(120));
             let started = Instant::now();
             capture.offer_screen(&screen);
@@ -1073,7 +1104,7 @@ mod tests {
             }
             match index {
                 50 => {
-                    capture.screen_changed();
+                    capture.screen_changed(None);
                     capture.observe(&[you(true), them.clone()]);
                 }
                 200 => capture.mark(
@@ -1147,7 +1178,7 @@ mod tests {
             let next = Duration::from_millis(10) * (index as u32 + 1);
             std::thread::sleep(next.saturating_sub(started.elapsed()));
         }
-        capture.screen_changed();
+        capture.screen_changed(None);
         capture.observe(&[you(false), them]);
         capture.stop();
         assert!(!capture.bookmark(None), "bookmarked after the capture");

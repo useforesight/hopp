@@ -1713,6 +1713,7 @@ async fn room_service_commands(
                 let room = room.as_ref().unwrap();
                 let local_participant = room.local_participant();
                 let event = ClientEvent::DrawingMode(mode);
+                inner.call_capture.own_mark(&local_participant, &event);
                 let payload = serde_json::to_vec(&event).unwrap();
                 let res = local_participant
                     .publish_data(DataPacket {
@@ -2374,7 +2375,7 @@ fn start_remote_screen_share_stream(
         std::sync::mpsc::channel::<crate::window::screensharing_window::RedrawCommand>();
     let redraw_rx = std::sync::Arc::new(std::sync::Mutex::new(Some(redraw_rx)));
 
-    call_capture.screen_changed();
+    call_capture.screen_changed(None);
     tokio::spawn(process_video_stream(
         video_track,
         manager,
@@ -2774,7 +2775,7 @@ async fn handle_room_events(ctx: RoomEventContext) {
                         .unwrap()
                         .take();
                     remote_screen_share.app_veil_snapshot.lock().unwrap().take();
-                    inner.call_capture.screen_changed();
+                    inner.call_capture.screen_changed(None);
                     if let Err(error) =
                         event_loop_proxy.send_event(UserEvent::CloseScreenShareWindow)
                     {
@@ -2934,7 +2935,7 @@ async fn handle_room_events(ctx: RoomEventContext) {
                                 .take();
                             remote_screen_share.app_veil_snapshot.lock().unwrap().take();
                         }
-                        inner.call_capture.screen_changed();
+                        inner.call_capture.screen_changed(None);
                         clear_screensharing(&participants, &identity);
                         snapshot_sender.send_participants_snapshot();
 
@@ -3191,7 +3192,7 @@ async fn handle_room_events(ctx: RoomEventContext) {
                                     .unwrap()
                                     .take();
                                 remote_screen_share.app_veil_snapshot.lock().unwrap().take();
-                                inner.call_capture.screen_changed();
+                                inner.call_capture.screen_changed(None);
                                 clear_screensharing(&participants, &participant_identity);
                                 snapshot_sender.send_participants_snapshot();
 
