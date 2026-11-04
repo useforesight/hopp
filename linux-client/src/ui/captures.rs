@@ -18,7 +18,7 @@ use std::{
 };
 
 use gpui_kit::{
-    AnyElement, App, AppContext, Bounds, ClipboardItem, Context, Entity, FontWeight,
+    AnyElement, App, AppContext, Bounds, ClipboardItem, Context, Entity, FocusHandle, FontWeight,
     HighlightStyle, Hsla, ImageCache, ImageCacheError, ImageCacheItem, InteractiveElement,
     IntoElement, ListAlignment, ListOffset, ListState, ObjectFit, ParentElement, Pixels, Render,
     RenderImage, Resource, SharedString, StatefulInteractiveElement, Styled, StyledImage,
@@ -86,6 +86,9 @@ pub struct CapturesView {
     lit: Option<(u32, Vec<usize>)>,
     /// The picture open full size, as an index into `gallery`.
     viewing: Option<usize>,
+    /// The window's own keys (arrows through pictures, Escape) need focus here: with
+    /// nothing focused, Hopp's key handler never hears them.
+    focus: FocusHandle,
     images: Entity<FrameImages>,
     scrubber: Rc<Cell<Bounds<Pixels>>>,
     /// Narrow window: show the list instead of the timeline.
@@ -179,7 +182,9 @@ impl CapturesView {
             copied: None,
             last_list: Instant::now(),
             live_id,
+            focus: cx.focus_handle(),
         };
+        view.focus.focus(window, cx);
         view.reload_list(cx);
         let first = view
             .live_id
@@ -1261,9 +1266,8 @@ impl CapturesView {
             .id(SharedString::from(format!("picture-{frame}")))
             .cursor_pointer()
             .child(picture)
-            .on_click(cx.listener(move |view, _, _, cx| {
-                view.viewing = index;
-                cx.notify();
+            .on_click(cx.listener(move |view, _, window, cx| {
+                view.open_picture(index, window, cx);
             }));
         div()
             .rounded(px(12.))
@@ -1451,9 +1455,8 @@ impl CapturesView {
                             .text_color(theme.secondary.opacity(0.75))
                             .child(store::clock(t_ms)),
                     )
-                    .on_click(cx.listener(move |view, _, _, cx| {
-                        view.viewing = index;
-                        cx.notify();
+                    .on_click(cx.listener(move |view, _, window, cx| {
+                        view.open_picture(index, window, cx);
                     })),
             );
         }
@@ -1556,9 +1559,8 @@ impl CapturesView {
                             .size_full()
                             .object_fit(ObjectFit::Cover),
                     )
-                    .on_click(cx.listener(move |view, _, _, cx| {
-                        view.viewing = Some(offset);
-                        cx.notify();
+                    .on_click(cx.listener(move |view, _, window, cx| {
+                        view.open_picture(Some(offset), window, cx);
                     })),
             );
         }
@@ -1638,6 +1640,14 @@ impl CapturesView {
             )
             .child(strip)
             .into_any_element()
+    }
+
+    /// Open a picture full size, taking the keyboard from the search boxes so the arrows
+    /// step through pictures instead of moving a text cursor.
+    fn open_picture(&mut self, index: Option<usize>, window: &mut Window, cx: &mut Context<Self>) {
+        self.viewing = index;
+        self.focus.focus(window, cx);
+        cx.notify();
     }
 
     fn step_viewer(&mut self, by: isize, cx: &mut Context<Self>) {
@@ -1728,6 +1738,7 @@ impl Render for CapturesView {
             .text_color(theme.foreground)
             .font_family(theme.font.clone())
             .text_size(px(12.5))
+            .track_focus(&self.focus)
             .on_key_down(
                 cx.listener(move |view, event: &gpui_kit::KeyDownEvent, window, cx| {
                     let key = event.keystroke.key.as_str();
