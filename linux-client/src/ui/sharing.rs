@@ -1,6 +1,11 @@
 //! While you share, a small pill under the bar says so, says who can control your
-//! screen, and offers Draw (on your own screen, see `drawpad`), Revoke and Stop. It is a layer-shell surface excluded from screen
-//! sharing by Hopp's Hyprland rules, so viewers never see it.
+//! screen, and offers Draw (on your own screen, see `drawpad`), Revoke and Stop.
+//!
+//! It is the one control you see while you share. When you draw, it turns into the
+//! drawing bar (Keep ink, Undo, Clear, Done) rather than a second overlay appearing: the
+//! draw pad underneath only catches the pen, with a hole where this pill is. It is a
+//! layer-shell surface on the shared monitor, excluded from screen sharing by Hopp's
+//! Hyprland rules, so viewers never see it.
 use gpui_kit::{
     AppContext, Bounds, Context, Entity, FontWeight, IntoElement, ParentElement, Render,
     StatefulInteractiveElement, Styled, Window, WindowHandle, div,
@@ -15,8 +20,11 @@ use super::{
     style::{self, Tone},
 };
 
-pub const WIDTH: f32 = 520.;
+/// The pill's window: wide enough for the drawing bar; the pill is centred in it.
+pub const WIDTH: f32 = 600.;
 pub const HEIGHT: f32 = 40.;
+/// Below the top of the usable area (under the bar).
+pub const MARGIN: f32 = 38.;
 
 pub struct SharingView {
     session: Entity<Session>,
@@ -43,97 +51,134 @@ impl Render for SharingView {
             .as_deref()
             .map(|grant| session.name_for(grant));
         let viewers = session.participants.len();
-        let drawing = session.drawing;
-        let keep_ink = session.keep_ink;
         // A window share has no fixed place on screen to draw over.
         let can_draw = session
             .share_target
             .as_ref()
             .is_some_and(|target| target.output_name.is_some());
-        div().size_full().flex().justify_center().child(
-            div()
-                .h_full()
-                .flex()
-                .items_center()
-                .gap(px(10.))
-                .pl(px(12.))
-                .pr(px(5.))
-                .rounded(px(HEIGHT / 2.))
-                .bg(theme.background)
-                .border_1()
-                .border_color(theme.danger)
-                .text_color(theme.foreground)
-                .font_family(theme.font.clone())
-                .text_size(px(12.))
-                .child(div().size(px(8.)).rounded_full().bg(theme.danger))
-                .child(
-                    div()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme.bright)
-                        .child(output),
-                )
-                .child(style::muted_text(
-                    match (&controller, viewers) {
-                        (Some(name), _) => format!("{name} has control"),
-                        (None, 1) => "1 viewer".to_owned(),
-                        (None, count) => format!("{count} viewers"),
-                    },
+        let drawing = session.drawing && can_draw;
+        let keep_ink = session.keep_ink;
+        let has_ink = session
+            .paths
+            .iter()
+            .any(|path| path.sender.is_empty() && path.fading.is_none());
+        let edge = if drawing { theme.accent } else { theme.danger };
+        let chip = |id: &'static str, label: &'static str, glyph, tone, cx: &Context<Self>| {
+            style::chip(id, label, glyph, tone, cx).rounded(px(12.))
+        };
+        let pill = div()
+            .h_full()
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .pl(px(12.))
+            .pr(px(5.))
+            .rounded(px(HEIGHT / 2.))
+            .bg(theme.background)
+            .border_1()
+            .border_color(edge)
+            .text_color(theme.foreground)
+            .font_family(theme.font.clone())
+            .text_size(px(12.))
+            .child(div().size(px(8.)).rounded_full().bg(edge));
+        let pill = if drawing {
+            // The drawing bar: what you can do while drawing, and how to stop.
+            pill.child(
+                div()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.bright)
+                    .child("Drawing"),
+            )
+            .child(style::muted_text("Esc to stop", cx))
+            .child(
+                chip(
+                    "keep",
+                    "Keep ink",
+                    Some(IconName::Pin),
+                    if keep_ink { Tone::On } else { Tone::Plain },
                     cx,
-                ))
-                .when(can_draw, |pill| {
-                    pill.child(
-                        style::chip(
-                            "draw",
-                            if drawing { "Drawing" } else { "Draw" },
-                            Some(IconName::Pencil),
-                            if drawing { Tone::On } else { Tone::Plain },
-                            cx,
-                        )
-                        .rounded(px(12.))
-                        .on_click(cx.listener(|view, _, _, cx| {
+                )
+                .on_click(cx.listener(|view, _, _, cx| {
+                    view.session
+                        .update(cx, |session, cx| session.toggle_keep_ink(cx))
+                })),
+            )
+            .child(
+                chip("undo", "Undo", Some(IconName::Undo2), Tone::Plain, cx)
+                    .when(!has_ink, |chip| chip.opacity(0.5))
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.session
+                            .update(cx, |session, cx| session.undo_stroke(cx))
+                    })),
+            )
+            .child(
+                chip("clear", "Clear", Some(IconName::Eraser), Tone::Plain, cx)
+                    .when(!has_ink, |chip| chip.opacity(0.5))
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.session
+                            .update(cx, |session, cx| session.clear_own_drawings(cx))
+                    })),
+            )
+            .child(
+                chip("done", "Done", Some(IconName::Check), Tone::On, cx).on_click(cx.listener(
+                    |view, _, _, cx| {
+                        view.session
+                            .update(cx, |session, cx| session.toggle_drawing(cx))
+                    },
+                )),
+            )
+        } else {
+            pill.child(
+                div()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.bright)
+                    .child(output),
+            )
+            .child(style::muted_text(
+                match (&controller, viewers) {
+                    (Some(name), _) => format!("{name} has control"),
+                    (None, 1) => "1 viewer".to_owned(),
+                    (None, count) => format!("{count} viewers"),
+                },
+                cx,
+            ))
+            .when(can_draw, |pill| {
+                pill.child(
+                    chip("draw", "Draw", Some(IconName::Pencil), Tone::Plain, cx).on_click(
+                        cx.listener(|view, _, _, cx| {
                             view.session
                                 .update(cx, |session, cx| session.toggle_drawing(cx))
-                        })),
-                    )
-                })
-                .when(can_draw && drawing, |pill| {
-                    pill.child(
-                        style::chip(
-                            "keep",
-                            "Keep ink",
-                            Some(IconName::Pin),
-                            if keep_ink { Tone::On } else { Tone::Plain },
-                            cx,
-                        )
-                        .rounded(px(12.))
-                        .on_click(cx.listener(|view, _, _, cx| {
-                            view.session
-                                .update(cx, |session, cx| session.toggle_keep_ink(cx))
-                        })),
-                    )
-                })
-                .when(controller.is_some(), |pill| {
-                    pill.child(
-                        style::chip("revoke", "Revoke", Some(IconName::Hand), Tone::Plain, cx)
-                            .rounded(px(12.))
-                            .on_click(cx.listener(|view, _, _, cx| {
-                                view.session.update(cx, |session, cx| session.revoke(cx))
-                            })),
-                    )
-                })
-                .child(
-                    style::chip("stop", "Stop", None, Tone::Danger, cx)
-                        .rounded(px(12.))
-                        .on_click(cx.listener(|view, _, _, cx| {
-                            view.session
-                                .update(cx, |session, cx| session.toggle_share(false, cx))
-                        })),
-                ),
-        )
+                        }),
+                    ),
+                )
+            })
+            .when(controller.is_some(), |pill| {
+                pill.child(
+                    chip("revoke", "Revoke", Some(IconName::Hand), Tone::Plain, cx).on_click(
+                        cx.listener(|view, _, _, cx| {
+                            view.session.update(cx, |session, cx| session.revoke(cx))
+                        }),
+                    ),
+                )
+            })
+        };
+        div().size_full().flex().justify_center().child(pill.child(
+            chip("stop", "Stop", None, Tone::Danger, cx).on_click(cx.listener(|view, _, _, cx| {
+                view.session
+                    .update(cx, |session, cx| session.toggle_share(false, cx))
+            })),
+        ))
     }
 }
 
-pub fn open(session: Entity<Session>, cx: &mut gpui_kit::App) -> Option<WindowHandle<SharingView>> {
+/// Open the pill on the monitor being shared (`target`), or the focused one for a
+/// window share.
+pub fn open(
+    session: Entity<Session>,
+    target: Option<&crate::screencast::CaptureTarget>,
+    cx: &mut gpui_kit::App,
+) -> Option<WindowHandle<SharingView>> {
+    let display_id = target.and_then(|target| super::overlay::shared_display(target, cx));
     let options = gpui_kit::WindowOptions {
         window_bounds: Some(gpui_kit::WindowBounds::Windowed(Bounds {
             origin: Default::default(),
@@ -145,9 +190,10 @@ pub fn open(session: Entity<Session>, cx: &mut gpui_kit::App) -> Option<WindowHa
             anchor: Anchor::TOP,
             exclusive_zone: None,
             exclusive_edge: None,
-            margin: Some((px(38.), px(0.), px(0.), px(0.))),
+            margin: Some((px(MARGIN), px(0.), px(0.), px(0.))),
             keyboard_interactivity: KeyboardInteractivity::None,
         }),
+        display_id: display_id.flatten(),
         app_id: Some("hopp.sharing".into()),
         focus: false,
         window_background: gpui_kit::WindowBackgroundAppearance::Transparent,

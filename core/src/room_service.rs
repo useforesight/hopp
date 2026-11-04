@@ -14,7 +14,7 @@ use tokio::runtime::Handle as TokioHandle;
 
 use crate::audio::mixer::SharedProcessor;
 use crate::livekit::audio::AudioPublisher;
-use crate::livekit::participant::ParticipantInfo;
+use crate::livekit::participant::{capturing_from, ParticipantInfo, CAPTURE_ATTRIBUTE};
 use crate::livekit::video::{process_video_stream, VideoBufferManager};
 
 use serde::{Deserialize, Serialize};
@@ -3117,6 +3117,22 @@ async fn handle_room_events(ctx: RoomEventContext) {
             RoomEvent::Reconnected => {
                 let _ = service_command_tx
                     .send(RoomServiceCommand::PublishAppVeilSnapshot { force: true });
+            }
+            // Someone started or stopped capturing (transcribing) the call.
+            RoomEvent::ParticipantAttributesChanged {
+                participant,
+                changed_attributes,
+            } if changed_attributes.contains_key(CAPTURE_ATTRIBUTE) => {
+                let identity = participant.identity().as_str().to_string();
+                let capturing = capturing_from(&participant.attributes());
+                log::info!("handle_room_events: {identity} capturing: {capturing}");
+                {
+                    let mut participants_guard = participants.write().unwrap();
+                    if let Some(info) = participants_guard.get_mut(&identity) {
+                        info.set_capturing(capturing);
+                    }
+                }
+                snapshot_sender.send_participants_snapshot();
             }
             _ => {}
         }

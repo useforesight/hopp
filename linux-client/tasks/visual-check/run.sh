@@ -84,10 +84,12 @@ shot peek-tile     1582 1312 --scene peek --people 2
 # You're sharing: others' marks over your monitor.
 shot marks         1728 1080 --scene marks --people 3
 # You're sharing: pill under the bar.
-shot sharing       520  40  --scene sharing --people 2
+shot sharing       600  40  --scene sharing --people 2
+# Drawing on your own screen: the same pill as the drawing bar.
+shot sharing-draw  600  40  --scene sharing-draw --people 2
 # Incoming call card.
 shot call          360  92  --scene call
-# Drawing on your own shared screen: the pad's hint under the (absent) sharing pill.
+# Drawing on your own shared screen: the pad itself, which shows nothing.
 shot drawpad       1280 720 --scene drawpad
 # Agent cards: a question on top, two notices, one waiting behind "+1 more".
 shot cards         360  454 --scene cards

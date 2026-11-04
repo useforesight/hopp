@@ -71,6 +71,7 @@
 #include <hyprland/src/output/Monitor.hpp>
 #include <hyprland/src/output/MonitorResources.hpp>
 #include <hyprland/src/helpers/time/Time.hpp>
+#include <hyprland/src/pointer/PointerManager.hpp>
 #undef private
 #undef protected
 
@@ -315,6 +316,12 @@ static void onLastMoment(const PHLMONITOR& mon) {
         if (const auto ls = ref.lock())
             g_pHyprRenderer->renderLayer(ls, mon, now, true);
     }
+    // Hyprland drew the software cursor before this event, so the layers just drawn would
+    // cover it on the frames held here and not on the others: it flickered over Hopp's
+    // pill and ink. Draw it again on top. The share's copy was taken above, as Hyprland
+    // takes it, so this changes only the screen.
+    if (g_pHyprRenderer->shouldRenderCursor())
+        Pointer::mgr()->renderSoftwareCursorsFor(mon, now, g_pHyprRenderer->m_renderData.damage);
     pass.add(makeUnique<CMirrorDoneElement>());
 }
 

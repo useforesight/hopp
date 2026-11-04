@@ -1338,6 +1338,13 @@ impl Worker {
                     }
                     self.transport_ready = true;
                     self.session = Some(connected.session);
+                    // Publish your microphone track muted straight away, so other Hopp
+                    // apps show you as muted rather than as unmuted with no track.
+                    if let Some(session) = self.session.as_mut()
+                        && let Err(error) = session.publish_muted_microphone().await
+                    {
+                        crate::logger::line(format!("publishing muted microphone: {error:#}"));
+                    }
                     self.room = Some(connected.room.clone());
                     self.call_peer = connected.peer;
                     self.emit(Event::Joined(connected.room));
