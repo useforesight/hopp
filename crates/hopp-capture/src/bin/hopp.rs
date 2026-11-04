@@ -12,6 +12,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    #[command(flatten)]
+    App(hopp_capture::cli::AppCommand),
     /// Transcripts of your calls, saved only on this computer.
     Capture {
         #[command(subcommand)]
@@ -45,6 +47,7 @@ fn main() -> Result<()> {
         log::set_max_level(log::LevelFilter::Info);
     }
     match Cli::parse().command {
+        Command::App(command) => hopp_capture::cli::run(command),
         Command::Capture { command } => hopp_capture::commands::run(command),
         Command::Mcp => hopp_capture::mcp::serve(),
     }

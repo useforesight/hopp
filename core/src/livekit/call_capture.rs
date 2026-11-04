@@ -382,15 +382,14 @@ impl CallCapture {
         true
     }
 
-    /// Capture this call if the user chose to capture every call. Off until they do, see
-    /// `config::Config::auto`.
-    pub async fn auto_start(
+    /// Start capturing this call and tell the call, unless it already is.
+    pub async fn start(
         &self,
         room: String,
         local: LocalParticipant,
         snapshot: Vec<CoreParticipantState>,
     ) {
-        if !SUPPORTED || !config::load().auto {
+        if !SUPPORTED || self.is_capturing() {
             return;
         }
         let capture = self.clone();
@@ -555,6 +554,12 @@ impl CallCapture {
             Err(error) => log::error!("Capture: couldn't finish on a new thread: {error}"),
         }
     }
+}
+
+/// Whether a call is captured with nobody asking: only if the user chose to capture every
+/// call. Off until they do, see `config::Config::auto`.
+pub fn wanted_by_default() -> bool {
+    SUPPORTED && config::load().auto
 }
 
 /// Give captures finishing their last words a moment before the process goes.

@@ -127,8 +127,18 @@ pub struct CallStartMessage {
     pub audio_device_name: String,
     pub start_mic_on_call: Option<bool>,
     pub start_camera_on_call: Option<bool>,
-    /// Rejoining a call whose capture was stopped by hand: it stays stopped.
-    pub capture_stopped_by_hand: bool,
+    /// Rejoining a call whose capture was started or stopped by hand: it stays that way.
+    pub capture_by_hand: CaptureByHand,
+}
+
+/// What the user last did to this call's capture. The core can restart in a call and the
+/// choice has to outlive it, so it's kept in the app and handed back on rejoining.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CaptureByHand {
+    #[default]
+    Nothing,
+    Started,
+    Stopped,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -279,6 +289,8 @@ pub enum Message {
     /// Mark this moment in the capture of the current call, with this label if given.
     CaptureBookmark(Option<String>),
     /// Stop capturing the current call. It stays stopped until the next call.
+    /// Start capturing this call: nothing else starts one once it was stopped by hand.
+    CaptureStart,
     CaptureStop,
 }
 
@@ -678,7 +690,7 @@ mod tests {
                 audio_device_name: String::new(),
                 start_mic_on_call: None,
                 start_camera_on_call: None,
-                capture_stopped_by_hand: false,
+                capture_by_hand: CaptureByHand::Nothing,
             }))
             .unwrap();
         client_sender.send(Message::CallEnd).unwrap();

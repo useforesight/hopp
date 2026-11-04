@@ -4,8 +4,8 @@
 use hopp::sounds::{self, SoundConfig};
 use log::LevelFilter;
 use socket_lib::{
-    AudioCaptureMessage, AudioDevice, CameraDevice, DrawingEnabled, Message, ScreenSharePickerMode,
-    ScreenShareResolution, SentryMetadata,
+    AudioCaptureMessage, AudioDevice, CameraDevice, CaptureByHand, DrawingEnabled, Message,
+    ScreenSharePickerMode, ScreenShareResolution, SentryMetadata,
 };
 use std::sync::mpsc as std_mpsc;
 use tauri::Manager;
@@ -24,6 +24,7 @@ use hopp::{
     create_core_process, get_log_level, get_log_path, get_sentry_dsn, permissions, ping_frontend,
     recv_expected_response, setup_start_on_launch, setup_tray_icon, AppData,
 };
+mod app_socket;
 mod shortcuts;
 #[cfg(target_os = "macos")]
 use hopp::{disable_app_nap, set_window_corner_radius_and_decorations, CORNER_RADIUS};
@@ -422,6 +423,22 @@ fn set_drawing_enabled(app: tauri::AppHandle, enabled: bool, permanent: bool, st
     }
 }
 
+/// `hopp draw`: the pen on or off, whichever tool is in hand. The window's button follows it.
+fn toggle_pen(app: &tauri::AppHandle) {
+    let (enabled, permanent) = {
+        let data = app.state::<Mutex<AppData>>();
+        let data = data.lock().unwrap();
+        (
+            !data.drawing_enabled || data.drawing_stamp,
+            data.app_state.sharer_draw_persist(),
+        )
+    };
+    set_drawing_enabled(app.clone(), enabled, permanent, false);
+    if let Err(e) = app.emit_to("main", "drawing_pen_changed", enabled) {
+        log::error!("toggle_pen: failed to emit: {e:?}");
+    }
+}
+
 #[tauri::command(async)]
 fn quit_app(app: tauri::AppHandle) {
     log::info!("quit_app");
@@ -539,7 +556,7 @@ fn call_started(
             audio_device_name,
             start_mic_on_call: Some(mic_on.unwrap_or(user_settings.start_mic_on_call)),
             start_camera_on_call: Some(camera_on.unwrap_or(user_settings.start_camera_on_call)),
-            capture_stopped_by_hand: data.capture_stopped_by_hand,
+            capture_by_hand: data.capture_by_hand,
         }))
     {
         log::error!("call_started: failed to send: {e:?}");
@@ -698,9 +715,25 @@ fn captures_stop(app: tauri::AppHandle) {
     log::info!("captures_stop");
     let data = app.state::<Mutex<AppData>>();
     let mut data = data.lock().unwrap();
-    data.capture_stopped_by_hand = data.call_active;
+    if data.call_active {
+        data.capture_by_hand = CaptureByHand::Stopped;
+    }
     if let Err(e) = data.sender.send(Message::CaptureStop) {
         log::error!("captures_stop: failed to send message: {e:?}");
+    }
+}
+
+#[tauri::command(async)]
+fn captures_start(app: tauri::AppHandle) {
+    log::info!("captures_start");
+    let data = app.state::<Mutex<AppData>>();
+    let mut data = data.lock().unwrap();
+    if !data.call_active {
+        return;
+    }
+    data.capture_by_hand = CaptureByHand::Started;
+    if let Err(e) = data.sender.send(Message::CaptureStart) {
+        log::error!("captures_start: failed to send message: {e:?}");
     }
 }
 
@@ -1179,7 +1212,7 @@ fn end_call(app: tauri::AppHandle) {
         log::error!("end_call: failed to send: {e:?}");
     }
     data.call_active = false;
-    data.capture_stopped_by_hand = false;
+    data.capture_by_hand = CaptureByHand::Nothing;
     data.is_camera_on = false;
     data.is_screensharing = false;
     #[cfg(target_os = "macos")]
@@ -1251,7 +1284,7 @@ fn forward_core_events(events_rx: std_mpsc::Receiver<Message>, app: tauri::AppHa
                     continue;
                 }
                 data.call_active = false;
-                data.capture_stopped_by_hand = false;
+                data.capture_by_hand = CaptureByHand::Nothing;
                 data.is_camera_on = false;
                 data.is_screensharing = false;
                 #[cfg(target_os = "macos")]
@@ -1527,6 +1560,8 @@ fn main() {
             ));
             app.manage(data);
 
+            app_socket::start(app.handle().clone());
+
             // Background thread to forward core events to the frontend
             let event_app_handle = app.handle().clone();
             std::thread::spawn(move || {
@@ -1774,8 +1809,12 @@ fn main() {
             }
         })
         .manage(hopp::captures::Captures::default())
+        .manage(app_socket::AppSocket::default())
         .invoke_handler(tauri::generate_handler![
             create_captures_window,
+            captures_start,
+            app_socket::app_publish_state,
+            app_socket::captures_requested_call,
             captures_bookmark,
             captures_stop,
             hopp::captures::captures_list,

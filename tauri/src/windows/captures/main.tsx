@@ -14,6 +14,7 @@ import {
   HiOutlineTrash,
   HiXMark,
 } from "react-icons/hi2";
+import { listen } from "@tauri-apps/api/event";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { initTheme } from "@/lib/theme";
 import {
@@ -693,11 +694,13 @@ function CapturesWindow() {
       if (!stopped) timer = setTimeout(again, LIST_POLL_MS);
     };
     (async () => {
+      const requested = await typedInvoke("captures_requested_call");
       const listed = await reloadList();
       if (stopped) return;
       const first = listed.find((call) => call.ended_ms === undefined) ?? listed[0];
       lastLive.current = listed.find((call) => call.ended_ms === undefined)?.id;
-      if (first) select(first.id);
+      const which = requested ?? first?.id;
+      if (which) select(which);
       timer = setTimeout(again, LIST_POLL_MS);
     })();
     return () => {
@@ -710,6 +713,17 @@ function CapturesWindow() {
     const timer = setTimeout(reloadList, SEARCH_WAITS_MS);
     return () => clearTimeout(timer);
   }, [query, reloadList]);
+
+  // `hopp capture window <call>` with the window already open.
+  useEffect(() => {
+    const unlisten = listen("captures_call_requested", async () => {
+      const requested = await typedInvoke("captures_requested_call");
+      if (requested) select(requested);
+    });
+    return () => {
+      unlisten.then((stop) => stop());
+    };
+  }, [select]);
 
   // The call being read is no more.
   const showAnother = useCallback(async () => {

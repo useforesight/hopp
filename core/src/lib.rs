@@ -1576,7 +1576,7 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                         noise_cancellation_enabled: self.noise_cancellation_enabled.clone(),
                         start_mic_on_call,
                         start_camera_on_call,
-                        capture_stopped_by_hand: call_start.capture_stopped_by_hand,
+                        capture_by_hand: call_start.capture_by_hand,
                     }) {
                         Ok(_) => {
                             if let Err(e) = self.socket.send(Message::CallStartResult(Ok(()))) {
@@ -2302,6 +2302,12 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                 log::info!("user_event: CaptureBookmark");
                 if let Some(room_service) = self.room_service.as_ref() {
                     room_service.bookmark_capture(label);
+                }
+            }
+            UserEvent::CaptureStart => {
+                log::info!("user_event: CaptureStart");
+                if let Some(room_service) = self.room_service.as_ref() {
+                    room_service.start_capture();
                 }
             }
             UserEvent::CaptureStop => {
@@ -3403,6 +3409,7 @@ pub enum UserEvent {
     UnmuteAudio,
     ToggleMic,
     CaptureBookmark(Option<String>),
+    CaptureStart,
     CaptureStop,
     ListCameras,
     StartCamera {
@@ -3574,6 +3581,7 @@ impl RenderEventLoop {
                     Message::UnmuteAudio => UserEvent::UnmuteAudio,
                     Message::ToggleMic => UserEvent::ToggleMic,
                     Message::CaptureBookmark(label) => UserEvent::CaptureBookmark(label),
+                    Message::CaptureStart => UserEvent::CaptureStart,
                     Message::CaptureStop => UserEvent::CaptureStop,
                     Message::ListCameras => UserEvent::ListCameras,
                     Message::StartCamera(msg) => UserEvent::StartCamera {

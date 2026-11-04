@@ -87,6 +87,17 @@ export const requestCallback = (userId: string) => {
   }, CALLBACK_HANDOFF_MS);
 };
 
+/** `hopp call` during a call: the teammate's row invites them, as its button does. */
+export const requestInvite = (userId: string) => {
+  const { setTab, setInviteUserId } = useStore.getState();
+  setTab("user-list");
+  tauriUtils.showWindow("main");
+  setInviteUserId(userId);
+  setTimeout(() => {
+    if (useStore.getState().inviteUserId === userId) setInviteUserId(null);
+  }, CALLBACK_HANDOFF_MS);
+};
+
 export const clearMissedCall = (callerId: string) => {
   const { missedCalls, setMissedCalls } = useStore.getState();
   setMissedCalls(missedCalls.filter((call) => call.callerId !== callerId));

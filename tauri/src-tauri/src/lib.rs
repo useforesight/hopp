@@ -27,7 +27,7 @@ use tauri::{Rect, TitleBarStyle, WebviewWindow};
 use tauri_plugin_autostart::AutoLaunchManager;
 use tauri_plugin_shell::{process::CommandChild, process::CommandEvent, ShellExt};
 
-use socket_lib::{EventSocket, Message, SocketSender};
+use socket_lib::{CaptureByHand, EventSocket, Message, SocketSender};
 #[cfg(target_os = "macos")]
 use tauri::{LogicalPosition, PhysicalPosition, PhysicalSize};
 
@@ -121,8 +121,8 @@ pub struct AppData {
     /// Whether a call is currently active.
     pub call_active: bool,
 
-    /// This call's capture was stopped by hand. Kept here so that it outlives a core restart.
-    pub capture_stopped_by_hand: bool,
+    /// What the user did to this call's capture. Kept here so that it outlives a core restart.
+    pub capture_by_hand: CaptureByHand,
 
     /// Whether the local camera is currently on (pushed from frontend snapshots).
     pub is_camera_on: bool,
@@ -179,7 +179,7 @@ impl AppData {
             drawing_enabled: false,
             drawing_stamp: false,
             call_active: false,
-            capture_stopped_by_hand: false,
+            capture_by_hand: CaptureByHand::Nothing,
             is_camera_on: false,
             is_screensharing: false,
             pending_call_end_acks: 0,

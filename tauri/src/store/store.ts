@@ -52,6 +52,8 @@ type State = {
   incomingInviteInviterId: string | null;
   // Teammate to call as soon as their row in the list picks this up
   callbackUserId: string | null;
+  // Teammate to invite as soon as their row in the list picks this up
+  inviteUserId: string | null;
   // Newest first. Kept until the user deals with them, and across restarts.
   missedCalls: MissedCall[];
   // Call tokens for LiveKit
@@ -80,6 +82,7 @@ type Actions = {
   // representative anymore or the actual state it holds.
   updateCallTokens: (tokens: Partial<CallState>) => void;
   setCallbackUserId: (userId: string | null) => void;
+  setInviteUserId: (userId: string | null) => void;
   setMissedCalls: (missedCalls: MissedCall[]) => void;
   setCustomServerUrl: (url: string | null) => void;
   setLivekitUrl: (url: string | null) => void;
@@ -99,6 +102,7 @@ const initialState: State = {
   inviting: null,
   incomingInviteInviterId: null,
   callbackUserId: null,
+  inviteUserId: null,
   missedCalls: [],
   callTokens: null,
   customServerUrl: null,
@@ -153,6 +157,10 @@ const useStore = create<State & Actions>()(
     setIncomingInviteInviterId: (inviterId) =>
       set((state) => {
         state.incomingInviteInviterId = inviterId;
+      }),
+    setInviteUserId: (userId) =>
+      set((state) => {
+        state.inviteUserId = userId;
       }),
     setCallbackUserId: (userId) =>
       set((state) => {

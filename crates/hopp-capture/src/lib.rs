@@ -4,8 +4,10 @@
 //! Started in Hopp for Linux and shared with the Mac app. Nothing here knows about
 //! LiveKit or either client's windows: a client feeds [`Tap`] one track per person.
 
+pub mod app_socket;
 pub mod batch;
 pub mod browse;
+pub mod cli;
 pub mod commands;
 pub mod config;
 pub mod draft;

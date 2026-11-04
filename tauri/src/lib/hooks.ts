@@ -1,6 +1,6 @@
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { once } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import hotkeys from "hotkeys-js";
 import toast from "react-hot-toast";
 import useStore, { ParticipantRole } from "@/store/store";
@@ -9,9 +9,11 @@ import { usePostHog } from "posthog-js/react";
 import { socketService } from "@/services/socket";
 import { sounds } from "@/constants/sounds";
 import { useAPI, useFetchClient } from "@/services/query";
+import type { components } from "@/openapi";
 
 const appWindow = getCurrentWebviewWindow();
 const CALL_END_TIMEOUT_MS = 5_000;
+const CONNECTING_TOAST_ID = "connecting-to-room";
 
 /**
  * This is a hack to prevent the context menu from being shown
@@ -144,6 +146,89 @@ export async function endCallAndWait(endCall: () => void) {
  * @returns Function that joins `userId`'s call and resolves to true when the
  * call started, false when it failed.
  */
+/** Leave any call and join this room. Going to the room you're in shows its call. */
+export function useJoinRoom() {
+  const setCallTokens = useStore((state) => state.setCallTokens);
+  const setTab = useStore((state) => state.setTab);
+  const endCall = useEndCall();
+  const { useMutation } = useAPI();
+  const { mutateAsync: getRoomTokens } = useMutation("get", "/api/auth/room/{id}", undefined);
+  const [isJoiningRoom, setIsJoiningRoom] = useState(false);
+  const joiningToastTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const joinRoom = useCallback(
+    async (room: components["schemas"]["Room"]) => {
+      const { callTokens } = useStore.getState();
+      if (callTokens?.room?.id === room.id) {
+        setTab("call");
+        return;
+      }
+      if (isJoiningRoom) return;
+
+      setIsJoiningRoom(true);
+      joiningToastTimeout.current = setTimeout(() => {
+        toast.loading("Connecting to room", { id: CONNECTING_TOAST_ID });
+      }, 300);
+
+      try {
+        if (callTokens) {
+          await endCallAndWait(endCall);
+        }
+
+        const tokens = await getRoomTokens({
+          params: {
+            path: {
+              id: room.id,
+            },
+          },
+        });
+
+        if (!tokens) {
+          toast.error("Error joining room");
+          return;
+        }
+
+        sounds.callAccepted.play();
+        const { startMic, startCamera } = await tauriUtils.getCallStartPreferences();
+        setCallTokens({
+          ...tokens,
+          isRoomCall: true,
+          timeStarted: new Date(),
+          hasAudioEnabled: startMic,
+          hasCameraEnabled: startCamera,
+          role: ParticipantRole.NONE,
+          isRemoteControlEnabled: true,
+          room: room,
+          participants: [],
+          isInitialisingCall: true,
+          micLevel: 0,
+        });
+
+        try {
+          await tauriUtils.callStarted(tokens.audioToken, tokens.videoToken);
+        } catch {
+          setCallTokens(null);
+          toast.error("Failed to start call");
+          return;
+        }
+      } catch (error: any) {
+        if (error?.error === "trial-ended") {
+          toast.error("Trial has expired, contact us if you want to extend it");
+        } else {
+          toast.error("Error joining room");
+        }
+      } finally {
+        if (joiningToastTimeout.current) clearTimeout(joiningToastTimeout.current);
+        toast.dismiss(CONNECTING_TOAST_ID);
+        setIsJoiningRoom(false);
+      }
+    },
+    [getRoomTokens, setCallTokens, setTab, endCall, isJoiningRoom],
+  );
+
+  return { joinRoom, isJoiningRoom };
+}
+
 export function useJoinCall() {
   const setCallTokens = useStore((state) => state.setCallTokens);
   const endCall = useEndCall();

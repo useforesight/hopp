@@ -17,6 +17,19 @@ own, from the Linux client's source: both clients run one program.
   directories elsewhere, or `HOPP_CAPTURE_HOME` for tests.
 - **Capturing every call.** `Config::auto` is on by default on Linux and off on the Mac.
 
+## The `hopp` command
+
+The Mac app ships it as `Hopp.app/Contents/MacOS/hopp-cli` (the name `hopp` there is the app
+itself), and Settings offers to link it as `hopp`. `hopp capture list|show|search|follow|annotate|delete`
+and `hopp mcp` read the store with the app closed. `hopp status|call|join|accept|decline|leave|mute|camera|share|draw|open|settings`
+and `hopp capture start|stop|window|bookmark` ask the running app, over `app_socket`: one JSON
+line each way on `<config>/run/hopp.sock`, in a folder only this user can open.
+
+`cli` refuses what can't be done against the state the main window published, so that you're
+told why in your terminal; the app answers once it has passed the request on. `hopp draw` works
+on a screen you're sharing, and not yet on someone else's: its tools are in the viewer's window.
+Agents can't start a capture: `mcp` has no tool for it.
+
 ## Moving Hopp for Linux onto this crate
 
 This is a copy for now: Linux can't be compiled on a Mac and CI doesn't build it, so nobody

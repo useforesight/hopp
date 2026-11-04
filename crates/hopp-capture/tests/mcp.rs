@@ -157,6 +157,33 @@ fn agents_negotiate_and_cant_start_a_capture() -> Result<()> {
 }
 
 #[test]
+fn agents_can_ask_about_the_call_with_or_without_the_app() -> Result<()> {
+    let (home, _store) = seeded_home()?;
+    let mut agent = Agent::start(home.path())?;
+    let nothing = agent.tool("call_status", json!({}))?;
+    assert_eq!(text(&nothing), "Hopp isn't running.", "{nothing}");
+    assert_ne!(nothing["isError"], true, "{nothing}");
+
+    let socket = home.path().join("run/hopp.sock");
+    let listening = socket.clone();
+    std::thread::spawn(move || {
+        let _ = hopp_capture::app_socket::serve(&listening, |_| {
+            hopp_capture::app_socket::AppReply::state(json!({
+                "signed_in": true,
+                "user": { "name": "Alex" },
+                "call": { "participants": [{ "name": "Mira" }], "microphone": true },
+            }))
+        });
+    });
+    while !socket.exists() {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let status = text(&agent.tool("call_status", json!({}))?);
+    assert!(status.contains("In a call with Mira"), "{status}");
+    Ok(())
+}
+
+#[test]
 fn agents_read_what_was_said_and_shown() -> Result<()> {
     let (home, _store) = seeded_home()?;
     let mut agent = Agent::start(home.path())?;

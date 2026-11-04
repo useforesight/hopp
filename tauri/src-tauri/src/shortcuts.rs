@@ -54,7 +54,7 @@ pub fn unregister_call_shortcuts(app: &tauri::AppHandle) {
     }
 }
 
-fn handle_mic(app: &tauri::AppHandle) {
+pub fn handle_mic(app: &tauri::AppHandle) {
     let data = app.state::<Mutex<AppData>>();
     let data = data.lock().unwrap();
     if let Err(e) = data.sender.send(Message::ToggleMic) {
@@ -62,7 +62,7 @@ fn handle_mic(app: &tauri::AppHandle) {
     }
 }
 
-fn handle_camera(app: &tauri::AppHandle) {
+pub fn handle_camera(app: &tauri::AppHandle) {
     let data = app.state::<Mutex<AppData>>();
     let data = data.lock().unwrap();
     if data.is_camera_on {
@@ -80,7 +80,7 @@ fn handle_camera(app: &tauri::AppHandle) {
     }
 }
 
-fn handle_end_call(app: &tauri::AppHandle) {
+pub fn handle_end_call(app: &tauri::AppHandle) {
     let data = app.state::<Mutex<AppData>>();
     let mut data = data.lock().unwrap();
     if let Err(e) = data.send_call_end() {
@@ -88,7 +88,7 @@ fn handle_end_call(app: &tauri::AppHandle) {
     }
 }
 
-fn handle_screenshare(app: &tauri::AppHandle) {
+pub fn handle_screenshare(app: &tauri::AppHandle) {
     let (is_screensharing, sender) = {
         let data = app.state::<Mutex<AppData>>();
         let data = data.lock().unwrap();

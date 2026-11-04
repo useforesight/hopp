@@ -84,6 +84,14 @@ const setActiveCallAlert = (alert: CallAlert, onAction: CallAlertActionHandler, 
 
 export const getActiveCallAlertKind = () => activeCallAlert?.alert.kind ?? null;
 
+/** Answer or decline from outside the card, if what it shows is someone calling. */
+export const pressCallAlert = (action: "answer" | "decline") => {
+  const kind = activeCallAlert?.alert.kind;
+  if (kind !== "ringing" && kind !== "invite") return false;
+  activeCallAlert?.onAction(action);
+  return true;
+};
+
 export const getShownMissedCallerId = () => {
   const alert = activeCallAlert?.alert;
   return alert?.kind === "missed" || alert?.kind === "missed-invite" ? alert.caller.id : null;
