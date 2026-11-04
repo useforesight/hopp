@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use iced::widget::{canvas, container, text, Space};
 use iced::{Alignment, Background, Border, Color, Length, Padding, Rectangle, Theme};
 use iced_wgpu::core::mouse;
-use winit::keyboard::{Key, ModifiersState};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use fontdb::Database;
 use resvg::{tiny_skia, usvg};
@@ -12,6 +12,7 @@ use crate::components::fonts::GEIST_REGULAR;
 use crate::graphics::graphics_context::click_animation::ClickAnimationRenderer;
 use crate::graphics::graphics_context::participant::ParticipantsManager;
 use crate::utils::geometry::Position;
+use hopp_marks::stamps::StampInput;
 
 pub(crate) const LOCAL_PARTICIPANT_IDENTITY: &str = "local";
 pub(crate) const CURSOR_LOGICAL_SIZE: f64 = 30.0;
@@ -201,11 +202,6 @@ impl DrawingHint {
         &self,
         escape_exits: bool,
     ) -> iced::Element<'a, Message, Theme, iced::Renderer> {
-        let opacity = self.opacity();
-        if opacity <= 0.0 {
-            return Space::new().into();
-        }
-
         let exit = if escape_exits {
             "Esc to exit  ·  "
         } else {
@@ -216,8 +212,29 @@ impl DrawingHint {
         } else {
             "Ctrl+Z"
         };
-        let controls =
-            format!("{exit}Right-click to clear  ·  Shift for a straight line  ·  {undo} to undo");
+        self.pill(format!(
+            "{exit}Right-click to clear  ·  Shift for a straight line  ·  {undo} to undo"
+        ))
+    }
+
+    pub(crate) fn stamp_view<'a, Message: 'a>(
+        &self,
+    ) -> iced::Element<'a, Message, Theme, iced::Renderer> {
+        self.pill(
+            "Click to place a stamp  ·  Type, then press Enter  ·  Esc to cancel  ·  \
+             Right-click to clear yours"
+                .to_owned(),
+        )
+    }
+
+    fn pill<'a, Message: 'a>(
+        &self,
+        controls: String,
+    ) -> iced::Element<'a, Message, Theme, iced::Renderer> {
+        let opacity = self.opacity();
+        if opacity <= 0.0 {
+            return Space::new().into();
+        }
 
         container(
             container(text(controls).size(13).font(GEIST_REGULAR).color(Color {
@@ -251,6 +268,33 @@ impl DrawingHint {
         .align_y(Alignment::End)
         .padding(24.0)
         .into()
+    }
+}
+
+/// What a key press means to a stamp taking words. Shortcuts aren't words, though Option is:
+/// that's how a lot of keyboards type things like `#` and `é`.
+pub(crate) fn stamp_key(
+    key: &Key,
+    text: Option<&str>,
+    modifiers: ModifiersState,
+) -> Option<StampInput> {
+    if modifiers.super_key() || modifiers.control_key() {
+        return None;
+    }
+    match key {
+        Key::Named(NamedKey::Enter) => Some(StampInput::Finish),
+        Key::Named(NamedKey::Escape) => Some(StampInput::Cancel),
+        Key::Named(NamedKey::Backspace) => Some(StampInput::Backspace),
+        _ => {
+            // Arrow and function keys come through as text in the Mac's private-use range.
+            let typed: String = text?
+                .chars()
+                .filter(|character| {
+                    !character.is_control() && !('\u{F700}'..='\u{F8FF}').contains(character)
+                })
+                .collect();
+            (!typed.is_empty()).then_some(StampInput::Typed(typed))
+        }
     }
 }
 
@@ -383,6 +427,45 @@ impl<'a, Message> canvas::Program<Message> for ParticipantOverlay<'a> {
 mod tests {
     use super::*;
     use crate::room_service::{DrawSettings, DrawingMode};
+
+    #[test]
+    fn keys_mean_what_they_should_to_a_stamp() {
+        let none = ModifiersState::empty();
+        let letter = Key::Character("a".into());
+        assert_eq!(
+            stamp_key(&letter, Some("a"), none),
+            Some(StampInput::Typed("a".into()))
+        );
+        let space = Key::Named(NamedKey::Space);
+        assert_eq!(
+            stamp_key(&space, Some(" "), none),
+            Some(StampInput::Typed(" ".into()))
+        );
+        for (key, input) in [
+            (NamedKey::Enter, StampInput::Finish),
+            (NamedKey::Escape, StampInput::Cancel),
+            (NamedKey::Backspace, StampInput::Backspace),
+        ] {
+            assert_eq!(stamp_key(&Key::Named(key), None, none), Some(input));
+        }
+
+        // Shortcuts aren't words, but Option is how a UK keyboard types a #.
+        assert_eq!(stamp_key(&letter, Some("a"), ModifiersState::SUPER), None);
+        assert_eq!(stamp_key(&letter, Some("a"), ModifiersState::CONTROL), None);
+        assert_eq!(
+            stamp_key(&Key::Character("#".into()), Some("#"), ModifiersState::ALT),
+            Some(StampInput::Typed("#".into()))
+        );
+
+        // Nothing to type: Tab, arrows and function keys, and keys with no text at all.
+        assert_eq!(
+            stamp_key(&Key::Named(NamedKey::Tab), Some("\t"), none),
+            None
+        );
+        let arrow = Key::Named(NamedKey::ArrowUp);
+        assert_eq!(stamp_key(&arrow, Some("\u{F700}"), none), None);
+        assert_eq!(stamp_key(&Key::Named(NamedKey::Shift), None, none), None);
+    }
 
     fn position(x: f64, y: f64) -> Position {
         Position { x, y }

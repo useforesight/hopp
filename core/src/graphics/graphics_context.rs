@@ -8,6 +8,7 @@ use crate::graphics::graphics_window_context::ContextManager;
 use crate::utils::clock::Clock;
 use crate::utils::geometry::Position;
 use crate::{SelectionMode, SelectionOverlayState, UserEvent};
+use hopp_marks::stamps::{StampInput, StampMessage};
 use std::sync::{
     mpsc::{Receiver, Sender},
     Arc,
@@ -507,10 +508,25 @@ impl<'a> GraphicsContext<'a> {
     pub fn update_auto_clear(&mut self) -> Vec<u64> {
         let cleared = self.participants_manager.update_auto_clear();
         // Keep frames coming until fades finish, however they were started.
-        if self.participants_manager.is_ink_animating() {
+        if self.participants_manager.is_ink_animating()
+            || self.participants_manager.is_stamp_animating()
+        {
             self.trigger_render();
         }
         cleared
+    }
+
+    /// Does what you asked with your stamps, and returns what everyone else needs to hear.
+    pub fn stamp_input(&mut self, input: StampInput) -> Vec<StampMessage> {
+        let messages = self.participants_manager.stamp_input(input);
+        self.trigger_render();
+        messages
+    }
+
+    /// A stamp message from someone else in the call.
+    pub fn receive_stamp(&mut self, sender: &str, message: StampMessage) {
+        self.participants_manager.receive_stamp(sender, message);
+        self.trigger_render();
     }
 }
 

@@ -63,6 +63,7 @@ use crate::livekit::participant::ParticipantInfo;
 use crate::utils::clock;
 use crate::utils::geometry::{Extent, Position};
 use crate::windows::colors::ColorToken;
+use hopp_marks::stamps::{StampInput, StampMessage};
 
 pub fn screensharing_window_attributes() -> WindowAttributes {
     let (init_w, init_h) = default_window_size();
@@ -318,6 +319,7 @@ const ICON_PENCIL_SVG: &[u8] = include_bytes!("../../resources/icons/pencil.svg"
 const ICON_REMOTE_CONTROL: char = '\u{F107}';
 const ICON_PEN: char = '\u{F109}';
 const ICON_CLICK_POINTER: char = '\u{F108}';
+const ICON_PIN: char = '\u{F10B}';
 
 // ── Segmented control buttons ────────────────────────────────────────────────
 const SEGMENTED_BUTTONS: &[SegmentedButton] = &[
@@ -330,6 +332,11 @@ const SEGMENTED_BUTTONS: &[SegmentedButton] = &[
         id: "draw",
         icon_char: ICON_PEN,
         description: Some("Draw"),
+    },
+    SegmentedButton {
+        id: "stamp",
+        icon_char: ICON_PIN,
+        description: Some("Stamp"),
     },
     SegmentedButton {
         id: "point",
@@ -367,6 +374,7 @@ pub enum ScreensharingMessage {
 pub(crate) enum ScreenShareTab {
     Control,
     Draw,
+    Stamp,
     Point,
 }
 
@@ -382,6 +390,7 @@ pub(crate) enum ScreenShareInputEvent {
     DrawClearAllPaths,
     DrawClearPaths(Vec<u64>),
     ClickAnimation { x: f64, y: f64 },
+    Stamp(StampMessage),
     DrawingModeChanged(crate::room_service::DrawingMode),
     AddToClipboard { is_copy: bool },
     PasteFromClipboard(Option<String>),
@@ -414,6 +423,7 @@ struct ScreensharingState {
     /// The stroke being drawn while the left mouse button is held in draw mode.
     local_stroke: drawing_helpers::LocalStroke,
     drawing_hint: drawing_helpers::DrawingHint,
+    stamp_hint: drawing_helpers::DrawingHint,
     /// Last cursor position (percentage 0.0-1.0) inside participant area.
     last_draw_cursor: Option<(f64, f64)>,
     /// Whether the settings dropdown is open.
@@ -448,6 +458,7 @@ impl Default for ScreensharingState {
             last_stream_height: 0,
             local_stroke: Default::default(),
             drawing_hint: Default::default(),
+            stamp_hint: Default::default(),
             last_draw_cursor: None,
             dropdown_open: false,
             draw_persist: false,
@@ -1023,6 +1034,22 @@ impl ScreensharingWindow {
             .enable_click_animation(position);
     }
 
+    /// A stamp message from someone else in the call.
+    pub fn receive_stamp(&mut self, sender: &str, message: StampMessage) {
+        self.participants_manager.receive_stamp(sender, message);
+        self.window.request_redraw();
+    }
+
+    /// Does what you asked with your stamps, and returns what everyone else needs to hear.
+    fn stamp_input(&mut self, input: StampInput) -> Vec<ScreenShareInputEvent> {
+        let messages = self.participants_manager.stamp_input(input);
+        self.window.request_redraw();
+        messages
+            .into_iter()
+            .map(ScreenShareInputEvent::Stamp)
+            .collect()
+    }
+
     pub fn set_remote_control_allowed(&mut self, allowed: bool) {
         self.state.remote_control_allowed = allowed;
     }
@@ -1134,6 +1161,8 @@ impl ScreensharingWindow {
                 NSCursor::arrowCursor().set();
             } else if self.state.active_tab == "draw" {
                 self.ns_cursor_pencil.set();
+            } else if self.state.active_tab == "stamp" {
+                NSCursor::crosshairCursor().set();
             } else if self.state.active_tab == "point" {
                 self.ns_cursor_point.set();
             } else if self.state.active_tab == "control" && self.local_participant_in_control {
@@ -1151,6 +1180,9 @@ impl ScreensharingWindow {
                 self.window.set_cursor(winit::window::Cursor::Custom(
                     self.custom_cursor_pencil.clone(),
                 ));
+            } else if self.state.active_tab == "stamp" {
+                self.window
+                    .set_cursor(winit::window::Cursor::Icon(CursorIcon::Crosshair));
             } else if self.state.active_tab == "point" {
                 self.window.set_cursor(winit::window::Cursor::Custom(
                     self.custom_cursor_point.clone(),
@@ -1329,6 +1361,17 @@ impl ScreensharingWindow {
                             }
                             _ => {}
                         }
+                    } else if self.state.active_tab == "stamp" {
+                        let input = match button {
+                            winit::event::MouseButton::Left if down => {
+                                Some(StampInput::Place { x: pct_x, y: pct_y })
+                            }
+                            winit::event::MouseButton::Right if down => Some(StampInput::ClearMine),
+                            _ => None,
+                        };
+                        if let Some(input) = input {
+                            input_events.extend(self.stamp_input(input));
+                        }
                     } else if self.state.active_tab == "point" {
                         if matches!(button, winit::event::MouseButton::Left) && down {
                             self.click_animation_renderer.enable_click_animation(
@@ -1460,6 +1503,16 @@ impl ScreensharingWindow {
                     {
                         input_events.push(undone.into());
                         self.window.request_redraw();
+                    }
+                }
+
+                if self.state.active_tab == "stamp" && key_event.state.is_pressed() {
+                    if let Some(input) = drawing_helpers::stamp_key(
+                        &key_event.logical_key,
+                        key_event.text.as_deref(),
+                        self.modifiers,
+                    ) {
+                        input_events.extend(self.stamp_input(input));
                     }
                 }
 
@@ -1636,10 +1689,15 @@ impl ScreensharingWindow {
                 for msg in messages {
                     match &msg {
                         ScreensharingMessage::TabSelected(id) => {
+                            input_events.extend(self.stamp_input(StampInput::Finish));
                             let tab = match *id {
                                 "draw" => {
                                     self.state.drawing_hint.show_once();
                                     ScreenShareTab::Draw
+                                }
+                                "stamp" => {
+                                    self.state.stamp_hint.show_once();
+                                    ScreenShareTab::Stamp
                                 }
                                 "point" => ScreenShareTab::Point,
                                 _ => ScreenShareTab::Control,
@@ -1653,7 +1711,7 @@ impl ScreensharingWindow {
                                 ScreenShareTab::Point => {
                                     crate::room_service::DrawingMode::ClickAnimation
                                 }
-                                ScreenShareTab::Control => {
+                                ScreenShareTab::Control | ScreenShareTab::Stamp => {
                                     crate::room_service::DrawingMode::Disabled
                                 }
                             };
@@ -1799,6 +1857,7 @@ impl ScreensharingWindow {
                 }
             }
             WindowEvent::CloseRequested => {
+                input_events.extend(self.stamp_input(StampInput::Finish));
                 self.window.set_visible(false);
             }
             _ => {}
@@ -2014,6 +2073,8 @@ impl ScreensharingWindow {
             remote_control_disabled_label,
             if state.active_tab == "draw" {
                 state.drawing_hint.view(false)
+            } else if state.active_tab == "stamp" {
+                state.stamp_hint.stamp_view()
             } else {
                 Space::new().into()
             }
@@ -2369,7 +2430,9 @@ impl ScreensharingWindow {
         let cleared = self.participants_manager.update_auto_clear();
         if self.participants_manager.is_ink_animating()
             || self.participants_manager.is_cursor_animating()
+            || self.participants_manager.is_stamp_animating()
             || self.state.drawing_hint.is_visible()
+            || self.state.stamp_hint.is_visible()
         {
             let _ = self.redraw_tx.send(RedrawCommand::Animate);
         }

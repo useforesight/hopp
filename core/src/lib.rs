@@ -1017,11 +1017,34 @@ impl<'a> Application<'a> {
 
     fn close_drawing_window(&mut self) {
         log::info!("close_drawing_window");
+        self.your_stamp_input(hopp_marks::stamps::StampInput::Finish);
         if let Some(window) = &mut self.drawing_window {
             window.hide();
         }
         if let Err(e) = self.socket.send(Message::DrawingDisabled) {
             log::error!("Failed to send DrawingDisabled: {e:?}");
+        }
+    }
+
+    /// Does what you asked with the stamps on your own screen and tells everyone else. They're
+    /// on the overlay with everyone's, so that's what knows if you're still typing on one.
+    fn your_stamp_input(&mut self, input: hopp_marks::stamps::StampInput) {
+        let Some(gfx) = self
+            .window_manager
+            .as_mut()
+            .and_then(|wm| wm.active_gfx_mut())
+        else {
+            return;
+        };
+        let messages = gfx.stamp_input(input);
+        let typing = gfx.participants_manager_mut().is_stamp_typing();
+        if let Some(window) = &mut self.drawing_window {
+            window.set_typing_stamp(typing);
+        }
+        if let Some(room_service) = &self.room_service {
+            for message in messages {
+                room_service.publish_stamp(message);
+            }
         }
     }
 
@@ -1226,6 +1249,9 @@ impl<'a> Application<'a> {
     fn destroy_overlay_window(&mut self) {
         log::info!("destroy_overlay_window");
         self.pending_overlay_repair = None;
+        // It forgets your stamps, so you couldn't take them away after this. Nobody should be
+        // left with stamps that are stuck on their screen.
+        self.your_stamp_input(hopp_marks::stamps::StampInput::ClearMine);
         if let Some(wm) = self.window_manager.as_mut() {
             wm.hide_active_window();
         }
@@ -2157,6 +2183,21 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                     }
                 }
             }
+            UserEvent::StampReceived(message, sender) => {
+                log::debug!("user_event: StampReceived: {message:?} {sender}");
+                if let Some(gfx) = self
+                    .window_manager
+                    .as_mut()
+                    .and_then(|wm| wm.active_gfx_mut())
+                {
+                    gfx.receive_stamp(&sender, message.clone());
+                }
+                if let Some(screensharing_window) = &mut self.screensharing_window {
+                    if screensharing_window.is_visible() {
+                        screensharing_window.receive_stamp(&sender, message);
+                    }
+                }
+            }
             UserEvent::ListAudioDevices => {
                 log::debug!("user_event: ListAudioDevices");
                 let devices = self.audio_capturer.list_sources();
@@ -2578,10 +2619,12 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
             }
             UserEvent::SharerDrawPersistChanged(persist) => {
                 log::info!("user_event: SharerDrawPersistChanged: {persist}");
+                let mut stamping = false;
                 if let Some(drawing_window) = &mut self.drawing_window {
                     drawing_window.set_draw_persist(persist);
+                    stamping = drawing_window.is_stamping();
                 }
-                if let Some(room_service) = &self.room_service {
+                if let (Some(room_service), false) = (&self.room_service, stamping) {
                     room_service.publish_drawing_mode(room_service::DrawingMode::Draw(
                         room_service::DrawSettings { permanent: persist },
                     ));
@@ -2600,7 +2643,21 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                     return;
                 }
 
-                if self.drawing_window.as_ref().is_none_or(|w| !w.is_visible()) {
+                let tool_changed = self
+                    .drawing_window
+                    .as_ref()
+                    .is_some_and(|w| w.is_visible() && w.is_stamping() != drawing_enabled.stamp);
+                if tool_changed {
+                    self.your_stamp_input(hopp_marks::stamps::StampInput::Finish);
+                    if let Some(win) = &mut self.drawing_window {
+                        win.set_draw_persist(drawing_enabled.permanent);
+                        win.set_stamping(drawing_enabled.stamp);
+                    }
+                    if let Some(room_service) = &self.room_service {
+                        room_service.publish_draw_clear_all_paths();
+                        room_service.publish_drawing_mode(local_tool_mode(&drawing_enabled));
+                    }
+                } else if self.drawing_window.as_ref().is_none_or(|w| !w.is_visible()) {
                     let capture_frame = self
                         .screen_capturer
                         .lock()
@@ -2611,12 +2668,8 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                     // Disable remote control
                     remote_control.set_enabled(false);
 
-                    let draw_mode = room_service::DrawingMode::Draw(room_service::DrawSettings {
-                        permanent: drawing_enabled.permanent,
-                    });
-
                     if let Some(room_service) = &self.room_service {
-                        room_service.publish_drawing_mode(draw_mode);
+                        room_service.publish_drawing_mode(local_tool_mode(&drawing_enabled));
                     }
 
                     // Create or show drawing window
@@ -2627,6 +2680,7 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                             .and_then(|wm| wm.active_window_position());
                         win.set_draw_persist(drawing_enabled.permanent);
                         win.show(overlay_position, capture_frame);
+                        win.set_stamping(drawing_enabled.stamp);
                         self.sync_call_colours();
                         log::info!(
                             "Local drawing mode enabled (permanent: {})",
@@ -2645,7 +2699,8 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                             overlay_position,
                             capture_frame,
                         ) {
-                            Ok(win) => {
+                            Ok(mut win) => {
+                                win.set_stamping(drawing_enabled.stamp);
                                 self.drawing_window = Some(win);
                                 self.sync_call_colours();
                                 log::info!(
@@ -2753,7 +2808,12 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
         if let Some(drawing) = &mut self.drawing_window {
             if drawing.window_id() == window_id {
                 let input_events = drawing.handle_window_event(event);
+                let stamping = drawing.is_stamping();
                 for event in input_events {
+                    if let window::drawing_window::DrawingWindowInputEvent::Stamp(input) = event {
+                        self.your_stamp_input(input);
+                        continue;
+                    }
                     if matches!(
                         event,
                         window::drawing_window::DrawingWindowInputEvent::Escape
@@ -2761,7 +2821,10 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                         let _ = self
                             .event_loop_proxy
                             .send_event(UserEvent::LocalDrawingEnabled(
-                                socket_lib::DrawingEnabled { permanent: false },
+                                socket_lib::DrawingEnabled {
+                                    permanent: false,
+                                    stamp: stamping,
+                                },
                             ));
                     }
                     if let Some(rs) = &self.room_service {
@@ -2796,7 +2859,8 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                             ) => {
                                 rs.publish_draw_clear_paths(ids);
                             }
-                            window::drawing_window::DrawingWindowInputEvent::Escape => {}
+                            window::drawing_window::DrawingWindowInputEvent::Stamp(_)
+                            | window::drawing_window::DrawingWindowInputEvent::Escape => {}
                         }
                     }
                 }
@@ -2857,6 +2921,9 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                                     x,
                                     y,
                                 });
+                            }
+                            ScreenShareInputEvent::Stamp(message) => {
+                                rs.publish_stamp(message);
                             }
                             ScreenShareInputEvent::AddToClipboard { is_copy } => {
                                 rs.publish_add_to_clipboard(
@@ -3246,6 +3313,17 @@ pub struct ParticipantData {
     pub identity: String,
 }
 
+/// What everyone else is told you're doing with the sharer's drawing tools.
+fn local_tool_mode(enabled: &socket_lib::DrawingEnabled) -> room_service::DrawingMode {
+    if enabled.stamp {
+        room_service::DrawingMode::Disabled
+    } else {
+        room_service::DrawingMode::Draw(room_service::DrawSettings {
+            permanent: enabled.permanent,
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum UserEvent {
     CursorPosition(f32, f32, String),
@@ -3286,6 +3364,7 @@ pub enum UserEvent {
     DrawClearPath(u64, String),
     DrawClearAllPaths(String),
     ClickAnimationFromParticipant(room_service::ClientPoint, String),
+    StampReceived(hopp_marks::stamps::StampMessage, String),
     LocalDrawingEnabled(socket_lib::DrawingEnabled),
     SharerDrawPersistChanged(bool),
     ControllerDrawPersistChanged(bool),

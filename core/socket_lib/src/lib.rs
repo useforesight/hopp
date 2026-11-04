@@ -138,6 +138,9 @@ pub struct SentryMetadata {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DrawingEnabled {
     pub permanent: bool,
+    /// Clicks place stamps instead of drawing.
+    #[serde(default)]
+    pub stamp: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

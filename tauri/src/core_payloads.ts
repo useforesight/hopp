@@ -54,6 +54,7 @@ export interface SentryMetadata {
 
 export interface DrawingEnabled {
   permanent: boolean;
+  stamp: boolean;
 }
 
 export interface AudioDevice {
@@ -182,7 +183,7 @@ export interface CommandMap {
   get_drawing_hint_shown: { args: void; return: boolean };
   set_drawing_hint_shown: { args: { shown: boolean }; return: void };
   get_drawing_enabled: { args: void; return: boolean };
-  set_drawing_enabled: { args: { enabled: boolean; permanent: boolean }; return: void };
+  set_drawing_enabled: { args: { enabled: boolean; permanent: boolean; stamp: boolean }; return: void };
 
   // LiveKit
   set_livekit_url: { args: { url: string }; return: void };

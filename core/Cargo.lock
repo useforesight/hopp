@@ -2522,6 +2522,8 @@ name = "hopp-marks"
 version = "0.1.0"
 dependencies = [
  "resvg",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -23,6 +23,7 @@ use winit::event_loop::EventLoopProxy;
 
 use crate::snapshot_sender::SnapshotSender;
 use crate::{audio, ParticipantData, UserEvent};
+use hopp_marks::stamps::{StampMessage, STAMP_TOPIC};
 
 // Constants for magic values
 const TOPIC_SHARER_LOCATION: &str = "participant_location";
@@ -179,6 +180,7 @@ enum RoomServiceCommand {
     PublishPasteFromClipboard(PasteFromClipboardData),
     PublishClipboardData(ClipboardDataPayload),
     PublishClickAnimation(ClientPoint),
+    PublishStamp(StampMessage),
     PublishAppVeilSnapshot { force: bool },
 }
 
@@ -215,6 +217,7 @@ impl std::fmt::Debug for RoomServiceCommand {
             Self::PublishPasteFromClipboard(..) => write!(f, "PublishPasteFromClipboard"),
             Self::PublishClipboardData(..) => write!(f, "PublishClipboardData"),
             Self::PublishClickAnimation(..) => write!(f, "PublishClickAnimation"),
+            Self::PublishStamp(..) => write!(f, "PublishStamp"),
             Self::PublishAppVeilSnapshot { force } => {
                 write!(f, "PublishAppVeilSnapshot {{ force: {force} }}")
             }
@@ -814,6 +817,25 @@ impl RoomService {
             .send(RoomServiceCommand::PublishClickAnimation(point));
         if let Err(e) = res {
             log::error!("publish_click_animation: Failed to send command: {e:?}");
+        }
+    }
+
+    /// Publishes one of your stamps to the room. A new one also goes out as a click animation,
+    /// which clients that don't know stamps still show.
+    pub fn publish_stamp(&self, message: StampMessage) {
+        log::debug!("publish_stamp: {message:?}");
+        let place = match message {
+            StampMessage::StampPlace { x, y, .. } => Some(ClientPoint { x, y }),
+            _ => None,
+        };
+        let res = self
+            .service_command_tx
+            .send(RoomServiceCommand::PublishStamp(message));
+        if let Err(e) = res {
+            log::error!("publish_stamp: Failed to send command: {e:?}");
+        }
+        if let Some(point) = place {
+            self.publish_click_animation(point);
         }
     }
 
@@ -1874,6 +1896,27 @@ async fn room_service_commands(
                     log::error!("room_service_commands: Failed to publish click animation: {e:?}");
                 }
             }
+            RoomServiceCommand::PublishStamp(message) => {
+                let inner_room = inner.room.lock().await;
+                let Some(room) = inner_room.as_ref() else {
+                    log::warn!("room_service_commands: Room doesn't exist for PublishStamp");
+                    continue;
+                };
+                let payload = serde_json::to_vec(&message).unwrap();
+                let res = room
+                    .local_participant()
+                    .publish_data(DataPacket {
+                        payload,
+                        reliable: true,
+                        topic: Some(STAMP_TOPIC.to_string()),
+                        ..Default::default()
+                    })
+                    .await;
+
+                if let Err(e) = res {
+                    log::error!("room_service_commands: Failed to publish stamp: {e:?}");
+                }
+            }
             RoomServiceCommand::PublishAppVeilSnapshot { force } => {
                 let Some(snapshot) = inner.app_veil_snapshot.lock().unwrap().clone() else {
                     continue;
@@ -2332,6 +2375,27 @@ async fn handle_room_events(ctx: RoomEventContext) {
                 kind: _,
                 participant,
             } => {
+                if topic.as_deref() == Some(STAMP_TOPIC) {
+                    let Some(participant) = participant else {
+                        log::warn!("handle_room_events: stamp sender is missing");
+                        continue;
+                    };
+                    let sender = participant.identity().as_str().to_string();
+                    if sender == user_identity {
+                        continue;
+                    }
+                    let Some(message) = StampMessage::from_packet(&payload) else {
+                        log::warn!("handle_room_events: dropped a bad stamp from {sender}");
+                        continue;
+                    };
+                    if let Err(e) =
+                        event_loop_proxy.send_event(UserEvent::StampReceived(message, sender))
+                    {
+                        log::error!("handle_room_events: Failed to send stamp: {e:?}");
+                    }
+                    continue;
+                }
+
                 if topic.as_deref() == Some(TOPIC_APP_VEIL) {
                     let Some(participant) = participant else {
                         log::warn!("handle_room_events: App Veil sender is missing");
