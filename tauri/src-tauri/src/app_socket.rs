@@ -150,7 +150,7 @@ fn draw(app: &AppHandle) -> AppReply {
     if !sharing {
         return AppReply::refused("You're not sharing your screen");
     }
-    if !crate::toggle_pen(app) {
+    if !crate::toggle_tool(app, false) {
         return AppReply::refused("Couldn't reach the call");
     }
     AppReply::done()

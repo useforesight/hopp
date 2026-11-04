@@ -49,7 +49,7 @@ use crate::{
 };
 
 #[path = "panel.rs"]
-mod panel;
+pub(crate) mod panel;
 
 const HOPP_BUNDLE_ID: &str = "com.hopp.app";
 const NOTIFICATION_CENTER_BUNDLE_ID: &str = "com.apple.notificationcenterui";

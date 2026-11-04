@@ -129,13 +129,14 @@ export const closeCallAlert = () => {
   showNextCallAlert();
 };
 
+/** Returns whether it showed: someone calling keeps the card. */
 export const showCallNotice = ({ key, title, body, actionLabel, onAction, autoDismissMs }: CallNotice) => {
   // Someone waiting for an answer matters more than a notice. A missed call doesn't need to
   // hold its place, as it's kept in the list and comes back when the notice closes.
   const activeKind = getActiveCallAlertKind();
   if (activeKind === "ringing" || activeKind === "invite" || activeKind === "connecting") {
     console.warn(`Not showing "${title}" over an incoming call`);
-    return;
+    return false;
   }
 
   showCallAlert(
@@ -150,10 +151,13 @@ export const showCallNotice = ({ key, title, body, actionLabel, onAction, autoDi
   if (autoDismissMs !== undefined) {
     autoDismissTimeout = setTimeout(closeCallAlert, autoDismissMs);
   }
+  return true;
 };
 
+export const isCallNoticeShowing = (key: string) => activeCallAlert?.noticeKey === key;
+
 export const closeCallNotice = (key: string) => {
-  if (activeCallAlert?.noticeKey === key) closeCallAlert();
+  if (isCallNoticeShowing(key)) closeCallAlert();
 };
 
 export const setupCallAlertBridge = () => {

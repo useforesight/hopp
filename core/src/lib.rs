@@ -24,6 +24,8 @@ pub mod app_veil_state;
 #[cfg(target_os = "macos")]
 #[path = "app_veil/macos.rs"]
 mod app_veil;
+#[cfg(target_os = "macos")]
+pub mod sharing_pill;
 
 pub mod input {
     pub mod clipboard;
@@ -81,6 +83,8 @@ use input::mouse::CursorController;
 use log::{debug, error};
 use overlay_window::OverlayWindow;
 use room_service::RoomService;
+#[cfg(target_os = "macos")]
+use sharing_pill::{SharingPill, SharingPillClick, SharingPillState};
 use socket_lib::{
     CallStartMessage, CameraStartMessage, Content, ContentType, Message, ScreenShareMessage,
     ScreenSharePickerMode, ScreenShareResolution, SentryMetadata, SocketSender,
@@ -426,6 +430,8 @@ pub struct Application<'a> {
     pending_overlay_repair: Option<MonitorId>,
     #[cfg(target_os = "macos")]
     app_veil_host: Option<AppVeilHost>,
+    #[cfg(target_os = "macos")]
+    sharing_pill: Option<SharingPill>,
 }
 
 #[derive(Error, Debug)]
@@ -516,6 +522,8 @@ impl<'a> Application<'a> {
             pending_overlay_repair: None,
             #[cfg(target_os = "macos")]
             app_veil_host: None,
+            #[cfg(target_os = "macos")]
+            sharing_pill: None,
         })
     }
 
@@ -814,6 +822,10 @@ impl<'a> Application<'a> {
             })
             .or_else(|| monitors.first().cloned());
         drop(screen_capturer);
+        #[cfg(target_os = "macos")]
+        let pill_display = overlay_monitor
+            .as_ref()
+            .and_then(ScreenshareFunctions::capture_content_id_for_monitor);
 
         #[cfg(target_os = "macos")]
         if !is_display_share {
@@ -841,6 +853,11 @@ impl<'a> Application<'a> {
             }
         } else {
             log::warn!("screenshare: no monitor available, skipping overlay creation");
+        }
+
+        #[cfg(target_os = "macos")]
+        if let Some(display_id) = pill_display {
+            self.show_sharing_pill(display_id, target_process_id.filter(|_| !is_display_share));
         }
 
         self.set_screensharing_active(true);
@@ -1028,6 +1045,31 @@ impl<'a> Application<'a> {
         if let Err(e) = self.socket.send(Message::DrawingDisabled) {
             log::error!("Failed to send DrawingDisabled: {e:?}");
         }
+        self.sync_sharing_pill();
+    }
+
+    #[cfg(target_os = "macos")]
+    fn show_sharing_pill(&mut self, display_id: u32, window_owner: Option<i32>) {
+        let told = self.event_loop_proxy.clone();
+        self.sharing_pill = SharingPill::new(display_id, window_owner, move |click| {
+            let _ = told.send_event(UserEvent::SharingPillClicked(click));
+        });
+        self.sync_sharing_pill();
+    }
+
+    fn sync_sharing_pill(&self) {
+        #[cfg(target_os = "macos")]
+        if let Some(pill) = &self.sharing_pill {
+            let tool = self
+                .drawing_window
+                .as_ref()
+                .filter(|window| window.is_visible());
+            pill.update(SharingPillState {
+                drawing: tool.is_some_and(|window| !window.is_stamping()),
+                stamping: tool.is_some_and(|window| window.is_stamping()),
+                control_allowed: self.remote_control_enabled,
+            });
+        }
     }
 
     /// Does what you asked with the stamps on your own screen and tells everyone else. They're
@@ -1070,6 +1112,7 @@ impl<'a> Application<'a> {
         log::info!("stop_screenshare");
         #[cfg(target_os = "macos")]
         {
+            self.sharing_pill = None;
             if self.app_veil_host.take().is_some() {
                 if let Some(room_service) = self.room_service.as_ref() {
                     room_service.set_app_veil_snapshot(Default::default());
@@ -1344,6 +1387,9 @@ impl<'a> Application<'a> {
             return;
         };
 
+        #[cfg(target_os = "macos")]
+        let pill_display = ScreenshareFunctions::capture_content_id_for_monitor(&target_monitor);
+
         if let Err(error) = self.create_overlay_window(
             target_monitor,
             remote_control_enabled,
@@ -1354,6 +1400,15 @@ impl<'a> Application<'a> {
             log::error!("repair_overlay_monitor: failed to recreate overlay: {error:?}");
             self.stop_screenshare();
             return;
+        }
+
+        // The pill goes where the share went.
+        #[cfg(target_os = "macos")]
+        if let Some(display_id) = pill_display {
+            self.show_sharing_pill(
+                display_id,
+                target_process_id.filter(|_| target_window_id.is_some()),
+            );
         }
 
         for (identity, drawing_mode) in participant_drawing_modes {
@@ -1487,6 +1542,41 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                 if let Some(room_service) = self.room_service.as_ref() {
                     room_service.publish_controller_cursor_enabled(enabled);
                 }
+                self.sync_sharing_pill();
+            }
+            #[cfg(target_os = "macos")]
+            UserEvent::SharingPillClicked(click) => {
+                log::info!("user_event: SharingPillClicked: {click:?}");
+                let action = match click {
+                    SharingPillClick::Draw => Some(socket_lib::AppAction::ToggleDraw),
+                    SharingPillClick::Stamp => Some(socket_lib::AppAction::ToggleStamp),
+                    SharingPillClick::Control => {
+                        let allowed = !self.remote_control_enabled;
+                        let _ = self
+                            .event_loop_proxy
+                            .send_event(UserEvent::ControllerCursorEnabled(allowed));
+                        if let Err(e) = self.socket.send(Message::ControllerCursorChanged(allowed))
+                        {
+                            log::error!("Failed to send ControllerCursorChanged: {e:?}");
+                        }
+                        None
+                    }
+                    SharingPillClick::Stop => {
+                        let _ = self.event_loop_proxy.send_event(UserEvent::StopScreenShare);
+                        None
+                    }
+                };
+                if let Some(action) = action {
+                    let _ = self
+                        .event_loop_proxy
+                        .send_event(UserEvent::AppAction(action));
+                }
+            }
+            UserEvent::AppAction(action) => {
+                log::info!("user_event: AppAction: {action:?}");
+                if let Err(e) = self.socket.send(Message::AppAction(action)) {
+                    log::error!("Failed to send AppAction: {e:?}");
+                }
             }
             UserEvent::Keystroke(keystroke_data) => {
                 log::debug!("user_event: keystroke: {keystroke_data:?}");
@@ -1577,6 +1667,7 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                         start_mic_on_call,
                         start_camera_on_call,
                         capture_by_hand: call_start.capture_by_hand,
+                        room_name: call_start.room_name,
                     }) {
                         Ok(_) => {
                             if let Err(e) = self.socket.send(Message::CallStartResult(Ok(()))) {
@@ -1691,6 +1782,10 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                     self.stop_screenshare();
                 } else {
                     log::warn!("user_event: CallEnd: screen capturer is not valid");
+                    #[cfg(target_os = "macos")]
+                    {
+                        self.sharing_pill = None;
+                    }
                     self.destroy_overlay_window();
 
                     self.screen_capturer =
@@ -2755,6 +2850,11 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                                     room_service
                                         .publish_drawing_mode(room_service::DrawingMode::Disabled);
                                 }
+
+                                // The app thinks it's on, until it hears otherwise.
+                                if let Err(e) = self.socket.send(Message::DrawingDisabled) {
+                                    log::error!("Failed to send DrawingDisabled: {e:?}");
+                                }
                             }
                         }
                     }
@@ -2786,6 +2886,7 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                     // Hide drawing window
                     self.close_drawing_window();
                 }
+                self.sync_sharing_pill();
             }
             UserEvent::ExitRequested => {
                 log::info!("user_event: ExitRequested");
@@ -3402,6 +3503,9 @@ pub enum UserEvent {
     ClickAnimationFromParticipant(room_service::ClientPoint, String),
     StampReceived(hopp_marks::stamps::StampMessage, String),
     LocalDrawingEnabled(socket_lib::DrawingEnabled),
+    #[cfg(target_os = "macos")]
+    SharingPillClicked(SharingPillClick),
+    AppAction(socket_lib::AppAction),
     SharerDrawPersistChanged(bool),
     ControllerDrawPersistChanged(bool),
     LastModeChanged(socket_lib::StoredMode),

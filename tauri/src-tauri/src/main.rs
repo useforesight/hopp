@@ -4,8 +4,8 @@
 use hopp::sounds::{self, SoundConfig};
 use log::LevelFilter;
 use socket_lib::{
-    AudioCaptureMessage, AudioDevice, CameraDevice, CaptureByHand, DrawingEnabled, Message,
-    ScreenSharePickerMode, ScreenShareResolution, SentryMetadata,
+    AppAction, AudioCaptureMessage, AudioDevice, CameraDevice, CaptureByHand, DrawingEnabled,
+    Message, ScreenSharePickerMode, ScreenShareResolution, SentryMetadata,
 };
 use std::sync::mpsc as std_mpsc;
 use tauri::Manager;
@@ -62,13 +62,17 @@ async fn get_available_content(app: tauri::AppHandle) -> Result<(), String> {
     let data = app.state::<Mutex<AppData>>();
     let data = data.lock().unwrap();
 
-    let remote_control_enabled = data.app_state.user_settings().remote_control_enabled;
-    data.sender
-        .send(Message::ControllerCursorEnabled(remote_control_enabled))
-        .map_err(|e| {
-            log::error!("get_available_content: failed to apply remote control setting: {e:?}");
-            "Failed to apply remote control setting".to_string()
-        })?;
+    // Not while sharing, when this is someone changing what they share: control they took back
+    // from the pill stays taken back for the whole share.
+    if !data.is_screensharing {
+        let remote_control_enabled = data.app_state.user_settings().remote_control_enabled;
+        data.sender
+            .send(Message::ControllerCursorEnabled(remote_control_enabled))
+            .map_err(|e| {
+                log::error!("get_available_content: failed to apply remote control setting: {e:?}");
+                "Failed to apply remote control setting".to_string()
+            })?;
+    }
 
     data.sender.send(Message::GetAvailableContent).map_err(|e| {
         log::error!("get_available_content: failed to send message: {e:?}");
@@ -429,21 +433,23 @@ fn change_drawing(app: &tauri::AppHandle, enabled: bool, permanent: bool, stamp:
     true
 }
 
-/// `hopp draw`: the pen on or off, whichever tool is in hand. The window's button follows it.
-fn toggle_pen(app: &tauri::AppHandle) -> bool {
+/// `hopp draw` and the sharing pill: this tool on or off, whichever is in hand. The window's
+/// buttons follow it.
+fn toggle_tool(app: &tauri::AppHandle, stamp: bool) -> bool {
     let (enabled, permanent) = {
         let data = app.state::<Mutex<AppData>>();
         let data = data.lock().unwrap();
         (
-            !data.drawing_enabled || data.drawing_stamp,
+            !data.drawing_enabled || data.drawing_stamp != stamp,
             data.app_state.sharer_draw_persist(),
         )
     };
-    if !change_drawing(app, enabled, permanent, false) {
+    if !change_drawing(app, enabled, permanent, stamp) {
         return false;
     }
-    if let Err(e) = app.emit_to("main", "drawing_pen_changed", enabled) {
-        log::error!("toggle_pen: failed to emit: {e:?}");
+    let tool = enabled.then_some(if stamp { "stamp" } else { "draw" });
+    if let Err(e) = app.emit_to("main", "drawing_tool_changed", tool) {
+        log::error!("toggle_tool: failed to emit: {e:?}");
     }
     true
 }
@@ -516,6 +522,7 @@ fn call_started(
     // Set when rejoining after a core restart, to keep what the user had on or off.
     mic_on: Option<bool>,
     camera_on: Option<bool>,
+    room_name: Option<String>,
 ) -> Result<(), String> {
     log::info!("call_started");
     let data = app.state::<Mutex<AppData>>();
@@ -571,6 +578,7 @@ fn call_started(
             start_mic_on_call: Some(mic_on.unwrap_or(user_settings.start_mic_on_call)),
             start_camera_on_call: Some(camera_on.unwrap_or(user_settings.start_camera_on_call)),
             capture_by_hand: data.capture_by_hand,
+            room_name,
         }))
     {
         log::error!("call_started: failed to send: {e:?}");
@@ -674,7 +682,7 @@ async fn create_feedback_window(
             height: 420.0,
             resizable: false,
             always_on_top: true,
-            content_protected: false,
+            content_protected: true,
             maximizable: false,
             minimizable: false,
             decorations: true,
@@ -724,6 +732,14 @@ fn captures_bookmark(app: tauri::AppHandle) {
     }
 }
 
+/// The capture running on this call, if any.
+#[tauri::command(async)]
+fn captures_current(app: tauri::AppHandle) -> Option<String> {
+    let data = app.state::<Mutex<AppData>>();
+    let data = data.lock().unwrap();
+    data.capture_id.clone()
+}
+
 #[tauri::command(async)]
 fn captures_stop(app: tauri::AppHandle) {
     log::info!("captures_stop");
@@ -764,7 +780,7 @@ async fn create_settings_window(app: tauri::AppHandle) -> Result<(), String> {
             height: 840.0,
             resizable: false,
             always_on_top: false,
-            content_protected: false,
+            content_protected: true,
             maximizable: false,
             minimizable: true,
             decorations: true,
@@ -1414,6 +1430,44 @@ fn forward_core_events(events_rx: std_mpsc::Receiver<Message>, app: tauri::AppHa
                     log::error!("forward_core_events: failed to emit core_capture_changed: {e:?}");
                 }
             }
+            Message::AppAction(action) => {
+                log::info!("forward_core_events: {action:?}");
+                match action {
+                    AppAction::ToggleCapture => {
+                        let capturing = {
+                            let data = app.state::<Mutex<AppData>>();
+                            let data = data.lock().unwrap();
+                            data.capture_id.is_some()
+                        };
+                        if capturing {
+                            captures_stop(app.clone());
+                        } else {
+                            captures_start(app.clone());
+                        }
+                    }
+                    AppAction::OpenCaptures => {
+                        let app = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(e) = create_captures_window(app).await {
+                                log::error!("forward_core_events: captures window: {e}");
+                            }
+                        });
+                    }
+                    AppAction::ToggleDraw => {
+                        toggle_tool(&app, false);
+                    }
+                    AppAction::ToggleStamp => {
+                        toggle_tool(&app, true);
+                    }
+                }
+            }
+            Message::ControllerCursorChanged(allowed) => {
+                if let Err(e) = app.emit("core_controller_cursor_changed", allowed) {
+                    log::error!(
+                        "forward_core_events: failed to emit core_controller_cursor_changed: {e:?}"
+                    );
+                }
+            }
             Message::DrawingDisabled => {
                 log::info!("forward_core_events: drawing disabled");
                 let data = app.state::<Mutex<AppData>>();
@@ -1840,6 +1894,7 @@ fn main() {
             app_socket::app_publish_state,
             app_socket::captures_requested_call,
             captures_bookmark,
+            captures_current,
             captures_stop,
             hopp::cards::cards_showing,
             hopp::cards::cards_settle,

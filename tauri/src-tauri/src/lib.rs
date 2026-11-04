@@ -346,6 +346,10 @@ fn restart_core_process(app: &AppHandle, exit_reason: String) {
     data.stale_call_ended_events = 0;
     let core_events_forwarder = data.core_events_forwarder;
     drop(data);
+    // A capture ends with the core that was running it, and nothing else will say so.
+    if let Err(e) = app.emit("core_capture_changed", None::<String>) {
+        log::error!("restart_core_process: failed to emit core_capture_changed: {e:?}");
+    }
 
     let forwarder_app = app.clone();
     std::thread::spawn(move || core_events_forwarder(core_events, forwarder_app));

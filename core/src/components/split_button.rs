@@ -1,6 +1,6 @@
 //! Split button: main action + optional chevron dropdown hit area (Iced).
 
-use iced::widget::{button, column, container, row, stack, text, Space};
+use iced::widget::{button, column, container, row, stack, svg, text, Space};
 use iced::{Alignment, Background, Border, Color, Length, Padding, Shadow, Theme};
 use iced_wgpu::core::widget::text as text_widget;
 
@@ -49,6 +49,62 @@ impl SplitButtonSize {
             chevron_size: 12.0,
         }
     }
+}
+
+/// Like a split button with no dropdown, for an icon that isn't in the font.
+pub fn svg_button_sized<'a, Message: Clone + 'a>(
+    icon: &'static [u8],
+    bg: Color,
+    on_press: Message,
+    size: SplitButtonSize,
+) -> iced::Element<'a, Message, Theme, iced::Renderer> {
+    let hover_bg = {
+        let c = ColorToken::Gray600.to_color();
+        Color::from_rgba(c.r, c.g, c.b, 0.30)
+    };
+
+    let icon = svg(svg::Handle::from_memory(icon))
+        .width(Length::Fixed(size.icon_size))
+        .height(Length::Fixed(size.icon_size))
+        .style(|_theme: &Theme, _status| svg::Style {
+            color: Some(Color::WHITE),
+        });
+
+    let hit_area = button(
+        container(icon)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill),
+    )
+    .width(Length::Fixed(size.main_width))
+    .height(Length::Fixed(size.hit_height))
+    .on_press(on_press.clone())
+    .padding(Padding::from([1, 0]))
+    .style(move |_theme: &Theme, status| hit_area_style(status, hover_bg));
+
+    let base_btn = button(Space::new())
+        .width(Length::Fixed(size.inset * 2.0 + size.main_width))
+        .height(Length::Fixed(size.inset * 2.0 + size.hit_height))
+        .on_press(on_press)
+        .padding(0)
+        .style(move |_theme: &Theme, _status| button::Style {
+            background: Some(Background::Color(bg)),
+            border: Border {
+                color: Color::TRANSPARENT,
+                width: 0.0,
+                radius: 100.0.into(),
+            },
+            text_color: Color::WHITE,
+            shadow: Shadow::default(),
+            snap: false,
+        });
+
+    stack![
+        base_btn,
+        container(hit_area).padding(Padding::new(size.inset))
+    ]
+    .into()
 }
 
 pub fn split_button_sized<'a, Message: Clone + 'a>(

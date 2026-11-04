@@ -31,6 +31,7 @@ pub fn show(app: &AppHandle) -> Result<(), String> {
         .resizable(false)
         .skip_taskbar(true)
         .accept_first_mouse(true)
+        .content_protected(true)
         .build()
         .map_err(|e| format!("Failed to create call alert window: {e}"))?,
     };

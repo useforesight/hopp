@@ -129,6 +129,19 @@ pub struct CallStartMessage {
     pub start_camera_on_call: Option<bool>,
     /// Rejoining a call whose capture was started or stopped by hand: it stays that way.
     pub capture_by_hand: CaptureByHand,
+    /// The room's name, for the capture. A call between two people has none.
+    #[serde(default)]
+    pub room_name: Option<String>,
+}
+
+/// Something you clicked in one of the core's windows that's the app's to do, because the app
+/// keeps what it changes: what was asked of the capture, and which tool is in hand.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+pub enum AppAction {
+    ToggleCapture,
+    OpenCaptures,
+    ToggleDraw,
+    ToggleStamp,
 }
 
 /// What the user last did to this call's capture. The core can restart in a call and the
@@ -295,6 +308,9 @@ pub enum Message {
     /// The capture recording this call now, if any. Its last words may still be finishing
     /// after this says none.
     CaptureChanged(Option<String>),
+    AppAction(AppAction),
+    /// You let others control your screen, or stopped them, from the sharing pill.
+    ControllerCursorChanged(bool),
 }
 
 impl Message {
@@ -694,6 +710,7 @@ mod tests {
                 start_mic_on_call: None,
                 start_camera_on_call: None,
                 capture_by_hand: CaptureByHand::Nothing,
+                room_name: None,
             }))
             .unwrap();
         client_sender.send(Message::CallEnd).unwrap();

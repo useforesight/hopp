@@ -357,6 +357,7 @@ export interface CommandMap {
   captures_bookmark: { args: void; return: void };
   captures_stop: { args: void; return: void };
   captures_requested_call: { args: void; return: string | null };
+  captures_current: { args: void; return: string | null };
   app_publish_state: { args: { state: AppState }; return: void };
   cards_showing: { args: void; return: AgentCard[] };
   cards_settle: { args: { id: string; state: AgentCardAnswer }; return: void };
@@ -376,7 +377,7 @@ export interface CommandMap {
 
   // Call
   call_started: {
-    args: { audioToken: string; videoToken: string; micOn?: boolean; cameraOn?: boolean };
+    args: { audioToken: string; videoToken: string; micOn?: boolean; cameraOn?: boolean; roomName?: string };
     return: void;
   };
   end_call: { args: void; return: void };
