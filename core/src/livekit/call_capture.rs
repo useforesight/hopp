@@ -641,8 +641,8 @@ impl CallCapture {
     }
 }
 
-/// Whether a call is captured with nobody asking: only if the user chose to capture every
-/// call. Off until they do, see `config::Config::auto`.
+/// Whether a call is captured with nobody asking: unless the user turned off capturing every
+/// call, see `config::Config::auto`.
 pub fn wanted_by_default() -> bool {
     SUPPORTED && config::load().auto
 }
@@ -1427,9 +1427,8 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
-    fn calls_are_not_captured_until_the_user_chooses() {
-        assert!(!config::Config::default().auto);
+    fn calls_are_captured_unless_the_user_turns_it_off() {
+        assert!(config::Config::default().auto);
     }
 }

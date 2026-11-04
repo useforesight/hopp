@@ -20,9 +20,8 @@ pub struct Config {
     /// Show what people say while they say it (drafts), where the model and device
     /// allow: Parakeet on the GPU.
     pub drafts: bool,
-    /// Capture every call from the moment it connects. Off: only when started by hand.
-    /// On by default on Linux, at its user's request on 3 November; off by default on the
-    /// Mac, where nobody has chosen yet to transcribe every call their team makes.
+    /// Capture every call from the moment it connects, on by default. Off: only when started
+    /// by hand.
     pub auto: bool,
 }
 
@@ -33,7 +32,7 @@ impl Default for Config {
             keep_days: None,
             gpu: true,
             drafts: true,
-            auto: !cfg!(target_os = "macos"),
+            auto: true,
         }
     }
 }
