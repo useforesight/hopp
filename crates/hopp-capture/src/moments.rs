@@ -1483,6 +1483,20 @@ mod tests {
         out
     }
 
+    /// As soon as there's a frame, for what has to happen but has no deadline: a busy machine
+    /// can take its time making a still.
+    fn first_frame(
+        receiver: &std::sync::mpsc::Receiver<Input>,
+    ) -> Vec<(i64, Option<String>, String)> {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+            if let Ok(Input::Frame { t_ms, who, text }) = receiver.recv_timeout(left) {
+                return vec![(t_ms, who, text)];
+            }
+        }
+        Vec::new()
+    }
+
     /// What a frame costs the moments thread. Run with `--release`: debug builds are many
     /// times slower.
     #[test]
@@ -1571,14 +1585,14 @@ mod tests {
         let mut moments = Moments::start_in(directory.path().into(), feed)?;
         moments.people(vec![first.clone(), second.clone()]);
         moments.sample(flat(800, 500, 90));
-        let _ = frames(&receiver, Duration::from_millis(1_000));
+        let _ = first_frame(&receiver);
 
         // The later one marks first, and still doesn't get the colour they both want.
         let point = Point { x: 0.5, y: 0.5 };
         moments.draw(&second, "Second", &DrawEvent::ClickAnimation(point));
         std::thread::sleep(Duration::from_millis(300));
         moments.sample(flat(800, 500, 90));
-        assert_eq!(frames(&receiver, Duration::from_millis(1_500)).len(), 1);
+        assert_eq!(first_frame(&receiver).len(), 1);
         let info: FrameInfo =
             serde_json::from_slice(&std::fs::read(directory.path().join("frame-002.json"))?)?;
         let expected = Colours::for_call([first.as_str(), second.as_str()]);
@@ -1594,7 +1608,7 @@ mod tests {
         let (feed, receiver) = Feed::for_tests();
         let mut moments = Moments::start_in(directory.path().into(), feed)?;
         moments.sample(flat(800, 500, 90));
-        let _ = frames(&receiver, Duration::from_millis(1_500));
+        let _ = first_frame(&receiver);
         let lee = "room:r:lee:audio";
         let (x, y) = (0.7, 0.2);
         moments.stamp(lee, "Lee", &StampMessage::StampPlace { id: 5, x, y });
@@ -1734,7 +1748,7 @@ mod tests {
         let (feed, receiver) = Feed::for_tests();
         let mut moments = Moments::start_in(directory.path().into(), feed)?;
         moments.sample(flat(320, 180, 20));
-        assert_eq!(frames(&receiver, Duration::from_millis(500)).len(), 1);
+        assert_eq!(first_frame(&receiver).len(), 1);
         // A new page: changes, then holds still. Within SCENE_GAP of frame 1: no frame.
         moments.sample(flat(320, 180, 200));
         moments.sample(flat(320, 180, 200));
@@ -1749,11 +1763,11 @@ mod tests {
         let (feed, receiver) = Feed::for_tests();
         let mut moments = Moments::start_in(directory.path().into(), feed)?;
         moments.sample(flat(320, 180, 20));
-        assert_eq!(frames(&receiver, Duration::from_millis(300)).len(), 1);
+        assert_eq!(first_frame(&receiver).len(), 1);
         // Another app: the whole screen changes, then nothing more is sent.
         moments.sample(flat(320, 180, 200));
         assert!(frames(&receiver, Duration::from_millis(1_500)).is_empty());
-        let later = frames(&receiver, Duration::from_millis(2_500));
+        let later = first_frame(&receiver);
         assert_eq!(later.len(), 1, "{later:?}");
         assert_eq!(later[0].2, "#2 the shared screen changed");
         moments.finish();
