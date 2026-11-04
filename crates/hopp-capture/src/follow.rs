@@ -1,21 +1,34 @@
 //! Following a capture as it is written: new lines as they arrive, or (for agents) held
-//! back until someone says a wake phrase or a script decides it's time.
+//! back until someone asks for the agent by name, or a script decides it's time.
+//!
+//! The name can come anywhere in what someone says: "Claude, why is that failing?" or
+//! "…what do you reckon, Claude?". Hearing it starts a request, and the follower wakes
+//! once that person has finished: they go quiet, someone else starts talking, or
+//! [`TURN_LIMIT`] passes. The agent gets their words as the request ([`Follower::asked`])
+//! with the lines that led up to it, and is told how much of the call it hasn't seen
+//! ([`brief`]).
 
 use anyhow::{Context, Result};
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     io::Write,
     path::PathBuf,
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
 
-use crate::store::{Kind, Line, Store};
+use crate::store::{self, Kind, Line, Store};
 
 /// How often the database is checked for new lines. WAL makes this cheap.
 pub const POLL: Duration = Duration::from_millis(300);
 /// The longest a `--wake-if` script may take to decide.
 const WAKE_SCRIPT_LIMIT: Duration = Duration::from_secs(10);
+/// After the wake phrase, how long the person must be quiet for their turn to be over.
+/// Their drafts count as talking, so a pause to think doesn't cut them off while they
+/// still have a line being transcribed.
+const TURN_QUIET: Duration = Duration::from_millis(2_000);
+/// The longest the rest of a request is waited for once the wake phrase is heard.
+const TURN_LIMIT: Duration = Duration::from_secs(20);
 
 #[derive(Clone, Default)]
 pub struct Wake {
@@ -32,6 +45,22 @@ impl Wake {
     }
 }
 
+/// Someone said the wake phrase and may not have finished.
+struct Asking {
+    /// The line with the wake phrase.
+    line: i64,
+    t_ms: i64,
+    speaker: Option<String>,
+    reason: String,
+    heard: Instant,
+    /// When they were last heard, as a draft or a final line.
+    last: Instant,
+    /// Their drafts not yet final: they are still talking.
+    open: HashSet<i64>,
+    /// Someone else has started talking since.
+    interrupted: bool,
+}
+
 pub struct Follower {
     call_id: String,
     /// The revision read up to (see `Store::changes`).
@@ -41,6 +70,10 @@ pub struct Follower {
     held: VecDeque<Line>,
     context: usize,
     wake: Wake,
+    asking: Option<Asking>,
+    /// What the person who woke the follower asked, once they finished.
+    asked: Option<Line>,
+    quiet: Duration,
     /// End the capture if its recorder has died (see `liveness`).
     watch_orphans: bool,
 }
@@ -80,6 +113,9 @@ impl Follower {
             held,
             context,
             wake,
+            asking: None,
+            asked: None,
+            quiet: TURN_QUIET,
             watch_orphans: true,
         })
     }
@@ -99,6 +135,13 @@ impl Follower {
         self
     }
 
+    /// A shorter quiet for tests.
+    #[cfg(test)]
+    fn quiet_after(mut self, quiet: Duration) -> Self {
+        self.quiet = quiet;
+        self
+    }
+
     pub fn cursor(&self) -> i64 {
         self.cursor
     }
@@ -106,6 +149,12 @@ impl Follower {
     /// The lines held for context, oldest first.
     pub fn held(&self) -> Vec<Line> {
         self.held.iter().cloned().collect()
+    }
+
+    /// What the person who said the wake phrase asked: everything they said in that
+    /// turn, from the start of the message with the phrase in it.
+    pub fn asked(&self) -> Option<&Line> {
+        self.asked.as_ref()
     }
 
     pub fn poll(&mut self, store: &Store) -> Result<Poll> {
@@ -121,26 +170,21 @@ impl Follower {
         if let Some(last) = new.last() {
             self.cursor = last.rev;
         }
-        if !self.drafts {
-            new.retain(|line| line.kind.is_final());
-        }
         let mut woke = None;
         if self.wake.enabled() {
-            // Wake phrases and context use final lines only, as they are what was said.
-            for line in new.iter().filter(|line| line.kind.is_final()) {
-                self.held.push_back(line.clone());
-                if self.held.len() > self.context.max(1) {
-                    self.held.pop_front();
-                }
-                if woke.is_none()
-                    && let Some(phrase) = &self.wake.phrase
-                    && line.kind == Kind::Speech
-                    && contains_phrase(&line.text, phrase)
-                {
-                    woke = Some(format!("phrase \"{phrase}\""));
-                }
+            self.listen(&new);
+            let over = self.asking.as_ref().is_some_and(|asking| {
+                ended
+                    || asking.interrupted
+                    || (asking.open.is_empty() && asking.last.elapsed() >= self.quiet)
+                    || asking.heard.elapsed() >= TURN_LIMIT
+            });
+            if over && let Some(asking) = self.asking.take() {
+                self.asked = self.request(asking.line);
+                woke = Some(asking.reason);
             }
             if woke.is_none()
+                && self.asking.is_none()
                 && new.iter().any(|line| line.kind.is_final())
                 && let Some(script) = &self.wake.script
                 && run_wake_script(script, &self.held)?
@@ -148,11 +192,94 @@ impl Follower {
                 woke = Some(format!("{} said so", script.display()));
             }
         }
+        if !self.drafts {
+            new.retain(|line| line.kind.is_final());
+        }
         Ok(Poll { new, woke, ended })
     }
 
+    /// Hold new final lines for context, notice the wake phrase, and keep track of
+    /// whether whoever said it is still talking. Wake phrases and context use final lines
+    /// only, as they are what was said; drafts only show someone is talking.
+    fn listen(&mut self, new: &[Line]) {
+        let now = Instant::now();
+        for line in new {
+            if let Some(asking) = &mut self.asking {
+                if line.speaker_id.is_some() && line.speaker_id == asking.speaker {
+                    asking.last = now;
+                    if line.kind == Kind::Draft {
+                        asking.open.insert(line.id);
+                    } else {
+                        asking.open.remove(&line.id);
+                    }
+                } else if line.kind == Kind::Speech
+                    && line.speaker_id.is_some()
+                    && line.t_ms > asking.t_ms
+                    && !store::reaction(line)
+                {
+                    asking.interrupted = true;
+                }
+            }
+            if !line.kind.is_final() {
+                continue;
+            }
+            self.held.push_back(line.clone());
+            // While someone is asking, their words stay held whatever the context size.
+            if self.asking.is_none() && self.held.len() > self.context.max(1) {
+                self.held.pop_front();
+            }
+            if self.asking.is_none()
+                && let Some(phrase) = &self.wake.phrase
+                && line.kind == Kind::Speech
+                && contains_phrase(&line.text, phrase)
+            {
+                self.asking = Some(Asking {
+                    line: line.id,
+                    t_ms: line.t_ms,
+                    speaker: line.speaker_id.clone(),
+                    reason: format!("phrase \"{phrase}\""),
+                    heard: now,
+                    last: now,
+                    open: HashSet::new(),
+                    interrupted: false,
+                });
+            }
+        }
+    }
+
+    /// The message holding line `id`, with what its speaker said after it until
+    /// someone else spoke (not counting short reactions).
+    fn request(&self, id: i64) -> Option<Line> {
+        let mut lines = self.held();
+        store::sort(&mut lines);
+        let messages = store::messages(&lines);
+        let start = messages
+            .iter()
+            .position(|message| message.id == id || message.joins.contains(&id))?;
+        let mut request = messages[start].clone();
+        for later in &messages[start + 1..] {
+            let theirs = later.kind == Kind::Speech && later.speaker_id == request.speaker_id;
+            if theirs {
+                if request.joins.is_empty() {
+                    request.joins.push(request.id);
+                }
+                request.joins.extend(later.joins.iter().copied());
+                if later.joins.is_empty() {
+                    request.joins.push(later.id);
+                }
+                request.end_ms = Some(store::end_of(&request).max(store::end_of(later)));
+                request.text = format!("{} {}", request.text.trim(), later.text.trim());
+            } else if later.kind == Kind::Speech && !store::reaction(later) {
+                break;
+            }
+        }
+        Some(request)
+    }
+
     /// Poll until something happens: in wake mode until it wakes, otherwise until any
-    /// new line arrives; either way until the capture ends or `limit` passes.
+    /// new line arrives; either way until the capture ends or `limit` passes. Someone
+    /// who has said the wake phrase is heard out even past `limit` (up to
+    /// [`TURN_LIMIT`]).
     pub fn wait(&mut self, store: &Store, limit: Duration) -> Result<Poll> {
         let deadline = Instant::now() + limit;
         let mut arrived = Vec::new();
@@ -162,7 +289,7 @@ impl Follower {
             let done = poll.woke.is_some()
                 || poll.ended
                 || (!self.wake.enabled() && !arrived.is_empty())
-                || Instant::now() >= deadline;
+                || (Instant::now() >= deadline && self.asking.is_none());
             if done {
                 poll.new = arrived;
                 return Ok(poll);
@@ -170,6 +297,98 @@ impl Follower {
             std::thread::sleep(POLL);
         }
     }
+
+    /// How much of the call came before the held lines: final lines, and the frames
+    /// among them by number.
+    pub fn earlier(&self, store: &Store) -> Result<(usize, Vec<u32>)> {
+        let held: HashSet<i64> = self.held.iter().map(|line| line.id).collect();
+        let Some(first) = self.held.iter().map(|line| line.t_ms).min() else {
+            return Ok((0, Vec::new()));
+        };
+        let earlier: Vec<Line> = store
+            .transcript(&self.call_id)?
+            .into_iter()
+            .filter(|line| line.t_ms < first && !held.contains(&line.id))
+            .collect();
+        let frames = earlier
+            .iter()
+            .filter(|line| line.kind == Kind::Frame)
+            .filter_map(|line| super::frame_files::number(&line.text))
+            .collect();
+        Ok((earlier.len(), frames))
+    }
+}
+
+/// Where a woken agent can look further back.
+pub enum Tools {
+    /// Hopp's MCP tools.
+    Mcp,
+    /// `hopp capture` commands.
+    Cli,
+}
+
+/// `#4`, or `#1–#12`.
+pub fn frame_range(frames: &[u32]) -> Option<String> {
+    let first = frames.iter().min()?;
+    let last = frames.iter().max()?;
+    Some(if first == last {
+        format!("#{first}")
+    } else {
+        format!("#{first}–#{last}")
+    })
+}
+
+/// What a woken agent is told to do: who asked what, that the lines it has are only the
+/// latest part of the call, and how to look further back and at the screen before
+/// answering.
+pub fn brief(
+    call_id: &str,
+    asked: Option<&Line>,
+    earlier_lines: usize,
+    earlier_frames: &[u32],
+    tools: Tools,
+) -> String {
+    let mut out = match asked {
+        Some(line) => format!(
+            "{} asked you this at {}: \"{}\"",
+            line.speaker.as_deref().unwrap_or("Someone"),
+            store::clock(line.t_ms),
+            line.text.trim()
+        ),
+        None => "You were woken by the wake script.".into(),
+    };
+    out.push_str("\n\nThe lines you have are only the latest part of the call");
+    match (earlier_lines, frame_range(earlier_frames)) {
+        (0, _) => out.push('.'),
+        (lines, None) => out.push_str(&format!("; {lines} earlier lines aren't shown.")),
+        (lines, Some(frames)) => out.push_str(&format!(
+            "; {lines} earlier lines, with frames {frames}, aren't shown."
+        )),
+    }
+    let (read, look, then) = match tools {
+        Tools::Mcp => (
+            format!("capture_transcript (id \"{call_id}\") or capture_search"),
+            "capture_frame (zoom shows a marked area in detail)".to_owned(),
+            "Then answer with notify_user, and use request_user_decision before acting on \
+             it. Call capture_follow again with after_line to keep listening."
+                .to_owned(),
+        ),
+        Tools::Cli => (
+            format!("`hopp capture show {call_id}` or `hopp capture search WORDS`"),
+            match super::frame_files::dir(call_id) {
+                Ok(dir) => format!("the frame images in {}", dir.display()),
+                Err(_) => "the frame images".to_owned(),
+            },
+            "Then answer, and run this again to keep listening.".to_owned(),
+        ),
+    };
+    out.push_str(&format!(
+        " Before you answer, work out what they mean and what they're looking at: read \
+         back through the call with {read}, and look at the shared screen with {look}. \
+         Trust the screen over the transcript where they disagree. {then} If they were \
+         talking about you rather than to you, answer nothing."
+    ));
+    out
 }
 
 /// Lower-case letters and digits, single spaces: "Hey, Claude!" → "hey claude".
@@ -340,7 +559,9 @@ mod tests {
             phrase: Some("hey claude".into()),
             script: None,
         };
-        let mut waiting = Follower::new(&store, "c_2", start, 5, wake)?.without_orphan_check();
+        let mut waiting = Follower::new(&store, "c_2", start, 5, wake)?
+            .without_orphan_check()
+            .quiet_after(Duration::ZERO);
         let id = store.add_line(
             "c_2",
             &NewLine {
@@ -371,7 +592,9 @@ mod tests {
             phrase: Some("hey claude".into()),
             script: None,
         };
-        let mut follower = Follower::new(&store, "c_2", last, 3, wake)?.without_orphan_check();
+        let mut follower = Follower::new(&store, "c_2", last, 3, wake)?
+            .without_orphan_check()
+            .quiet_after(QUIET);
         assert_eq!(follower.held().len(), 1, "starts with recent context");
         store.add_line("c_2", &speech(1_000, "Mira", "One."))?;
         store.add_line("c_2", &speech(2_000, "Mira", "Two."))?;
@@ -383,6 +606,107 @@ mod tests {
         let held = follower.held();
         assert_eq!(held.len(), 3, "context is capped");
         assert_eq!(held.last().unwrap().text, "Hey Claude, which port?");
+        assert_eq!(follower.asked().unwrap().text, "Hey Claude, which port?");
+        Ok(())
+    }
+
+    const QUIET: Duration = Duration::from_millis(200);
+
+    fn calling(store: &Store, phrase: &str) -> Result<Follower> {
+        let last = store.latest_rev("c_2")?;
+        let wake = Wake {
+            phrase: Some(phrase.into()),
+            script: None,
+        };
+        Ok(Follower::new(store, "c_2", last, 10, wake)?
+            .without_orphan_check()
+            .quiet_after(QUIET))
+    }
+
+    /// The name starts a request; the follower wakes once they've finished, with all of
+    /// it, so the agent hears the question and not only its name.
+    #[test]
+    fn hears_the_whole_request_after_the_name() -> Result<()> {
+        let (_directory, store) = fixture()?;
+        let mut follower = calling(&store, "claude")?;
+        store.add_line("c_2", &speech(10_000, "Mira", "Claude,"))?;
+        assert!(follower.poll(&store)?.woke.is_none(), "still talking");
+        store.add_line("c_2", &speech(11_000, "Mira", "why does the port close?"))?;
+        let poll = follower.wait(&store, Duration::from_secs(2))?;
+        assert!(poll.woke.is_some());
+        assert_eq!(
+            follower.asked().unwrap().text,
+            "Claude, why does the port close?"
+        );
+        Ok(())
+    }
+
+    /// The name at the end of a question brings in the rest of their message.
+    #[test]
+    fn the_name_can_come_last() -> Result<()> {
+        let (_directory, store) = fixture()?;
+        let mut follower = calling(&store, "claude")?;
+        store.add_line(
+            "c_2",
+            &speech(10_000, "Mira", "So the socket closes early."),
+        )?;
+        store.add_line(
+            "c_2",
+            &speech(12_000, "Mira", "What do you reckon, Claude?"),
+        )?;
+        let poll = follower.wait(&store, Duration::from_secs(2))?;
+        assert!(poll.woke.is_some());
+        assert_eq!(
+            follower.asked().unwrap().text,
+            "So the socket closes early. What do you reckon, Claude?"
+        );
+        Ok(())
+    }
+
+    /// A line still being said keeps the request open past the quiet; someone else
+    /// talking ends it at once, but a "yeah" from them doesn't.
+    #[test]
+    fn a_turn_ends_when_they_stop_or_someone_else_starts() -> Result<()> {
+        use crate::store::{Kind, NewLine};
+        let (_directory, store) = fixture()?;
+        let mut follower = calling(&store, "claude")?.quiet_after(Duration::ZERO);
+        store.add_line("c_2", &speech(10_000, "Mira", "Claude, look at this"))?;
+        let draft = store.add_line(
+            "c_2",
+            &NewLine {
+                kind: Kind::Draft,
+                ..speech(12_000, "Mira", "and the")
+            },
+        )?;
+        assert!(follower.poll(&store)?.woke.is_none(), "a draft is talking");
+        store.add_line("c_2", &speech(12_500, "Joe", "Yeah"))?;
+        assert!(follower.poll(&store)?.woke.is_none(), "a reaction");
+        store.update_line(draft, Kind::Speech, "and the log.", Some(13_000))?;
+        assert!(follower.poll(&store)?.woke.is_some());
+        assert_eq!(
+            follower.asked().unwrap().text,
+            "Claude, look at this and the log."
+        );
+
+        let mut follower = calling(&store, "claude")?.quiet_after(Duration::from_secs(60));
+        store.add_line("c_2", &speech(20_000, "Mira", "Claude, can you check it"))?;
+        assert!(follower.poll(&store)?.woke.is_none());
+        store.add_line("c_2", &speech(21_000, "Joe", "I think it's the timeout."))?;
+        assert!(follower.poll(&store)?.woke.is_some(), "Joe took over");
+        assert_eq!(follower.asked().unwrap().text, "Claude, can you check it");
+        Ok(())
+    }
+
+    #[test]
+    fn the_brief_says_what_was_asked_and_what_is_not_shown() -> Result<()> {
+        let (_directory, store) = fixture()?;
+        let mut follower = calling(&store, "claude")?.quiet_after(Duration::ZERO);
+        store.add_line("c_2", &speech(10_000, "Mira", "Claude, which port?"))?;
+        assert!(follower.poll(&store)?.woke.is_some());
+        let brief = brief("c_2", follower.asked(), 12, &[3, 1, 7], Tools::Mcp);
+        assert!(brief.starts_with("Mira asked you this at 00:10: \"Claude, which port?\""));
+        assert!(brief.contains("12 earlier lines, with frames #1–#7, aren't shown"));
+        assert!(brief.contains("capture_frame"));
         Ok(())
     }
 

@@ -30,6 +30,12 @@ told why in your terminal; the app answers once it has passed the request on. `h
 on a screen you're sharing, and not yet on someone else's: its tools are in the viewer's window.
 Agents can't start a capture: `mcp` has no tool for it.
 
+An agent in a call waits with its name as the wake phrase, as in `hopp capture follow --on-wake claude`
+or `wake_phrase` on the `capture_follow` tool, and the name can come anywhere in what someone says.
+`follow` wakes it once they've finished: 2 s of quiet, someone else saying more than a reaction, the
+call ending, or 20 s after the name. The reply holds their words as `asked`, the lines before them, a
+count of what isn't shown, and `next`, which tells the agent to read back before answering.
+
 `hopp notify` and `hopp ask` show a card in the app (`cards`), and the MCP tools `notify_user`,
 `request_user_decision`, `wait_for_decision` and `cancel_card` do the same for agents. `hopp ask`
 exits 0 on accept, 1 on reject or close, and 2 on timeout, when it also withdraws the card.
