@@ -331,6 +331,7 @@ pub fn download(model: &Model, mut progress: impl FnMut(u64, u64)) -> Result<Pat
     let destination = own_path(model)?;
     let directory = dir()?;
     crate::paths::private_dir(&directory)?;
+    remove_abandoned_downloads(&directory, Duration::from_secs(3600));
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(15))
         .timeout(None)
@@ -367,6 +368,24 @@ pub fn download(model: &Model, mut progress: impl FnMut(u64, u64)) -> Result<Pat
     Ok(destination)
 }
 
+/// A download keeps writing to its temporary file, and leaves it behind if Hopp quits part
+/// way through. Those can be gigabytes, so whatever has sat untouched this long goes.
+fn remove_abandoned_downloads(directory: &std::path::Path, untouched: Duration) {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let abandoned = entry.file_name().to_string_lossy().starts_with(".tmp")
+            && entry
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .is_ok_and(|modified| modified.elapsed().is_ok_and(|age| age >= untouched));
+        if abandoned {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 /// whisper.cpp models from before Hopp moved to transcribe.cpp, which it no longer
 /// loads: `ggml-*.bin` in Hopp's models folder.
 pub fn legacy_files() -> Vec<PathBuf> {
@@ -389,6 +408,26 @@ pub fn legacy_files() -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_download_nobody_is_writing_is_abandoned() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let hour_ago = std::time::SystemTime::now() - Duration::from_secs(3600);
+        let file = |name: &str, modified| -> Result<PathBuf> {
+            let path = directory.path().join(name);
+            let file = std::fs::File::create(&path)?;
+            file.set_modified(modified)?;
+            Ok(path)
+        };
+        let abandoned = file(".tmpABC", hour_ago)?;
+        let running = file(".tmpDEF", std::time::SystemTime::now())?;
+        let model = file("parakeet.gguf", hour_ago)?;
+        remove_abandoned_downloads(directory.path(), Duration::from_secs(1800));
+        assert!(!abandoned.exists());
+        assert!(running.exists());
+        assert!(model.exists());
+        Ok(())
+    }
 
     #[test]
     fn the_default_exists_and_names_are_unique() -> Result<()> {

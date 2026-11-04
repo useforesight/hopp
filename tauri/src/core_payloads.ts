@@ -71,6 +71,34 @@ export interface CapturePicture {
   marks: CaptureMark[];
 }
 
+export interface CaptureModel {
+  name: string;
+  bytes: number;
+  note: string;
+  installed: boolean;
+  shared: boolean;
+  downloading: number | null;
+  failed: string | null;
+}
+
+export interface CaptureSettings {
+  model: string;
+  gpu: boolean;
+  drafts: boolean;
+  auto: boolean;
+  keep_days: number | null;
+  models: CaptureModel[];
+  captures_bytes: number;
+  models_bytes: number;
+}
+
+export type CaptureChange =
+  | { model: string }
+  | { gpu: boolean }
+  | { drafts: boolean }
+  | { auto: boolean }
+  | { keep_days: number | null };
+
 export interface CaptureUpdate {
   call: CaptureCall;
   /** The rows from this one on replace those the window has. */
@@ -287,6 +315,11 @@ export interface CommandMap {
   captures_open_markdown: { args: { callId: string }; return: void };
   captures_bookmark: { args: void; return: void };
   captures_stop: { args: void; return: void };
+  capture_settings: { args: void; return: CaptureSettings };
+  capture_settings_change: { args: { change: CaptureChange }; return: void };
+  capture_model_download: { args: { name: string }; return: void };
+  capture_model_delete: { args: { name: string }; return: void };
+  capture_open_folder: { args: void; return: void };
   show_call_alert_window: { args: void; return: void };
   write_launcher_directory: { args: { contents: string }; return: void };
   close_call_alert_window: { args: void; return: void };

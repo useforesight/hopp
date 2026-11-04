@@ -76,15 +76,23 @@ impl Tap {
 
 /// Delete captures older than the `keep_days` setting, with their Markdown copies.
 pub fn prune() -> Result<usize> {
-    let Some(days) = config::load().keep_days else {
+    if config::load().keep_days.is_none() {
         return Ok(0);
-    };
+    }
     let path = store::default_path()?;
     if !path.exists() {
         return Ok(0);
     }
+    prune_in(&store::Store::open(&path)?)
+}
+
+/// [`prune`], for a process that already has the store open.
+pub fn prune_in(store: &store::Store) -> Result<usize> {
+    let Some(days) = config::load().keep_days else {
+        return Ok(0);
+    };
     let cutoff = store::now_ms() - i64::from(days) * 24 * 3600 * 1000;
-    let ids = store::Store::open(&path)?.prune(cutoff)?;
+    let ids = store.prune(cutoff)?;
     for id in &ids {
         let _ = fs::remove_file(markdown_path(id)?);
         moments::remove(id);
@@ -92,23 +100,31 @@ pub fn prune() -> Result<usize> {
     Ok(ids.len())
 }
 
-/// Bytes used by captures and by downloaded models.
+/// Bytes used by captures, with their pictures, and by downloaded models.
 pub fn disk_usage() -> (u64, u64) {
-    let size = |directory: Option<PathBuf>| {
-        directory
-            .and_then(|directory| fs::read_dir(directory).ok())
-            .into_iter()
-            .flatten()
-            .filter_map(|entry| entry.ok()?.metadata().ok())
-            .filter(|metadata| metadata.is_file())
-            .map(|metadata| metadata.len())
-            .sum()
-    };
+    let size =
+        |directory: Option<PathBuf>| directory.map_or(0, |directory| folder_size(&directory));
     let data = crate::paths::data_dir().ok();
     (
         size(data.as_ref().map(|data| data.join("capture"))),
         size(data.map(|data| data.join("models"))),
     )
+}
+
+fn folder_size(directory: &Path) -> u64 {
+    fs::read_dir(directory)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let metadata = entry.metadata().ok()?;
+            Some(if metadata.is_dir() {
+                folder_size(&entry.path())
+            } else {
+                metadata.len()
+            })
+        })
+        .sum()
 }
 
 /// `<data>/capture/<id>.md`, written when a capture finishes.
@@ -129,4 +145,22 @@ pub fn write_private(path: &Path, contents: &[u8]) -> Result<()> {
     file.as_file().sync_all()?;
     file.persist(path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_folder_counts_what_is_in_its_folders() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        fs::write(directory.path().join("index.db"), [0; 100])?;
+        let frames = directory.path().join("frames").join("c_1");
+        fs::create_dir_all(&frames)?;
+        fs::write(frames.join("frame-001.webp"), [0; 20])?;
+        fs::write(frames.join("frame-001.full.webp"), [0; 3])?;
+        assert_eq!(folder_size(directory.path()), 123);
+        assert_eq!(folder_size(&directory.path().join("nothing here")), 0);
+        Ok(())
+    }
 }

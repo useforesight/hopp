@@ -7,6 +7,7 @@ import {
   HiCheck,
   HiMagnifyingGlass,
   HiOutlineAdjustmentsHorizontal,
+  HiOutlineChatBubbleBottomCenterText,
   HiOutlineEyeSlash,
   HiOutlinePhone,
   HiOutlineSwatch,
@@ -22,6 +23,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import {
   typedInvoke,
   type AppVeilApplication,
+  type CaptureChange,
+  type CaptureModel,
   type InstalledApplication,
   type ScreenSharePickerMode,
   type ScreenShareResolution,
@@ -77,11 +80,13 @@ function SwitchRow({
   title,
   description,
   checked,
+  disabled,
   onCheckedChange,
 }: {
   title: string;
   description: string;
   checked: boolean;
+  disabled?: boolean;
   onCheckedChange: (checked: boolean) => void;
 }) {
   return (
@@ -90,7 +95,7 @@ function SwitchRow({
         <span className={settingTitleClass}>{title}</span>
         <span className={settingDescriptionClass}>{description}</span>
       </div>
-      <Switch checked={checked} onCheckedChange={onCheckedChange} />
+      <Switch checked={checked} disabled={disabled} onCheckedChange={onCheckedChange} />
     </label>
   );
 }
@@ -536,11 +541,195 @@ function AppVeilSettings({
   );
 }
 
-type SectionId = "appearance" | "call" | "app-veil" | "shortcuts" | "misc";
+const formatBytes = (bytes: number) =>
+  bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.round(bytes / 1e6)} MB`;
+
+function CaptureModelRow({
+  model,
+  chosen,
+  onChoose,
+  onDownload,
+  onDelete,
+}: {
+  model: CaptureModel;
+  chosen: boolean;
+  onChoose: () => void;
+  onDownload: () => void;
+  onDelete: () => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const size = formatBytes(model.bytes);
+  return (
+    <div
+      className={clsx(
+        "flex items-center gap-3 px-3.5 py-2 first:rounded-t-xl last:rounded-b-xl",
+        chosen && "bg-accent-soft",
+      )}
+    >
+      <label className="flex min-w-0 flex-1 items-center gap-3">
+        <input
+          type="radio"
+          name="capture-model"
+          className="size-3.5 shrink-0 accent-[var(--color-accent)]"
+          checked={chosen}
+          onChange={(event) => {
+            if (event.target.checked) onChoose();
+          }}
+        />
+        <span className="flex min-w-0 flex-col">
+          <span className={settingTitleClass}>
+            {model.name} <span className="font-normal text-muted-foreground">{size}</span>
+          </span>
+          <span className={clsx(settingDescriptionClass, "first-letter:uppercase")}>{model.note}</span>
+        </span>
+      </label>
+      {model.downloading !== null ?
+        <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{model.downloading}%</span>
+      : model.shared ?
+        <span className="shrink-0 text-xs text-muted-foreground">From Hex</span>
+      : model.installed ?
+        <Button
+          variant={confirming ? "destructive-transparent" : "outline"}
+          size="sm"
+          onBlur={() => setConfirming(false)}
+          onMouseLeave={() => setConfirming(false)}
+          onClick={() => {
+            if (confirming) {
+              setConfirming(false);
+              onDelete();
+            } else {
+              setConfirming(true);
+            }
+          }}
+        >
+          {confirming ? `Delete ${size}?` : "Delete"}
+        </Button>
+      : <Button variant="outline" size="sm" onClick={onDownload}>
+          Download
+        </Button>
+      }
+    </div>
+  );
+}
+
+function CaptureSettingsSection() {
+  const [failure, setFailure] = useState("");
+  const { data: capture, refetch } = useQuery({
+    queryKey: ["capture-settings"],
+    queryFn: () => typedInvoke("capture_settings"),
+    refetchOnWindowFocus: true,
+    refetchInterval: (query) => (query.state.data?.models.some((model) => model.downloading !== null) ? 1000 : false),
+  });
+
+  if (!capture) return null;
+
+  const run = (work: Promise<unknown>) => {
+    setFailure("");
+    work.catch((error) => setFailure(String(error))).finally(() => refetch());
+  };
+  const change = (next: CaptureChange) => run(typedInvoke("capture_settings_change", { change: next }));
+  const failedDownload = capture.models.find((model) => model.failed !== null);
+  const liveTextPossible = capture.gpu && capture.model.startsWith("parakeet");
+
+  return (
+    <>
+      <p className="text-xs leading-[18px] text-muted-foreground">
+        Capture transcribes a call on this computer and keeps it here. Nothing is uploaded.
+      </p>
+
+      <SettingsGroup>
+        <SwitchRow
+          title="Capture every call"
+          description="Start transcribing as each call connects. Let people know you do."
+          checked={capture.auto}
+          onCheckedChange={(auto) => change({ auto })}
+        />
+      </SettingsGroup>
+
+      <SettingsGroup title="Transcription model">
+        {capture.models.map((model) => (
+          <CaptureModelRow
+            key={model.name}
+            model={model}
+            chosen={model.name === capture.model}
+            onChoose={() => change({ model: model.name })}
+            onDownload={() => run(typedInvoke("capture_model_download", { name: model.name }))}
+            onDelete={() => run(typedInvoke("capture_model_delete", { name: model.name }))}
+          />
+        ))}
+      </SettingsGroup>
+      {failedDownload && (
+        <p role="alert" className="text-xs leading-[18px] text-destructive">
+          Download failed: {failedDownload.name}: {failedDownload.failed}
+        </p>
+      )}
+
+      <SettingsGroup title="Transcription">
+        <RadioCardsRow
+          title="Runs on"
+          description="Applies from the next capture"
+          name="capture-device"
+          items={[
+            { id: "gpu", title: "GPU", description: "Faster, and uses less energy" },
+            { id: "cpu", title: "CPU", description: "Slower, and only uses spare time" },
+          ]}
+          value={capture.gpu ? "gpu" : "cpu"}
+          onValueChange={(device) => change({ gpu: device === "gpu" })}
+        />
+        <SwitchRow
+          title="Live text"
+          description="Show words about two seconds after they're said. The final text is the same either way. Needs a Parakeet model on the GPU."
+          checked={capture.drafts && liveTextPossible}
+          disabled={!liveTextPossible}
+          onCheckedChange={(drafts) => change({ drafts })}
+        />
+      </SettingsGroup>
+
+      <SettingsGroup title="Storage">
+        <div className="flex min-h-[56px] items-center justify-between gap-6 px-3.5 py-2.5">
+          <div className="flex min-w-0 flex-col">
+            <span className={settingTitleClass}>Storage used</span>
+            <span className={settingDescriptionClass}>
+              Captures {formatBytes(capture.captures_bytes)}, models {formatBytes(capture.models_bytes)}
+            </span>
+          </div>
+          <div className="flex shrink-0 gap-2">
+            <Button variant="outline" size="sm" onClick={() => run(tauriUtils.openCapturesWindow())}>
+              Open captures
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => run(typedInvoke("capture_open_folder"))}>
+              Show folder
+            </Button>
+          </div>
+        </div>
+        <RadioCardsRow
+          title="Delete captures after"
+          description="Older captures go as soon as you choose, with their pictures and Markdown"
+          name="capture-keep"
+          items={[
+            { id: "never", title: "Never", description: "Keep every capture" },
+            { id: "90", title: "90 days", description: "About three months" },
+            { id: "30", title: "30 days", description: "About a month" },
+          ]}
+          value={capture.keep_days === null ? "never" : (String(capture.keep_days) as "90" | "30" | "never")}
+          onValueChange={(keep) => change({ keep_days: keep === "never" ? null : Number(keep) })}
+        />
+      </SettingsGroup>
+      {failure && (
+        <p role="alert" className="text-xs leading-[18px] text-destructive">
+          {failure}
+        </p>
+      )}
+    </>
+  );
+}
+
+type SectionId = "appearance" | "call" | "capture" | "app-veil" | "shortcuts" | "misc";
 
 const SECTIONS: { id: SectionId; title: string; icon: ReactNode; beta?: boolean; macOnly?: boolean }[] = [
   { id: "appearance", title: "Appearance", icon: <HiOutlineSwatch /> },
   { id: "call", title: "Calls", icon: <HiOutlinePhone /> },
+  { id: "capture", title: "Capture", icon: <HiOutlineChatBubbleBottomCenterText />, macOnly: true },
   { id: "app-veil", title: "App Veil", icon: <HiOutlineEyeSlash />, beta: true, macOnly: true },
   { id: "shortcuts", title: "Shortcuts", icon: <LuCommand /> },
   { id: "misc", title: "General", icon: <HiOutlineAdjustmentsHorizontal /> },
@@ -788,6 +977,8 @@ function SettingsWindow() {
               </SettingsGroup>
             </>
           )}
+
+          {section === "capture" && OS === "macos" && <CaptureSettingsSection />}
 
           {section === "app-veil" && OS === "macos" && (
             <AppVeilSettings
