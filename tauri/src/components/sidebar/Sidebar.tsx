@@ -437,10 +437,12 @@ export const Sidebar = () => {
                 <HiOutlineUserCircle />
                 Profile
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => tauriUtils.openCapturesWindow()}>
-                <HiOutlineChatBubbleBottomCenterText />
-                Captures
-              </DropdownMenuItem>
+              {OS === "macos" && (
+                <DropdownMenuItem onClick={() => tauriUtils.openCapturesWindow()}>
+                  <HiOutlineChatBubbleBottomCenterText />
+                  Captures
+                </DropdownMenuItem>
+              )}
               <DropdownMenuItem onClick={() => tauriUtils.openSettingsWindow()}>
                 <HiOutlineCog6Tooth />
                 Settings

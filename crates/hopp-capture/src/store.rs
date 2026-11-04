@@ -524,16 +524,13 @@ impl Store {
         Ok(())
     }
 
-    /// Delete finished captures that started before `cutoff_ms`; returns their ids.
-    pub fn prune(&self, cutoff_ms: i64) -> Result<Vec<String>> {
-        let ids: Vec<String> = self
+    /// Finished captures that started before `cutoff_ms`. `prune_in` deletes them.
+    pub fn expired(&self, cutoff_ms: i64) -> Result<Vec<String>> {
+        let ids = self
             .connection
             .prepare("SELECT id FROM calls WHERE ended_ms IS NOT NULL AND started_ms < ?1")?
             .query_map([cutoff_ms], |row| row.get(0))?
             .collect::<rusqlite::Result<_>>()?;
-        for id in &ids {
-            self.delete(id)?;
-        }
         Ok(ids)
     }
 
@@ -1055,11 +1052,14 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn prunes_only_finished_captures_older_than_the_cutoff() -> Result<()> {
+    fn only_finished_captures_older_than_the_cutoff_expire() -> Result<()> {
         let (_directory, store) = fixture()?;
-        assert_eq!(store.prune(50_000)?, vec!["c_1".to_owned()]);
-        assert!(store.call("c_1")?.is_none());
-        assert!(store.prune(i64::MAX)?.is_empty(), "c_2 is still live");
+        assert_eq!(store.expired(50_000)?, vec!["c_1".to_owned()]);
+        assert_eq!(
+            store.expired(i64::MAX)?,
+            vec!["c_1".to_owned()],
+            "c_2 is still live"
+        );
         Ok(())
     }
 

@@ -3,6 +3,7 @@
 //! Each model is checked against a SHA-256 built into Hopp before it is used, so a
 //! tampered or truncated download is never loaded.
 
+use crate::store::Store;
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 use std::{
@@ -306,11 +307,26 @@ pub fn installed(model: &Model) -> bool {
     own_installed(model) || hex_copy(model).is_some()
 }
 
-/// Delete a downloaded model. A capture already using it keeps its open copy; the next
-/// one downloads it again if it is still chosen. Hex's copy is Hex's to delete.
-pub fn delete(model: &Model) -> Result<()> {
+/// Delete a downloaded model, unless new captures will use it or a running one does: the
+/// helper lets go of a model after a quiet spell and the capture would download it all over
+/// again to carry on. `store` is `None` if nothing has been captured yet. Hex's copy is
+/// Hex's to delete.
+pub fn delete(store: Option<&Store>, model: &Model) -> Result<()> {
     if shared(model) {
         bail!("{} is Hex's copy; remove it from Hex", model.name);
+    }
+    if crate::config::load().model == model.name {
+        bail!("{} is in use; choose another first", model.name);
+    }
+    if let Some(store) = store {
+        crate::liveness::close_orphans(store)?;
+        let running = store.live_calls()?;
+        if running
+            .iter()
+            .any(|call| call.model.as_deref() == Some(model.name))
+        {
+            bail!("A capture is still using {}", model.name);
+        }
     }
     match std::fs::remove_file(own_path(model)?) {
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
@@ -331,9 +347,11 @@ pub fn download(model: &Model, mut progress: impl FnMut(u64, u64)) -> Result<Pat
     let destination = own_path(model)?;
     let directory = dir()?;
     crate::paths::private_dir(&directory)?;
+    remove_abandoned_downloads(&directory, Duration::from_secs(3600));
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(15))
-        .timeout(None)
+        // A blocking client's timeout is per read, so this only ends a download that stalls.
+        .timeout(Duration::from_secs(60))
         .build()?;
     let mut response = client
         .get(model.url())
@@ -367,6 +385,24 @@ pub fn download(model: &Model, mut progress: impl FnMut(u64, u64)) -> Result<Pat
     Ok(destination)
 }
 
+/// A download keeps writing to its temporary file, and leaves it behind if Hopp quits part
+/// way through. Those can be gigabytes, so whatever has sat untouched this long goes.
+fn remove_abandoned_downloads(directory: &std::path::Path, untouched: Duration) {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let abandoned = entry.file_name().to_string_lossy().starts_with(".tmp")
+            && entry
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .is_ok_and(|modified| modified.elapsed().is_ok_and(|age| age >= untouched));
+        if abandoned {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 /// whisper.cpp models from before Hopp moved to transcribe.cpp, which it no longer
 /// loads: `ggml-*.bin` in Hopp's models folder.
 pub fn legacy_files() -> Vec<PathBuf> {
@@ -389,6 +425,26 @@ pub fn legacy_files() -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_download_nobody_is_writing_is_abandoned() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let hour_ago = std::time::SystemTime::now() - Duration::from_secs(3600);
+        let file = |name: &str, modified| -> Result<PathBuf> {
+            let path = directory.path().join(name);
+            let file = std::fs::File::create(&path)?;
+            file.set_modified(modified)?;
+            Ok(path)
+        };
+        let abandoned = file(".tmpABC", hour_ago)?;
+        let running = file(".tmpDEF", std::time::SystemTime::now())?;
+        let model = file("parakeet.gguf", hour_ago)?;
+        remove_abandoned_downloads(directory.path(), Duration::from_secs(1800));
+        assert!(!abandoned.exists());
+        assert!(running.exists());
+        assert!(model.exists());
+        Ok(())
+    }
 
     #[test]
     fn the_default_exists_and_names_are_unique() -> Result<()> {

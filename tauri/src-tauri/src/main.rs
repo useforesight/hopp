@@ -1502,6 +1502,14 @@ fn main() {
                 }
             }
 
+            let tidy_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                let captures = tidy_handle.state::<hopp::captures::Captures>();
+                if let Err(error) = captures.tidy() {
+                    log::error!("Tidying captures: {error}");
+                }
+            });
+
             let (_core_process, sender, mut event_socket) =
                 create_core_process(app.handle()).expect("Failed to create core process");
 
@@ -1776,6 +1784,11 @@ fn main() {
             hopp::captures::captures_frame,
             hopp::captures::captures_delete,
             hopp::captures::captures_open_markdown,
+            hopp::captures::capture_settings,
+            hopp::captures::capture_settings_change,
+            hopp::captures::capture_model_download,
+            hopp::captures::capture_model_delete,
+            hopp::captures::capture_open_folder,
             stop_sharing,
             get_available_content,
             store_token_cmd,

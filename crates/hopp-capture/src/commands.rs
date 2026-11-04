@@ -284,13 +284,12 @@ fn model(command: ModelCommand) -> Result<()> {
         }
         ModelCommand::Delete { name } => {
             let model = models::find(&name)?;
-            if config::load().model == model.name {
-                bail!("{} is in use; choose another first", model.name);
-            }
             if !models::installed(model) {
                 bail!("{} isn't downloaded", model.name);
             }
-            models::delete(model)?;
+            let path = store::default_path()?;
+            let store = path.exists().then(|| Store::open(&path)).transpose()?;
+            models::delete(store.as_ref(), model)?;
             println!("Deleted {} ({} MB)", model.name, model.bytes / 1_000_000);
         }
         ModelCommand::Use { name } => {
