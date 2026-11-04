@@ -10,6 +10,7 @@ use std::{
 use anyhow::Result;
 use hopp_capture::{
     app_socket::{AppReply, AppRequest, serve},
+    cards::CardState,
     store::{Store, now_ms},
 };
 use serde_json::{Value, json};
@@ -60,6 +61,23 @@ fn running_app_doing(
         std::thread::sleep(Duration::from_millis(5));
     }
     asked
+}
+
+/// An app that answers questions the way a person would, once they've seen the card.
+fn app_that_answers(home: &Path, answer: Option<CardState>) -> Arc<Mutex<Vec<AppRequest>>> {
+    running_app_doing(home, json!({ "signed_in": true }), move |request, state| {
+        let mut state = state.lock().unwrap();
+        match request {
+            AppRequest::Card(card) => {
+                state["cards"] =
+                    json!([{ "id": card.id, "state": answer.unwrap_or(CardState::Showing) }]);
+            }
+            AppRequest::CancelCard(id) => {
+                state["cards"] = json!([{ "id": id, "state": CardState::Cancelled }]);
+            }
+            _ => {}
+        }
+    })
 }
 
 fn in_a_call() -> Value {
@@ -300,5 +318,95 @@ fn a_capture_that_never_appears_is_reported() -> Result<()> {
         "{}",
         complained(&output)
     );
+    Ok(())
+}
+
+#[test]
+fn ask_says_what_was_answered_in_its_exit_code() -> Result<()> {
+    for (answer, word, code) in [
+        (CardState::Accepted, "accepted", 0),
+        (CardState::Rejected, "rejected", 1),
+        (CardState::Dismissed, "dismissed", 1),
+    ] {
+        let home = tempfile::tempdir()?;
+        let asked = app_that_answers(home.path(), Some(answer));
+        let output = hopp(
+            home.path(),
+            &[
+                "ask", "--title", "Deploy?", "--sender", "Claude", "--accept", "Ship it",
+            ],
+        )?;
+        assert_eq!(output.status.code(), Some(code), "{}", complained(&output));
+        assert_eq!(said(&output).trim(), word);
+        let asked = asked.lock().unwrap();
+        let [AppRequest::Card(card)] = asked.as_slice() else {
+            panic!("{asked:?}");
+        };
+        assert_eq!(card.title, "Deploy?");
+        assert_eq!(card.sender.as_deref(), Some("Claude"));
+        let question = card.question.as_ref().expect("a question");
+        assert_eq!(question.accept, "Ship it");
+        assert_eq!(question.reject, "Reject");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_question_nobody_answers_is_withdrawn() -> Result<()> {
+    let home = tempfile::tempdir()?;
+    let asked = app_that_answers(home.path(), None);
+    let output = hopp(
+        home.path(),
+        &["ask", "--title", "Deploy?", "--timeout", "0"],
+    )?;
+    assert_eq!(output.status.code(), Some(2), "{}", complained(&output));
+    assert_eq!(said(&output).trim(), "timed out");
+    let asked = asked.lock().unwrap();
+    let [AppRequest::Card(card), AppRequest::CancelCard(cancelled)] = asked.as_slice() else {
+        panic!("{asked:?}");
+    };
+    assert_eq!(&card.id, cancelled);
+    Ok(())
+}
+
+#[test]
+fn a_notice_prints_its_id_and_a_question_without_the_app_isnt_a_yes() -> Result<()> {
+    let home = tempfile::tempdir()?;
+    let nobody = hopp(home.path(), &["ask", "--title", "Deploy?"])?;
+    assert_eq!(nobody.status.code(), Some(1));
+    assert!(
+        complained(&nobody).contains("Hopp isn't running"),
+        "{}",
+        complained(&nobody)
+    );
+
+    let asked = app_that_answers(home.path(), None);
+    let empty = hopp(home.path(), &["notify", "--title", "   "])?;
+    assert!(
+        complained(&empty).contains("A card needs a title"),
+        "{}",
+        complained(&empty)
+    );
+
+    let notice = hopp(
+        home.path(),
+        &[
+            "notify",
+            "--title",
+            "Fixed",
+            "--body",
+            " It works. ",
+            "--ephemeral",
+        ],
+    )?;
+    assert!(notice.status.success(), "{}", complained(&notice));
+    let asked = asked.lock().unwrap();
+    let [AppRequest::Card(card)] = asked.as_slice() else {
+        panic!("{asked:?}");
+    };
+    assert_eq!(said(&notice).trim(), card.id);
+    assert_eq!(card.body.as_deref(), Some("It works."));
+    assert!(card.ephemeral);
+    assert_eq!(card.question, None);
     Ok(())
 }

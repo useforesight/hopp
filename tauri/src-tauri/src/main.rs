@@ -1778,6 +1778,7 @@ fn main() {
                     if show_dock {
                         data.activation_policy_regular = true;
                     }
+                    hopp::cards::watch_focus();
                     if !cfg!(debug_assertions) {
                         data.activation_observer =
                             Some(hopp::app_activation::AppActivationObserver::new(
@@ -1831,6 +1832,7 @@ fn main() {
             }
         })
         .manage(hopp::captures::Captures::default())
+        .manage(hopp::cards::Cards::default())
         .manage(app_socket::AppSocket::default())
         .invoke_handler(tauri::generate_handler![
             create_captures_window,
@@ -1839,6 +1841,9 @@ fn main() {
             app_socket::captures_requested_call,
             captures_bookmark,
             captures_stop,
+            hopp::cards::cards_showing,
+            hopp::cards::cards_settle,
+            hopp::cards::cards_return_focus,
             hopp::captures::captures_list,
             hopp::captures::captures_open,
             hopp::captures::captures_poll,

@@ -3,9 +3,9 @@ use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 pub const CALL_ALERT_WINDOW_LABEL: &str = "callAlert";
 
 const CALL_ALERT_WIDTH: f64 = 360.0;
-const CALL_ALERT_HEIGHT: f64 = 116.0;
+pub(crate) const CALL_ALERT_HEIGHT: f64 = 116.0;
 #[cfg(target_os = "macos")]
-const CALL_ALERT_SCREEN_MARGIN: f64 = 16.0;
+pub(crate) const CALL_ALERT_SCREEN_MARGIN: f64 = 16.0;
 /// NSStatusWindowLevel: above normal and floating windows, including fullscreen apps.
 #[cfg(target_os = "macos")]
 const CALL_ALERT_WINDOW_LEVEL: isize = 25;
@@ -40,7 +40,9 @@ pub fn show(app: &AppHandle) -> Result<(), String> {
         let window_for_main_thread = window.clone();
         window
             .run_on_main_thread(move || present_on_cursor_screen(&window_for_main_thread))
-            .map_err(|e| format!("Failed to show call alert window: {e}"))
+            .map_err(|e| format!("Failed to show call alert window: {e}"))?;
+        crate::cards::make_room(app);
+        Ok(())
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -57,7 +59,27 @@ pub fn hide(app: &AppHandle) {
         if let Err(e) = window.hide() {
             log::error!("call_alert::hide: {e:?}");
         }
+        #[cfg(target_os = "macos")]
+        crate::cards::make_room(app);
     }
+}
+
+/// Whether the call card is up on this screen. Runs on the main thread.
+#[cfg(target_os = "macos")]
+pub(crate) fn is_showing_on(app: &AppHandle, screen: &objc2_app_kit::NSScreen) -> bool {
+    use objc2_app_kit::NSWindow;
+
+    let Some(window) = app.get_webview_window(CALL_ALERT_WINDOW_LABEL) else {
+        return false;
+    };
+    let Ok(ns_window) = window.ns_window() else {
+        return false;
+    };
+    let ns_window: &NSWindow = unsafe { &*ns_window.cast() };
+    ns_window.isVisible()
+        && ns_window
+            .screen()
+            .is_some_and(|own| own.frame() == screen.frame())
 }
 
 #[cfg(target_os = "macos")]
@@ -88,7 +110,7 @@ pub fn is_cursor_over(app: &AppHandle) -> bool {
 /// an open main window isn't hidden by losing focus.
 #[cfg(target_os = "macos")]
 fn present_on_cursor_screen(window: &tauri::WebviewWindow) {
-    use objc2_app_kit::{NSEvent, NSScreen, NSWindow, NSWindowCollectionBehavior};
+    use objc2_app_kit::NSWindow;
     use objc2_foundation::{MainThreadMarker, NSPoint};
 
     let Some(main_thread) = MainThreadMarker::new() else {
@@ -103,29 +125,9 @@ fn present_on_cursor_screen(window: &tauri::WebviewWindow) {
         }
     };
 
-    ns_window.setLevel(CALL_ALERT_WINDOW_LEVEL);
-    ns_window.setCollectionBehavior(
-        NSWindowCollectionBehavior::CanJoinAllSpaces
-            | NSWindowCollectionBehavior::FullScreenAuxiliary
-            | NSWindowCollectionBehavior::Stationary
-            | NSWindowCollectionBehavior::IgnoresCycle,
-    );
-    ns_window.setHidesOnDeactivate(false);
+    float(ns_window);
 
-    let cursor = NSEvent::mouseLocation();
-    let screen = NSScreen::screens(main_thread)
-        .iter()
-        .find(|screen| {
-            let frame = screen.frame();
-            rect_contains_point(
-                (frame.origin.x, frame.origin.y),
-                (frame.size.width, frame.size.height),
-                (cursor.x, cursor.y),
-            )
-        })
-        .or_else(|| NSScreen::mainScreen(main_thread));
-
-    if let Some(screen) = screen {
+    if let Some(screen) = screen_under_cursor(main_thread) {
         let visible_frame = screen.visibleFrame();
         let window_width = ns_window.frame().size.width;
         ns_window.setFrameTopLeftPoint(NSPoint::new(
@@ -139,8 +141,44 @@ fn present_on_cursor_screen(window: &tauri::WebviewWindow) {
     ns_window.orderFrontRegardless();
 }
 
+/// Above other windows on every space, including fullscreen apps, and going nowhere when
+/// Hopp isn't the active app.
+#[cfg(target_os = "macos")]
+pub(crate) fn float(ns_window: &objc2_app_kit::NSWindow) {
+    use objc2_app_kit::NSWindowCollectionBehavior;
+
+    ns_window.setLevel(CALL_ALERT_WINDOW_LEVEL);
+    ns_window.setCollectionBehavior(
+        NSWindowCollectionBehavior::CanJoinAllSpaces
+            | NSWindowCollectionBehavior::FullScreenAuxiliary
+            | NSWindowCollectionBehavior::Stationary
+            | NSWindowCollectionBehavior::IgnoresCycle,
+    );
+    ns_window.setHidesOnDeactivate(false);
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn screen_under_cursor(
+    main_thread: objc2_foundation::MainThreadMarker,
+) -> Option<objc2::rc::Retained<objc2_app_kit::NSScreen>> {
+    use objc2_app_kit::{NSEvent, NSScreen};
+
+    let cursor = NSEvent::mouseLocation();
+    NSScreen::screens(main_thread)
+        .iter()
+        .find(|screen| {
+            let frame = screen.frame();
+            rect_contains_point(
+                (frame.origin.x, frame.origin.y),
+                (frame.size.width, frame.size.height),
+                (cursor.x, cursor.y),
+            )
+        })
+        .or_else(|| NSScreen::mainScreen(main_thread))
+}
+
 #[cfg(any(target_os = "macos", test))]
-fn rect_contains_point(origin: (f64, f64), size: (f64, f64), point: (f64, f64)) -> bool {
+pub(crate) fn rect_contains_point(origin: (f64, f64), size: (f64, f64), point: (f64, f64)) -> bool {
     point.0 >= origin.0
         && point.0 < origin.0 + size.0
         && point.1 >= origin.1

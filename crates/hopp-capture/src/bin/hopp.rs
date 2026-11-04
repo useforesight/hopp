@@ -14,6 +14,8 @@ struct Cli {
 enum Command {
     #[command(flatten)]
     App(hopp_capture::cli::AppCommand),
+    #[command(flatten)]
+    Card(hopp_capture::cards::CardCommand),
     /// Transcripts of your calls, saved only on this computer.
     Capture {
         #[command(subcommand)]
@@ -48,6 +50,7 @@ fn main() -> Result<()> {
     }
     match Cli::parse().command {
         Command::App(command) => hopp_capture::cli::run(command),
+        Command::Card(command) => std::process::exit(hopp_capture::cards::run(command)?),
         Command::Capture { command } => hopp_capture::commands::run(command),
         Command::Mcp => hopp_capture::mcp::serve(),
     }

@@ -47,6 +47,12 @@ impl AppActivationObserver {
                     return;
                 }
 
+                // The same for a card from an agent.
+                if crate::cards::explains_activation(&app_handle) {
+                    log::info!("app_activation: a card brought the app forward, skipping");
+                    return;
+                }
+
                 // If the user directly clicked the main
                 if app_handle
                     .get_webview_window("main")

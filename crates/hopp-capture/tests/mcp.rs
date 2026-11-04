@@ -5,11 +5,15 @@ use std::{
     io::{BufRead, BufReader, Write},
     path::Path,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
-use hopp_capture::store::{Kind, NewLine, Store, now_ms};
+use hopp_capture::{
+    app_socket::{AppReply, AppRequest, serve},
+    store::{Kind, NewLine, Store, now_ms},
+};
 use serde_json::{Value, json};
 
 struct Agent {
@@ -167,8 +171,8 @@ fn agents_can_ask_about_the_call_with_or_without_the_app() -> Result<()> {
     let socket = home.path().join("run/hopp.sock");
     let listening = socket.clone();
     std::thread::spawn(move || {
-        let _ = hopp_capture::app_socket::serve(&listening, |_| {
-            hopp_capture::app_socket::AppReply::state(json!({
+        let _ = serve(&listening, |_| {
+            AppReply::state(json!({
                 "signed_in": true,
                 "user": { "name": "Alex" },
                 "call": { "participants": [{ "name": "Mira" }], "microphone": true },
@@ -180,6 +184,89 @@ fn agents_can_ask_about_the_call_with_or_without_the_app() -> Result<()> {
     }
     let status = text(&agent.tool("call_status", json!({}))?);
     assert!(status.contains("In a call with Mira"), "{status}");
+    Ok(())
+}
+
+#[test]
+fn agents_ask_through_cards_and_hear_the_answer() -> Result<()> {
+    let (home, _store) = seeded_home()?;
+    let mut agent = Agent::start(home.path())?;
+    let nobody = agent.tool("notify_user", json!({ "title": "Fixed" }))?;
+    assert_eq!(nobody["isError"], true, "{nobody}");
+    assert_eq!(text(&nobody), "Hopp isn't running", "{nobody}");
+
+    // "Delete?" is answered at once; the others stay up for the agent to wait on.
+    let socket = home.path().join("run/hopp.sock");
+    let listening = socket.clone();
+    std::thread::spawn(move || {
+        let cards = Arc::new(Mutex::new(json!([])));
+        let _ = serve(&listening, move |request| match request {
+            AppRequest::Snapshot => AppReply::state(json!({ "cards": *cards.lock().unwrap() })),
+            AppRequest::Card(card) => {
+                let answer = if card.title == "Delete?" {
+                    "rejected"
+                } else {
+                    "showing"
+                };
+                let mut cards = cards.lock().unwrap();
+                let list = cards.as_array_mut().unwrap();
+                list.push(json!({ "id": card.id, "state": answer, "title": card.title }));
+                AppReply::done()
+            }
+            AppRequest::CancelCard(id) => {
+                let mut cards = cards.lock().unwrap();
+                for card in cards.as_array_mut().unwrap() {
+                    if card["id"] == id.as_str() {
+                        card["state"] = json!("cancelled");
+                    }
+                }
+                AppReply::done()
+            }
+            _ => AppReply::refused("Not for agents"),
+        });
+    });
+    while !socket.exists() {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    let told: Value = serde_json::from_str(&text(&agent.tool(
+        "notify_user",
+        json!({ "title": "Fixed", "ephemeral": true }),
+    )?))?;
+    assert_eq!(told["state"], "showing");
+    assert!(told["card"].as_str().unwrap().starts_with("card_"));
+
+    let no: Value = serde_json::from_str(&text(&agent.tool(
+        "request_user_decision",
+        json!({ "title": "Delete?", "timeout_seconds": 5 }),
+    )?))?;
+    assert_eq!(no["state"], "rejected");
+
+    let waiting: Value = serde_json::from_str(&text(&agent.tool(
+        "request_user_decision",
+        json!({ "title": "Deploy?", "timeout_seconds": 0 }),
+    )?))?;
+    assert_eq!(waiting["state"], "showing", "no answer yet");
+    let still: Value = serde_json::from_str(&text(&agent.tool(
+        "wait_for_decision",
+        json!({ "card": waiting["card"], "timeout_seconds": 0 }),
+    )?))?;
+    assert_eq!(still["state"], "showing");
+    let taken_back: Value = serde_json::from_str(&text(
+        &agent.tool("cancel_card", json!({ "card": waiting["card"] }))?,
+    ))?;
+    assert_eq!(taken_back["state"], "cancelled");
+    let finally: Value = serde_json::from_str(&text(&agent.tool(
+        "wait_for_decision",
+        json!({ "card": waiting["card"], "timeout_seconds": 0 }),
+    )?))?;
+    assert_eq!(finally["state"], "cancelled");
+
+    let unknown = agent.tool(
+        "wait_for_decision",
+        json!({ "card": "card_none", "timeout_seconds": 5 }),
+    )?;
+    assert_eq!(unknown["isError"], true, "{unknown}");
     Ok(())
 }
 
@@ -282,9 +369,14 @@ fn an_agent_follows_a_call_until_someone_wakes_it() -> Result<()> {
     )?;
     let mut agent = Agent::start(home.path())?;
 
+    // From this line, so a busy machine starting it late doesn't miss what's said next.
     let waiting = agent.start_tool(
         "capture_follow",
-        json!({ "wake_phrase": "hey claude", "timeout_seconds": 20 }),
+        json!({
+            "wake_phrase": "hey claude",
+            "timeout_seconds": 20,
+            "after_line": store.latest_rev("c_live")?,
+        }),
     )?;
     std::thread::sleep(Duration::from_millis(800));
     store.add_line(

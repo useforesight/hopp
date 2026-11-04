@@ -60,7 +60,13 @@ pub fn start(_app: AppHandle) {
 }
 
 fn answer(app: &AppHandle, request: AppRequest) -> AppReply {
-    log::info!("app_socket: {request:?}");
+    match &request {
+        // Someone waiting for an answer asks this several times a second.
+        AppRequest::Snapshot => {}
+        // What an agent wrote stays out of the log.
+        AppRequest::Card(card) => log::info!("app_socket: card {}", card.id),
+        other => log::info!("app_socket: {other:?}"),
+    }
     let socket = app.state::<AppSocket>();
     match request {
         AppRequest::Snapshot => {
@@ -76,6 +82,7 @@ fn answer(app: &AppHandle, request: AppRequest) -> AppReply {
                     if let Some(id) = capture {
                         state["capture"] = serde_json::json!({ "id": id });
                     }
+                    state["cards"] = hopp::cards::snapshot(app);
                     AppReply::state(state)
                 }
                 None => AppReply::done(),
@@ -117,6 +124,14 @@ fn answer(app: &AppHandle, request: AppRequest) -> AppReply {
                 Ok(()) => AppReply::done(),
                 Err(error) => AppReply::refused(error),
             }
+        }
+        AppRequest::Card(card) => match hopp::cards::post(app, card) {
+            Ok(()) => AppReply::done(),
+            Err(error) => AppReply::refused(error),
+        },
+        AppRequest::CancelCard(id) => {
+            hopp::cards::cancel(app, &id);
+            AppReply::done()
         }
         AppRequest::Call(_)
         | AppRequest::JoinRoom(_)

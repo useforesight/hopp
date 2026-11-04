@@ -7,6 +7,7 @@
 pub mod app_socket;
 pub mod batch;
 pub mod browse;
+pub mod cards;
 pub mod cli;
 pub mod commands;
 pub mod config;

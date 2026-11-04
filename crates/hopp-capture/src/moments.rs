@@ -1566,7 +1566,11 @@ mod tests {
             moments.sample(flat(16, 16, 0));
             std::thread::sleep(Duration::from_millis(5));
         }
-        std::thread::sleep(Duration::from_millis(200));
+        // A busy machine can take its time over the first still.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while moments.queued_samples.load(Ordering::Acquire) != 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
         assert_eq!(moments.queued_samples.load(Ordering::Acquire), 0);
         moments.finish();
         Ok(())
@@ -1636,7 +1640,7 @@ mod tests {
         );
         std::thread::sleep(Duration::from_millis(300));
         moments.sample(flat(800, 500, 90));
-        let taken = frames(&receiver, Duration::from_millis(2_500));
+        let taken = first_frame(&receiver);
         assert_eq!(taken.len(), 1, "{taken:?}");
         let info: FrameInfo =
             serde_json::from_slice(&std::fs::read(directory.path().join("frame-002.json"))?)?;
@@ -1664,7 +1668,7 @@ mod tests {
         let mut moments = Moments::start_in(directory.path().into(), feed)?;
         // A grey screen is shared: its first view is frame 1.
         moments.sample(flat(800, 500, 90));
-        let first = frames(&receiver, Duration::from_millis(1_500));
+        let first = first_frame(&receiver);
         assert_eq!(first.len(), 1, "{first:?}");
         assert_eq!(first[0].2, "#1 the shared screen");
 
@@ -1699,7 +1703,7 @@ mod tests {
         // The screen keeps sending frames; one after the marks settle is used.
         std::thread::sleep(Duration::from_millis(300));
         moments.sample(flat(800, 500, 90));
-        let marked = frames(&receiver, Duration::from_millis(2_500));
+        let marked = first_frame(&receiver);
         assert_eq!(marked.len(), 1, "{marked:?}");
         let (_, who, caption) = &marked[0];
         assert_eq!(who.as_deref(), Some("Lee"));
@@ -1732,7 +1736,7 @@ mod tests {
 
         // A bookmark is a frame of its own, at once; the screen hasn't changed.
         moments.bookmark(Some("Alex".into()), "the bug");
-        let booked = frames(&receiver, Duration::from_millis(1_500));
+        let booked = first_frame(&receiver);
         assert_eq!(booked.len(), 1, "{booked:?}");
         assert!(
             booked[0].2.starts_with("#3 Alex bookmarked \"the bug\""),
