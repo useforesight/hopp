@@ -142,12 +142,26 @@ pub enum DrawingWindowError {
 
 #[derive(Debug)]
 pub(crate) enum DrawingWindowInputEvent {
-    DrawStart { x: f64, y: f64, path_id: u64 },
-    DrawAddPoint { x: f64, y: f64 },
-    DrawEnd { x: f64, y: f64 },
+    DrawStart {
+        x: f64,
+        y: f64,
+        path_id: u64,
+    },
+    DrawAddPoint {
+        x: f64,
+        y: f64,
+    },
+    DrawEnd {
+        x: f64,
+        y: f64,
+    },
     DrawClearAllPaths,
     DrawClearPaths(Vec<u64>),
     Stamp(StampInput),
+    /// You pressed the left button on a stamp you just placed, or let it go.
+    StampHold(bool),
+    /// You pressed the key for the other tool: `true` for the stamp.
+    SwitchTool(bool),
     Escape,
 }
 
@@ -213,12 +227,17 @@ pub struct DrawingWindow {
     modifiers: ModifiersState,
     local_stroke: drawing_helpers::LocalStroke,
     drawing_hint: drawing_helpers::DrawingHint,
-    stamp_hint: drawing_helpers::DrawingHint,
     /// Clicks place stamps instead of drawing. The stamps themselves are on the overlay
     /// underneath, with everyone else's, so they share one set of numbers.
     stamping: bool,
-    /// You've a stamp taking words, so keys go into it. The overlay knows; see [`Self::set_typing_stamp`].
+    /// You've a stamp taking words, so keys go into it, and whether it hears what you say. The
+    /// overlay knows; see [`Self::set_stamp_state`].
     typing_stamp: bool,
+    hearing_stamp: bool,
+    /// You're holding your stamp down.
+    stamp_held: bool,
+    /// The call is captured, so holding a stamp down can hear you.
+    capturing: bool,
     last_cursor_position: Option<(f64, f64)>,
     capture_frame: Option<Arc<Mutex<Frame>>>,
     draw_y_scale: f64,
@@ -361,9 +380,11 @@ impl DrawingWindow {
             modifiers: ModifiersState::default(),
             local_stroke: Default::default(),
             drawing_hint: Default::default(),
-            stamp_hint: Default::default(),
             stamping: false,
             typing_stamp: false,
+            hearing_stamp: false,
+            stamp_held: false,
+            capturing: false,
             last_cursor_position: None,
             capture_frame,
             draw_y_scale: 1.0,
@@ -477,16 +498,14 @@ impl DrawingWindow {
         self.stamping
     }
 
-    /// Picks the tool clicks use, drawing or stamps, and shows its controls once.
+    /// Picks the tool clicks use, drawing or stamps, and shows its controls once. A stroke being
+    /// drawn carries on until you let go, so it ends for everyone.
     pub fn set_stamping(&mut self, stamping: bool) {
         self.stamping = stamping;
         self.typing_stamp = false;
-        self.local_stroke.cancel();
-        if stamping {
-            self.participants_manager
-                .draw_clear_all_paths(drawing_helpers::LOCAL_PARTICIPANT_IDENTITY);
-            self.stamp_hint.show_once();
-        } else {
+        self.hearing_stamp = false;
+        self.stamp_held = false;
+        if !stamping {
             self.drawing_hint.show_once();
         }
         // Picking a tool from the app hides the app, and this window has to have the keys.
@@ -497,8 +516,34 @@ impl DrawingWindow {
     }
 
     /// What the overlay's stamps say after each thing you do to them.
-    pub fn set_typing_stamp(&mut self, typing: bool) {
+    pub fn set_stamp_state(&mut self, typing: bool, hearing: bool) {
         self.typing_stamp = typing;
+        self.hearing_stamp = hearing;
+        self.window.request_redraw();
+    }
+
+    pub fn set_capturing(&mut self, capturing: bool) {
+        self.capturing = capturing;
+        self.window.request_redraw();
+    }
+
+    fn stamp_hint(&self) -> drawing_helpers::StampHint {
+        drawing_helpers::StampHint {
+            note: false,
+            typing: self.typing_stamp,
+            hearing: self.hearing_stamp,
+            held: self.stamp_held,
+            capturing: self.capturing,
+        }
+    }
+
+    /// You let go of your stamp, if you were holding it.
+    fn release_stamp(&mut self) -> Option<DrawingWindowInputEvent> {
+        if !std::mem::take(&mut self.stamp_held) {
+            return None;
+        }
+        self.window.request_redraw();
+        Some(DrawingWindowInputEvent::StampHold(false))
     }
 
     fn set_default_cursor(&self) {
@@ -697,6 +742,7 @@ impl DrawingWindow {
                 if self.local_stroke.is_active() {
                     input_events = self.end_stroke();
                 }
+                input_events.extend(self.release_stamp());
                 self.set_default_cursor();
             }
             WindowEvent::MouseInput { state, button, .. } => {
@@ -709,6 +755,9 @@ impl DrawingWindow {
                     _ => None,
                 };
 
+                if *button == winit::event::MouseButton::Left && !state.is_pressed() {
+                    input_events.extend(self.release_stamp());
+                }
                 if self.stamping {
                     if state.is_pressed() {
                         match (button, source) {
@@ -719,6 +768,8 @@ impl DrawingWindow {
                                         y: source.y,
                                     },
                                 ));
+                                self.stamp_held = true;
+                                input_events.push(DrawingWindowInputEvent::StampHold(true));
                             }
                             (winit::event::MouseButton::Right, _) => {
                                 input_events
@@ -726,6 +777,13 @@ impl DrawingWindow {
                             }
                             _ => {}
                         }
+                    } else if *button == winit::event::MouseButton::Left
+                        && self.local_stroke.is_active()
+                    {
+                        if let Some(source) = source {
+                            self.last_cursor_position = Some((source.x, source.y));
+                        }
+                        input_events.extend(self.end_stroke());
                     }
                 } else if *button == winit::event::MouseButton::Left {
                     if state.is_pressed() {
@@ -768,6 +826,10 @@ impl DrawingWindow {
                         if !event.repeat {
                             input_events.push(DrawingWindowInputEvent::Escape);
                         }
+                    } else if let Some(stamp) =
+                        drawing_helpers::tool_key(&event.logical_key, self.modifiers, self.stamping)
+                    {
+                        input_events.push(DrawingWindowInputEvent::SwitchTool(stamp));
                     } else if !self.stamping
                         && drawing_helpers::is_undo_shortcut(&event.logical_key, self.modifiers)
                     {
@@ -845,7 +907,7 @@ impl DrawingWindow {
                         self.draw_y_scale,
                         self.draw_y_offset,
                         if self.stamping {
-                            self.stamp_hint.stamp_view()
+                            self.stamp_hint().view()
                         } else {
                             self.drawing_hint.view(true)
                         },
@@ -885,10 +947,7 @@ impl DrawingWindow {
         self.participants_manager.hide_inactive_cursors();
 
         let cleared = self.participants_manager.update_auto_clear();
-        if self.participants_manager.is_ink_animating()
-            || self.drawing_hint.is_visible()
-            || self.stamp_hint.is_visible()
-        {
+        if self.participants_manager.is_ink_animating() || self.drawing_hint.is_visible() {
             self.signal_activity();
         }
 
@@ -914,7 +973,7 @@ impl DrawingWindow {
                 self.draw_y_scale,
                 self.draw_y_offset,
                 if self.stamping {
-                    self.stamp_hint.stamp_view()
+                    self.stamp_hint().view()
                 } else {
                     self.drawing_hint.view(true)
                 },

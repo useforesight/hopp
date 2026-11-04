@@ -20,6 +20,8 @@ const FADE: Duration = Duration::from_millis(260);
 const CARD_DELAY: Duration = Duration::from_millis(180);
 const CARD_REVEAL: Duration = Duration::from_millis(280);
 const RING_PERIOD: f32 = 1.6;
+/// Well past a stamp's landing.
+const GHOST_LANDED: Duration = Duration::from_secs(5);
 
 /// How far a marker's head sits above its foot, and its radius, in logical pixels.
 pub const MARKER_RISE: f32 = 17.8;
@@ -36,6 +38,10 @@ pub const CARD_TEXT_SIZE: f32 = 13.5;
 pub const CARD_LINE_HEIGHT: f32 = 19.;
 /// Words still being recognised, against the card's other words.
 pub const DRAFT_ALPHA: f32 = 0.45;
+/// A note not stamped down yet, against a stamp.
+const GHOST_ALPHA: f32 = 0.7;
+/// The id of a note not stamped down yet. It's never sent.
+pub const GHOST_ID: u64 = u64::MAX;
 
 // The variant names are the wire format's message types, so they keep their prefix.
 #[allow(clippy::enum_variant_names)]
@@ -104,6 +110,21 @@ pub enum StampInput {
     Cancel,
     /// Take all your stamps away.
     ClearMine,
+    /// Your stamp hears what you say, as well as what you type.
+    Listen,
+    /// All it's heard so far: final `said`, then `draft` words still being recognised.
+    Heard {
+        said: String,
+        draft: String,
+    },
+    /// It stops hearing you and forgets what it heard, leaving it to type into.
+    StopListening,
+    /// A finished stamp with these words, all at once. Empty words do nothing.
+    Note {
+        x: f64,
+        y: f64,
+        text: String,
+    },
 }
 
 /// A pin someone dropped.
@@ -123,6 +144,10 @@ pub struct Stamp {
     pub draft: String,
     /// Still taking words.
     pub listening: bool,
+    /// Yours, and hearing what you say (the call is captured), not only what you type.
+    pub voice: bool,
+    /// A note you're still typing, under your pointer: shown faint, not yet stamped.
+    pub ghost: bool,
     pub placed: Instant,
     pub removed: Option<Instant>,
 }
@@ -158,6 +183,17 @@ fn ease_out_back(t: f32) -> f32 {
     1. + c3 * (t - 1.).powi(3) + c1 * (t - 1.).powi(2)
 }
 
+/// Cut `text` to at most `max` bytes, on a character boundary.
+fn truncate(text: &mut String, max: usize) {
+    if text.len() > max {
+        let mut end = max;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+    }
+}
+
 impl Stamp {
     pub fn is_mine(&self) -> bool {
         self.owner.is_empty()
@@ -183,7 +219,8 @@ impl Stamp {
         });
         let landing = progress(age, DROP);
         let landed = ease_out_back(landing);
-        let alpha = (landing * 3.).min(1.) * leaving;
+        let faint = if self.ghost { GHOST_ALPHA } else { 1. };
+        let alpha = (landing * 3.).min(1.) * leaving * faint;
         let grow = 0.62 + 0.38 * landed;
 
         let ring = |offset: f32| {
@@ -248,6 +285,9 @@ pub struct Stamps {
     count: u32,
     last_id: u64,
     active: Option<u64>,
+    /// What's typed into your active stamp, and what it's heard you say. Its text is both.
+    typed: String,
+    said: String,
 }
 
 impl Default for Stamps {
@@ -263,6 +303,8 @@ impl Default for Stamps {
             count: 0,
             last_id,
             active: None,
+            typed: String::new(),
+            said: String::new(),
         }
     }
 }
@@ -277,6 +319,34 @@ impl Stamps {
         self.active.is_some()
     }
 
+    /// Your stamp taking words hears what you say.
+    pub fn is_hearing(&self) -> bool {
+        self.active.is_some_and(|id| {
+            self.stamps
+                .iter()
+                .any(|stamp| stamp.is_mine() && stamp.id == id && stamp.voice)
+        })
+    }
+
+    /// The note you're typing as a faint stamp under your pointer. It's the next number
+    /// along, and already landed: there's nothing to animate until it's stamped down.
+    pub fn ghost(&self, point: (f64, f64), text: &str, name: &str, now: Instant) -> Stamp {
+        Stamp {
+            id: GHOST_ID,
+            number: self.count + 1,
+            owner: String::new(),
+            name: name.to_owned(),
+            point,
+            text: text.to_owned(),
+            draft: String::new(),
+            listening: false,
+            voice: false,
+            ghost: true,
+            placed: now.checked_sub(GHOST_LANDED).unwrap_or(now),
+            removed: None,
+        }
+    }
+
     pub fn animating(&self, now: Instant) -> bool {
         self.stamps.iter().any(|stamp| stamp.animating(now))
     }
@@ -286,17 +356,28 @@ impl Stamps {
         self.stamps.retain(|stamp| !stamp.gone(now));
         match input {
             StampInput::Place { x, y } => self.place((x, y), own_name, now),
-            StampInput::Typed(typed) => self.edit(|text| {
-                if text.len() + typed.len() <= STAMP_TEXT_MAX {
-                    text.push_str(&typed);
+            StampInput::Typed(typed) => {
+                if self.active.is_some() && self.typed.len() + typed.len() <= STAMP_TEXT_MAX {
+                    self.typed.push_str(&typed);
                 }
-            }),
-            StampInput::Backspace => self.edit(|text| {
-                text.pop();
-            }),
+                self.show_words(None)
+            }
+            StampInput::Backspace => {
+                self.typed.pop();
+                self.show_words(None)
+            }
             StampInput::Finish => self.finish(now).into_iter().collect(),
             StampInput::Cancel => self.cancel(now).into_iter().collect(),
             StampInput::ClearMine => self.clear_mine(now),
+            StampInput::Listen => {
+                if let Some(stamp) = self.own_active() {
+                    stamp.voice = true;
+                }
+                Vec::new()
+            }
+            StampInput::Heard { said, draft } => self.heard(said, draft),
+            StampInput::StopListening => self.stop_listening(),
+            StampInput::Note { x, y, text } => self.note((x, y), text, own_name, now),
         }
     }
 
@@ -320,6 +401,8 @@ impl Stamps {
                     text: String::new(),
                     draft: String::new(),
                     listening: true,
+                    voice: false,
+                    ghost: false,
                     placed: now,
                     removed: None,
                 });
@@ -365,25 +448,36 @@ impl Stamps {
             .find(|stamp| stamp.is_mine() && stamp.id == id)
     }
 
-    fn place(&mut self, point: (f64, f64), name: &str, now: Instant) -> Vec<StampMessage> {
+    /// Puts down a stamp of yours, finishing the one you were on, and returns its message.
+    /// One with no text is waiting for words.
+    fn add_own(
+        &mut self,
+        point: (f64, f64),
+        text: String,
+        name: &str,
+        now: Instant,
+    ) -> Vec<StampMessage> {
         let point = (point.0.clamp(0., 1.), point.1.clamp(0., 1.));
         let mut messages: Vec<StampMessage> = self.finish(now).into_iter().collect();
         self.last_id = self.last_id.wrapping_add(1);
         self.count += 1;
         let id = self.last_id;
+        let listening = text.is_empty();
         self.push(Stamp {
             id,
             number: self.count,
             owner: String::new(),
             name: name.to_owned(),
             point,
-            text: String::new(),
+            text,
             draft: String::new(),
-            listening: true,
+            listening,
+            voice: false,
+            ghost: false,
             placed: now,
             removed: None,
         });
-        self.active = Some(id);
+        self.active = listening.then_some(id);
         messages.push(StampMessage::StampPlace {
             id,
             x: point.0,
@@ -392,11 +486,71 @@ impl Stamps {
         messages
     }
 
-    fn edit(&mut self, change: impl FnOnce(&mut String)) -> Vec<StampMessage> {
+    fn place(&mut self, point: (f64, f64), name: &str, now: Instant) -> Vec<StampMessage> {
+        self.add_own(point, String::new(), name, now)
+    }
+
+    fn note(
+        &mut self,
+        point: (f64, f64),
+        text: String,
+        name: &str,
+        now: Instant,
+    ) -> Vec<StampMessage> {
+        let mut text = text.trim().to_owned();
+        if text.is_empty() {
+            return Vec::new();
+        }
+        truncate(&mut text, STAMP_TEXT_MAX);
+        let mut messages = self.add_own(point, text.clone(), name, now);
+        let id = self.last_id;
+        messages.push(StampMessage::StampText {
+            id,
+            text,
+            draft: String::new(),
+            done: true,
+        });
+        messages
+    }
+
+    fn heard(&mut self, said: String, draft: String) -> Vec<StampMessage> {
+        if !self.own_active().is_some_and(|stamp| stamp.voice) {
+            return Vec::new();
+        }
+        self.said = said;
+        self.show_words(Some(draft))
+    }
+
+    fn stop_listening(&mut self) -> Vec<StampMessage> {
         let Some(stamp) = self.own_active() else {
             return Vec::new();
         };
-        change(&mut stamp.text);
+        stamp.voice = false;
+        let had_draft = !stamp.draft.is_empty();
+        if self.said.is_empty() && !had_draft {
+            return Vec::new();
+        }
+        self.said.clear();
+        self.show_words(Some(String::new()))
+    }
+
+    /// Puts what's been heard and typed on your stamp and says so. `draft` is `None` for
+    /// keys, which leave the words still being recognised alone.
+    fn show_words(&mut self, draft: Option<String>) -> Vec<StampMessage> {
+        let mut text = self.said.clone();
+        if !text.is_empty() && !self.typed.is_empty() && !self.typed.starts_with(' ') {
+            text.push(' ');
+        }
+        text.push_str(&self.typed);
+        truncate(&mut text, STAMP_TEXT_MAX);
+        let Some(stamp) = self.own_active() else {
+            return Vec::new();
+        };
+        if let Some(draft) = draft {
+            stamp.draft = draft;
+        }
+        truncate(&mut stamp.draft, STAMP_TEXT_MAX - text.len());
+        stamp.text = text;
         let (id, text, draft) = (stamp.id, stamp.text.clone(), stamp.draft.clone());
         vec![StampMessage::StampText {
             id,
@@ -407,11 +561,19 @@ impl Stamps {
     }
 
     fn finish(&mut self, now: Instant) -> Option<StampMessage> {
+        self.typed.clear();
+        self.said.clear();
         // Pushed out by newer stamps while you typed: others may still have it, waiting.
         let Some(stamp) = self.own_active() else {
             return self.cancel(now);
         };
-        stamp.text.push_str(&std::mem::take(&mut stamp.draft));
+        let draft = std::mem::take(&mut stamp.draft);
+        if !stamp.text.is_empty() && !draft.is_empty() {
+            stamp.text.push(' ');
+        }
+        stamp.text.push_str(&draft);
+        // The words joined up can be a space past the limit, which would be dropped unread.
+        truncate(&mut stamp.text, STAMP_TEXT_MAX);
         stamp.listening = false;
         if stamp.text.trim().is_empty() {
             return self.cancel(now);
@@ -427,6 +589,8 @@ impl Stamps {
     }
 
     fn cancel(&mut self, now: Instant) -> Option<StampMessage> {
+        self.typed.clear();
+        self.said.clear();
         let id = self.active?;
         if let Some(stamp) = self.own_active() {
             stamp.listening = false;
@@ -438,6 +602,8 @@ impl Stamps {
 
     fn clear_mine(&mut self, now: Instant) -> Vec<StampMessage> {
         self.active = None;
+        self.typed.clear();
+        self.said.clear();
         self.stamps
             .iter_mut()
             .filter(|stamp| stamp.is_mine() && stamp.removed.is_none())
@@ -634,6 +800,218 @@ mod tests {
         let sent = stamps.apply(StampInput::Typed("b".into()), "You", now);
         assert!(sent[0].valid());
         assert_eq!(stamps.iter().next().unwrap().text.len(), STAMP_TEXT_MAX);
+    }
+
+    fn apply(stamps: &mut Stamps, input: StampInput, now: Instant) -> Vec<StampMessage> {
+        stamps.apply(input, "You", now)
+    }
+
+    fn heard(said: &str, draft: &str) -> StampInput {
+        StampInput::Heard {
+            said: said.into(),
+            draft: draft.into(),
+        }
+    }
+
+    fn text_of(stamps: &Stamps) -> (String, String) {
+        let stamp = stamps.iter().last().unwrap();
+        (stamp.text.clone(), stamp.draft.clone())
+    }
+
+    #[test]
+    fn what_you_say_goes_on_it_and_is_replaced_as_it_is_recognised() {
+        let now = Instant::now();
+        let mut stamps = Stamps::default();
+        let id = place(&mut stamps, now);
+        apply(&mut stamps, StampInput::Listen, now);
+        assert!(stamps.is_hearing());
+
+        let sent = apply(&mut stamps, heard("", "this bit"), now);
+        assert_eq!(
+            sent,
+            [StampMessage::StampText {
+                id,
+                text: String::new(),
+                draft: "this bit".into(),
+                done: false,
+            }]
+        );
+        apply(&mut stamps, heard("This button", "is"), now);
+        assert_eq!(text_of(&stamps), ("This button".into(), "is".into()));
+
+        let sent = apply(&mut stamps, StampInput::Finish, now);
+        assert_eq!(
+            sent,
+            [StampMessage::StampText {
+                id,
+                text: "This button is".into(),
+                draft: String::new(),
+                done: true,
+            }],
+            "a space between them"
+        );
+        assert!(!stamps.is_typing());
+    }
+
+    #[test]
+    fn typing_while_it_listens_goes_after_what_was_said() {
+        let now = Instant::now();
+        let mut stamps = Stamps::default();
+        place(&mut stamps, now);
+        apply(&mut stamps, StampInput::Listen, now);
+        apply(&mut stamps, heard("Change this", ""), now);
+        apply(&mut stamps, StampInput::Typed("!".into()), now);
+        assert_eq!(text_of(&stamps).0, "Change this !");
+        apply(&mut stamps, StampInput::Backspace, now);
+        assert_eq!(
+            text_of(&stamps).0,
+            "Change this",
+            "only typing is rubbed out"
+        );
+        apply(&mut stamps, heard("Change this now", "ok"), now);
+        apply(&mut stamps, StampInput::Typed(" yes".into()), now);
+        assert_eq!(
+            text_of(&stamps),
+            ("Change this now yes".into(), "ok".into()),
+            "keys leave what's still being recognised, and no double space"
+        );
+    }
+
+    #[test]
+    fn it_only_hears_you_when_it_is_listening() {
+        let now = Instant::now();
+        let mut stamps = Stamps::default();
+        assert!(apply(&mut stamps, heard("a", ""), now).is_empty());
+        place(&mut stamps, now);
+        assert!(apply(&mut stamps, heard("a", ""), now).is_empty());
+        assert_eq!(text_of(&stamps).0, "");
+    }
+
+    #[test]
+    fn stopping_listening_leaves_it_to_type_into() {
+        let now = Instant::now();
+        let mut stamps = Stamps::default();
+        let id = place(&mut stamps, now);
+        apply(&mut stamps, StampInput::Listen, now);
+        assert!(
+            apply(&mut stamps, StampInput::StopListening, now).is_empty(),
+            "nothing changed, so nothing to say"
+        );
+        assert!(!stamps.is_hearing() && stamps.is_typing());
+
+        apply(&mut stamps, StampInput::Listen, now);
+        apply(&mut stamps, heard("half", "a word"), now);
+        let sent = apply(&mut stamps, StampInput::StopListening, now);
+        assert_eq!(
+            sent,
+            [StampMessage::StampText {
+                id,
+                text: String::new(),
+                draft: String::new(),
+                done: false,
+            }]
+        );
+        apply(&mut stamps, StampInput::Typed("Typed".into()), now);
+        assert_eq!(text_of(&stamps).0, "Typed");
+        assert!(stamps.is_typing());
+    }
+
+    #[test]
+    fn words_from_one_stamp_do_not_reach_the_next() {
+        let now = Instant::now();
+        let mut stamps = Stamps::default();
+        place(&mut stamps, now);
+        apply(&mut stamps, StampInput::Listen, now);
+        apply(&mut stamps, heard("First", ""), now);
+        apply(&mut stamps, StampInput::Typed("typed".into()), now);
+        place(&mut stamps, now);
+        assert!(!stamps.is_hearing());
+        apply(&mut stamps, StampInput::Typed("Second".into()), now);
+        assert_eq!(text_of(&stamps).0, "Second");
+        apply(&mut stamps, StampInput::Cancel, now);
+        place(&mut stamps, now);
+        apply(&mut stamps, StampInput::Typed("Third".into()), now);
+        assert_eq!(text_of(&stamps).0, "Third");
+    }
+
+    #[test]
+    fn heard_words_never_make_a_packet_too_big() {
+        let now = Instant::now();
+        let mut stamps = Stamps::default();
+        place(&mut stamps, now);
+        apply(&mut stamps, StampInput::Listen, now);
+        let long = "é".repeat(STAMP_TEXT_MAX);
+        let sent = apply(&mut stamps, heard(&long, &long), now);
+        assert!(sent[0].valid());
+        apply(&mut stamps, StampInput::StopListening, now);
+        apply(&mut stamps, StampInput::Listen, now);
+        let almost = "a".repeat(STAMP_TEXT_MAX - 2);
+        assert!(apply(&mut stamps, heard(&almost, "bc"), now)[0].valid());
+        let sent = apply(&mut stamps, StampInput::Finish, now);
+        assert!(sent[0].valid(), "the space joining them still fits");
+    }
+
+    #[test]
+    fn a_typed_note_goes_down_finished() {
+        let now = Instant::now();
+        let mut stamps = Stamps::default();
+        let note = |x, text: &str| StampInput::Note {
+            x,
+            y: 0.5,
+            text: text.into(),
+        };
+        assert!(apply(&mut stamps, note(0.5, "   "), now).is_empty());
+        assert_eq!(stamps.iter().count(), 0);
+
+        let sent = apply(&mut stamps, note(0.25, " Look here "), now);
+        let id = sent[0].id();
+        assert_eq!(
+            sent,
+            [
+                StampMessage::StampPlace {
+                    id,
+                    x: 0.25,
+                    y: 0.5,
+                },
+                StampMessage::StampText {
+                    id,
+                    text: "Look here".into(),
+                    draft: String::new(),
+                    done: true,
+                },
+            ]
+        );
+        assert!(!stamps.is_typing());
+        assert!(!stamps.iter().next().unwrap().listening);
+
+        // One on the go is finished first.
+        let unfinished = place(&mut stamps, now);
+        apply(&mut stamps, StampInput::Typed("Half".into()), now);
+        let sent = apply(&mut stamps, note(0.1, "Next"), now);
+        assert!(matches!(
+            &sent[0],
+            StampMessage::StampText { id, done: true, .. } if *id == unfinished
+        ));
+        assert!(sent.iter().all(StampMessage::valid));
+        assert_eq!(sent.len(), 3);
+        let too_long = "é".repeat(STAMP_TEXT_MAX);
+        let sent = apply(&mut stamps, note(0.1, &too_long), now);
+        assert!(sent.iter().all(StampMessage::valid));
+    }
+
+    #[test]
+    fn a_ghost_is_the_next_number_and_is_faint_and_settled() {
+        let now = Instant::now();
+        let mut stamps = Stamps::default();
+        place(&mut stamps, now);
+        let ghost = stamps.ghost((0.2, 0.3), "Note", "You", now);
+        assert_eq!(ghost.number, 2);
+        assert_eq!(stamps.iter().count(), 1, "it isn't one of them");
+        assert!(ghost.ghost && !ghost.listening && ghost.is_mine());
+        assert!(!ghost.animating(now));
+        let pose = ghost.pose(now);
+        assert!((pose.alpha - GHOST_ALPHA).abs() < 0.001, "{}", pose.alpha);
+        assert!(pose.card_alpha > 0.);
     }
 
     #[test]

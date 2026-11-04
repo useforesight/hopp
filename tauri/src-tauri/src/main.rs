@@ -433,7 +433,7 @@ fn change_drawing(app: &tauri::AppHandle, enabled: bool, permanent: bool, stamp:
     true
 }
 
-/// `hopp draw` and the sharing pill: this tool on or off, whichever is in hand. The window's
+/// `hopp draw`, `hopp stamp` and the sharing pill: this tool on or off, whichever is in hand. The window's
 /// buttons follow it.
 fn toggle_tool(app: &tauri::AppHandle, stamp: bool) -> bool {
     let (enabled, permanent) = {

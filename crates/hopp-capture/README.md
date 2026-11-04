@@ -26,8 +26,9 @@ and `hopp capture start|stop|window|bookmark` ask the running app, over `app_soc
 line each way on `<config>/run/hopp.sock`, in a folder only this user can open.
 
 `cli` refuses what can't be done against the state the main window published, so that you're
-told why in your terminal; the app answers once it has passed the request on. `hopp draw` works
-on a screen you're sharing, and not yet on someone else's: its tools are in the viewer's window.
+told why in your terminal; the app answers once it has passed the request on. `hopp draw` and
+`hopp stamp` work on a screen you're sharing, and not yet on someone else's: its tools are in the
+viewer's window.
 Agents can't start a capture: `mcp` has no tool for it.
 
 `hopp notify` and `hopp ask` show a card in the app (`cards`), and the MCP tools `notify_user`,

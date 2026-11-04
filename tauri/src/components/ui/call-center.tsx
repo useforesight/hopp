@@ -611,7 +611,7 @@ function DrawingEnableButton() {
     };
   }, []);
 
-  // `hopp draw` and the sharing pill
+  // `hopp draw`, `hopp stamp` and the sharing pill
   useEffect(() => {
     const unlisten = listen<"draw" | "stamp" | null>("drawing_tool_changed", (event) => {
       setActiveTool(event.payload);

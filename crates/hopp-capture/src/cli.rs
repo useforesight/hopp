@@ -39,6 +39,9 @@ pub enum AppCommand {
     Share,
     /// Start or stop drawing on the screen you're sharing.
     Draw,
+    /// Pick up or put down the stamp tool on the screen you're sharing: hold down on a spot and
+    /// say your note (while the call is captured), or click and type one.
+    Stamp,
     /// Open Hopp, starting it if it isn't running.
     Open,
     /// Open Hopp's settings.
@@ -113,6 +116,16 @@ fn plan(command: &AppCommand, state: &Value) -> Result<AppRequest> {
                 );
             }
             AppRequest::Draw
+        }
+        AppCommand::Stamp => {
+            in_call(state)?;
+            if state["call"]["sharing"] != true {
+                bail!(
+                    "From here you can only stamp a screen you're sharing. \
+                     On someone else's, use the stamp in its window"
+                );
+            }
+            AppRequest::Stamp
         }
     })
 }
@@ -381,6 +394,8 @@ mod tests {
         assert!(why(AppCommand::Draw, &viewing).contains("a screen you're sharing"));
         let sharing = json!({ "call": { "sharing": true } });
         assert_eq!(plan(&AppCommand::Draw, &sharing)?, AppRequest::Draw);
+        assert!(why(AppCommand::Stamp, &viewing).contains("a screen you're sharing"));
+        assert_eq!(plan(&AppCommand::Stamp, &sharing)?, AppRequest::Stamp);
 
         let ringing = json!({ "ringing": { "name": "Mira", "kind": "call" } });
         assert_eq!(plan(&AppCommand::Decline, &ringing)?, AppRequest::Decline);

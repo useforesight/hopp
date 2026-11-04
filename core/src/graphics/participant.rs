@@ -5,7 +5,7 @@
 
 use crate::utils::geometry::Position;
 use hopp_marks::colours::{self, Colours};
-use hopp_marks::stamps::{StampInput, StampMessage, Stamps};
+use hopp_marks::stamps::{Stamp, StampInput, StampMessage, Stamps};
 use iced::widget::canvas::{Frame, Geometry};
 use iced::{Rectangle, Renderer};
 use std::collections::HashMap;
@@ -176,6 +176,8 @@ pub struct ParticipantsManager {
     /// Who you are in this call, for your own color.
     local_identity: Option<String>,
     stamps: Stamps,
+    /// The note you're typing over someone's screen, under your pointer.
+    note_ghost: Option<Stamp>,
     stamp_visuals: HashMap<StampKey, StampVisual>,
 }
 
@@ -215,6 +217,20 @@ impl ParticipantsManager {
         self.stamps.is_typing()
     }
 
+    /// Your stamp taking words hears what you say.
+    pub fn is_stamp_hearing(&self) -> bool {
+        self.stamps.is_hearing()
+    }
+
+    /// The note you're typing and where your pointer is, if it's over the screen.
+    pub fn set_note_ghost(&mut self, note: Option<((f64, f64), &str)>) {
+        self.note_ghost = note.map(|(point, text)| {
+            self.stamps
+                .ghost(point, text, YOUR_STAMP_NAME, Instant::now())
+        });
+        self.refresh_stamp_visuals();
+    }
+
     pub fn is_stamp_animating(&self) -> bool {
         self.stamps.animating(Instant::now())
     }
@@ -235,6 +251,7 @@ impl ParticipantsManager {
     fn refresh_stamp_visuals(&mut self) {
         let Self {
             stamps,
+            note_ghost,
             stamp_visuals,
             call_colours,
             local_identity,
@@ -243,9 +260,10 @@ impl ParticipantsManager {
         stamp_visuals.retain(|(owner, id), _| {
             stamps
                 .iter()
+                .chain(note_ghost.iter())
                 .any(|stamp| stamp.owner == *owner && stamp.id == *id)
         });
-        for stamp in stamps.iter() {
+        for stamp in stamps.iter().chain(note_ghost.iter()) {
             let identity = if stamp.is_mine() {
                 LOCAL_IDENTITY
             } else {
@@ -557,7 +575,7 @@ impl ParticipantsManager {
         let now = Instant::now();
         stamp::paint_stamps(
             &mut in_progress_frame,
-            &self.stamps,
+            self.stamps.iter().chain(self.note_ghost.iter()),
             &self.stamp_visuals,
             translate,
             now,

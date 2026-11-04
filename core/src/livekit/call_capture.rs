@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use hopp_capture::heard::{Heard, StampListener};
 use hopp_capture::moments::{
     DrawEvent, DrawingMode, Moments, OwnWindows, PathPoint, Point, Sampler, VideoFrame, AGENT_EDGE,
 };
@@ -337,6 +338,33 @@ impl CallCapture {
             });
         if let Err(error) = thread {
             log::error!("Capture: couldn't copy the screen on a new thread: {error}");
+        }
+    }
+
+    /// Hear what you say for a stamp you pressed at `pressed_ms`, if the call is being captured.
+    pub fn listen_for_stamp(
+        &self,
+        pressed_ms: i64,
+        on_heard: impl Fn(Heard) + Send + 'static,
+    ) -> Option<StampListener> {
+        if !self.watching() {
+            return None;
+        }
+        let (call_id, me) = {
+            let state = self.state();
+            (
+                state.recorder.as_ref()?.id(),
+                canonical_identity(&state.own_identity).to_string(),
+            )
+        };
+        let listener = store::default_path()
+            .and_then(|database| StampListener::start(database, call_id, me, pressed_ms, on_heard));
+        match listener {
+            Ok(listener) => Some(listener),
+            Err(error) => {
+                log::error!("Capture: a stamp can't hear you: {error:#}");
+                None
+            }
         }
     }
 
@@ -1335,6 +1363,67 @@ mod tests {
             !text.to_lowercase().contains("probably"),
             "said while muted: {text}"
         );
+        Ok(())
+    }
+
+    /// A stamp held down, through the real transcriber: your words reach it by your speaker id,
+    /// and those of whoever else is talking don't. You're muted until you press.
+    #[test]
+    #[ignore = "needs HOPP_CAPTURE_HOME with the model, HOPP_TRANSCRIBE_HELPER, HOPP_TEST_VOICES"]
+    fn a_held_stamp_hears_you_and_not_them() -> anyhow::Result<()> {
+        const ALEX: &str = "room:r1:user-alex:audio";
+        let (alex, sam) = test_voices()?;
+        let frame = LIVEKIT_SAMPLE_RATE as usize / 100;
+        let people = [
+            participant("local", "Alex", false),
+            participant(SAM, "Sam", false),
+        ];
+
+        let capture = CallCapture::default();
+        let id = capture.begin("Test room".to_string(), ALEX, &people)?;
+        capture.listen(&id);
+        let muted = Arc::new(AtomicBool::new(true));
+        let mic = MicTap::new(capture.tap(), ALEX, "Alex", muted.clone());
+        let remote = capture.track_tap(SAM, "Sam");
+
+        let (told, heard) = std::sync::mpsc::channel();
+        let listener = capture
+            .listen_for_stamp(store::now_ms(), move |news| {
+                let _ = told.send(news);
+            })
+            .expect("a capture is running");
+        muted.store(false, Ordering::Relaxed);
+
+        let started = Instant::now();
+        let mut news = Vec::new();
+        for (index, (alex, sam)) in alex.chunks(frame).zip(sam.chunks(frame)).enumerate() {
+            // Alex's first sentence is over by 8 s, and they let go.
+            if index == 800 {
+                muted.store(true, Ordering::Relaxed);
+                listener.let_go();
+            }
+            mic.hear(alex);
+            remote.hear(sam);
+            news.extend(heard.try_iter());
+            let next = Duration::from_millis(10) * (index as u32 + 1);
+            std::thread::sleep(next.saturating_sub(started.elapsed()));
+        }
+        while let Ok(more) = heard.recv_timeout(Duration::from_secs(15)) {
+            news.push(more);
+        }
+        println!("{news:#?}");
+        capture.stop_by_hand(None);
+        wait_for_finishing();
+
+        assert_eq!(news.last(), Some(&Heard::Finished), "{news:?}");
+        let words = news.iter().rev().find_map(|heard| match heard {
+            Heard::Words { said, .. } => Some(said.to_lowercase()),
+            _ => None,
+        });
+        let words = words.unwrap_or_default();
+        assert!(words.contains("discount"), "{words}");
+        assert!(!words.contains("lunch"), "{words}");
+        assert!(!words.contains("probably"), "said once you let go: {words}");
         Ok(())
     }
 

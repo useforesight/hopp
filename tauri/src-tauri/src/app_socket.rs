@@ -92,7 +92,8 @@ fn answer(app: &AppHandle, request: AppRequest) -> AppReply {
         AppRequest::Camera => in_call(app, shortcuts::handle_camera),
         AppRequest::Leave => in_call(app, shortcuts::handle_end_call),
         AppRequest::Share => in_call(app, shortcuts::handle_screenshare),
-        AppRequest::Draw => draw(app),
+        AppRequest::Draw => tool(app, false),
+        AppRequest::Stamp => tool(app, true),
         AppRequest::CaptureStart => in_call(app, |app| crate::captures_start(app.clone())),
         AppRequest::CaptureStop => {
             crate::captures_stop(app.clone());
@@ -141,7 +142,7 @@ fn answer(app: &AppHandle, request: AppRequest) -> AppReply {
     }
 }
 
-fn draw(app: &AppHandle) -> AppReply {
+fn tool(app: &AppHandle, stamp: bool) -> AppReply {
     let sharing = {
         let data = app.state::<Mutex<AppData>>();
         let data = data.lock().unwrap_or_else(PoisonError::into_inner);
@@ -150,7 +151,7 @@ fn draw(app: &AppHandle) -> AppReply {
     if !sharing {
         return AppReply::refused("You're not sharing your screen");
     }
-    if !crate::toggle_tool(app, false) {
+    if !crate::toggle_tool(app, stamp) {
         return AppReply::refused("Couldn't reach the call");
     }
     AppReply::done()
