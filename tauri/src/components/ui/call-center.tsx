@@ -584,7 +584,7 @@ function CallParticipants() {
 }
 
 function DrawingEnableButton() {
-  const [drawingPermanent, setDrawingPermanent] = useState(false);
+  const [drawingPermanent, setDrawingPermanent] = useState(true);
   // Drawing and stamps turn each other off.
   const [activeTool, setActiveTool] = useState<"draw" | "stamp" | null>(null);
   const drawingEnabled = activeTool === "draw";

@@ -461,7 +461,7 @@ impl Default for ScreensharingState {
             stamp_hint: Default::default(),
             last_draw_cursor: None,
             dropdown_open: false,
-            draw_persist: false,
+            draw_persist: true,
             remote_control_allowed: true,
             app_veil_snapshot: Default::default(),
             user_has_resized: false,

@@ -303,7 +303,8 @@ impl Session {
             straight_sent: None,
             straight_held: None,
             ink_changed: Instant::now(),
-            keep_ink: false,
+            // Ink stays until you clear it, by default here and on the Mac.
+            keep_ink: true,
             incoming_paths: HashMap::new(),
             marks_announced: false,
             next_path: 0,
@@ -689,9 +690,18 @@ impl Session {
         self.drawing_path = None;
         self.straight_sent = None;
         self.straight_held = None;
-        self.send_drawing_mode();
+        self.marking_changed(cx);
         cx.emit(SessionEvent::DrawingChanged);
         cx.notify();
+    }
+
+    /// You picked up or put down the pen or the stamp tool: say so to everyone. With both
+    /// down your ink goes, as it does on the Mac when someone stops drawing.
+    fn marking_changed(&mut self, cx: &mut Context<Self>) {
+        if !self.drawing && !self.stamping {
+            self.clear_own_drawings(cx);
+        }
+        self.send_drawing_mode();
     }
 
     /// Switch between ink that fades and ink kept until you right-click or clear it.
@@ -699,7 +709,7 @@ impl Session {
         self.keep_ink = !self.keep_ink;
         // Ink you stop keeping gets the usual time before it fades.
         self.ink_changed = Instant::now();
-        if self.drawing {
+        if self.drawing || self.stamping {
             self.send_drawing_mode();
         }
         cx.notify();
@@ -707,7 +717,8 @@ impl Session {
 
     fn send_drawing_mode(&mut self) {
         self.send(Command::SendInput(InputEvent::DrawingMode(
-            if self.drawing {
+            // Stamping is drawing to everyone else, so your ink stays up.
+            if self.drawing || self.stamping {
                 DrawingMode::Draw(DrawSettings {
                     permanent: self.keep_ink,
                 })
@@ -778,6 +789,8 @@ impl Session {
         self.stamping = !self.stamping;
         if self.stamping && self.drawing {
             self.toggle_drawing(cx);
+        } else {
+            self.marking_changed(cx);
         }
         // The draw pad opens for stamps on your own screen too.
         cx.emit(SessionEvent::DrawingChanged);
@@ -1021,6 +1034,9 @@ impl Session {
         if self.stamping {
             self.finish_stamp(cx);
             self.stamping = false;
+            if !self.drawing {
+                self.marking_changed(cx);
+            }
             cx.emit(SessionEvent::DrawingChanged);
             cx.notify();
         }
@@ -1792,6 +1808,14 @@ impl Session {
                     self.pens.insert(who);
                 } else {
                     self.pens.remove(&who);
+                    // They stopped drawing: their ink goes, as the Mac app does.
+                    let now = Instant::now();
+                    self.keep_paths(|path| path.sender != sender || path.ended.is_some());
+                    for path in &mut self.paths {
+                        if path.sender == sender && path.fading.is_none() {
+                            path.fading = Some(now);
+                        }
+                    }
                 }
             }
             InputEvent::DrawStart(path) => {

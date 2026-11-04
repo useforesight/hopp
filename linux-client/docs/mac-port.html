@@ -462,8 +462,8 @@ input.field{font:inherit;font-size:14px;border:1px solid var(--border-strong);bo
     <thead><tr><th>Rule</th><th>Both apps now</th></tr></thead>
     <tbody>
       <tr><td>Width</td><td>3.5 px on a 5 px halo at 28%: dark under bright ink, light under dark. Every halo is drawn before any ink</td></tr>
-      <tr><td>Fading</td><td>All your strokes fade together 3 s after your last change, over 450 ms</td></tr>
-      <tr><td>Keep</td><td>"Persist until right click" on the Mac, <strong>Keep ink</strong> on Linux; sent as <code>DrawingMode</code> with <code>permanent</code></td></tr>
+      <tr><td>Keep</td><td><strong>On by default:</strong> ink stays until you right-click, press Clear, or stop drawing (which clears it on everyone's screen). "Persist until right click" on the Mac, <strong>Keep ink</strong> on Linux; sent as <code>DrawingMode</code> with <code>permanent</code></td></tr>
+      <tr><td>Fading</td><td>With keeping turned off, all your strokes fade together 3 s after your last change, over 450 ms</td></tr>
       <tr><td>Undo</td><td><kbd>⌘</kbd>+<kbd>Z</kbd> on the Mac, <kbd>Ctrl</kbd>+<kbd>Z</kbd> on Linux; sent as <code>DrawClearPath</code></td></tr>
       <tr><td>Clear</td><td>Right-click</td></tr>
       <tr><td>Shift</td><td>The whole stroke becomes a straight line from where it began. Others see it move: clear, start and end, at most every 33 ms</td></tr>
@@ -832,7 +832,7 @@ input.field{font:inherit;font-size:14px;border:1px solid var(--border-strong);bo
   <div class="tbl"><table>
     <thead><tr><th>Trigger (<code>moments.rs</code>)</th><th>Rule</th></tr></thead>
     <tbody>
-      <tr><td>A drawing</td><td>Frame once its strokes pause for 2.5 s, just before the 3 s group fade, with the whole drawing on it. A drawing that goes on gets one every 20 s. A stroke undone within 2 s isn't on it.</td></tr>
+      <tr><td>A drawing</td><td>Frame once its strokes pause for 2.5 s, with the whole drawing on it. A drawing that goes on gets one every 20 s. Kept ink stays on later frames until it's cleared; ink that fades stays until 3.5 s after its owner's last change. An undone stroke isn't on it.</td></tr>
       <tr><td>A pin or finished stamp</td><td>Frame 250 ms after it</td></tr>
       <tr><td>Bookmark, or first view of a new share</td><td>Frame at once</td></tr>
       <tr><td>Screen changes</td><td>Sampled every 0.5 s. Saved once nothing bigger than a cursor has changed for 2 s. On a screen you share, cells under Hopp's own windows (the transcript, the call window) are left out, so a growing transcript isn't a change.</td></tr>

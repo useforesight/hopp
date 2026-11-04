@@ -37,7 +37,7 @@
 use anyhow::{Context, Result};
 use image::RgbaImage;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync_channel},
     thread::JoinHandle,
@@ -198,6 +198,7 @@ impl Moments {
                 | InputEvent::DrawEnd(_)
                 | InputEvent::DrawClearPath { .. }
                 | InputEvent::DrawClearAllPaths
+                | InputEvent::DrawingMode(_)
                 | InputEvent::ClickAnimation(_)
         );
         if !relevant {
@@ -378,6 +379,8 @@ struct Worker {
     colours: Colours,
     /// When each person last changed their drawing: a stroke drawn or undone.
     drew: HashMap<String, Instant>,
+    /// People whose ink stays until they clear it (the default) rather than fading.
+    keeping: HashSet<String>,
     /// The monitor you share, when the screen is yours.
     own: Option<CaptureTarget>,
     /// Thumbnail cells covered by Hopp's own windows there, and when that was checked.
@@ -403,6 +406,7 @@ impl Worker {
             saved_thumb: None,
             colours: Colours::default(),
             drew: HashMap::new(),
+            keeping: HashSet::new(),
             own: None,
             mask: Vec::new(),
             mask_checked: None,
@@ -441,6 +445,7 @@ impl Worker {
                     self.scene = Scene::default();
                     self.strokes.clear();
                     self.drew.clear();
+                    self.keeping.clear();
                     self.active.clear();
                     self.pins.clear();
                     self.pending
@@ -508,11 +513,14 @@ impl Worker {
                 // Hopp's clients clear a drawing as it fades: a stroke not yet in a frame
                 // stays until it is. One cleared while drawn, or soon after, was undone
                 // and goes. Only its owner can clear it.
+                // Kept ink doesn't fade, so clearing one stroke of it is an undo.
+                let keeping = self.keeping.contains(&owner);
                 let undone = self.strokes.iter().any(|s| {
                     s.owner == owner
                         && s.id == path_id
-                        && s.ended
-                            .is_none_or(|ended| now.duration_since(ended) < UNDONE)
+                        && (keeping
+                            || s.ended
+                                .is_none_or(|ended| now.duration_since(ended) < UNDONE))
                 });
                 if undone {
                     // Undoing is drawing: the rest stays up as long again.
@@ -528,6 +536,20 @@ impl Worker {
                 self.strokes.retain(|s| s.owner != owner || !s.reported);
                 self.active.remove(&owner);
             }
+            InputEvent::DrawingMode(mode) => match mode {
+                crate::protocol::DrawingMode::Draw(settings) if settings.permanent => {
+                    self.keeping.insert(owner);
+                }
+                crate::protocol::DrawingMode::Draw(_) => {
+                    self.keeping.remove(&owner);
+                }
+                // They stopped drawing, which clears their ink everywhere.
+                _ => {
+                    self.keeping.remove(&owner);
+                    self.strokes.retain(|s| s.owner != owner || !s.reported);
+                    self.active.remove(&owner);
+                }
+            },
             InputEvent::ClickAnimation(point) => {
                 self.pin_count += 1;
                 self.colours.of(&owner);
@@ -624,16 +646,24 @@ impl Worker {
         last
     }
 
-    /// Whether a stroke is still on screen at `now`: its owner's drawing hasn't faded.
-    fn showing(stroke: &Stroke, last: &HashMap<String, Instant>, now: Instant) -> bool {
-        last.get(&stroke.owner)
-            .is_none_or(|at| now.duration_since(*at) < VISIBLE)
+    /// Whether a stroke is still on screen at `now`: its owner keeps their ink until they
+    /// clear it, or their drawing hasn't faded yet.
+    fn showing(&self, stroke: &Stroke, last: &HashMap<String, Instant>, now: Instant) -> bool {
+        self.keeping.contains(&stroke.owner)
+            || last
+                .get(&stroke.owner)
+                .is_none_or(|at| now.duration_since(*at) < VISIBLE)
     }
 
     fn forget_old(&mut self, now: Instant) {
         let last = self.last_drawn(now);
-        self.strokes
-            .retain(|s| !s.reported || Self::showing(s, &last, now));
+        let keep: Vec<bool> = self
+            .strokes
+            .iter()
+            .map(|s| !s.reported || self.showing(s, &last, now))
+            .collect();
+        let mut keep = keep.into_iter();
+        self.strokes.retain(|_| keep.next().unwrap_or(true));
         self.pins
             .retain(|p| !p.reported || now.duration_since(p.at) < PIN_VISIBLE);
     }
@@ -786,7 +816,7 @@ impl Worker {
         let visible: Vec<&Stroke> = self
             .strokes
             .iter()
-            .filter(|s| s.points.len() > 1 && Self::showing(s, &last, now))
+            .filter(|s| s.points.len() > 1 && self.showing(s, &last, now))
             .collect();
         let visible_pins: Vec<&Pin> = self
             .pins
@@ -1738,6 +1768,42 @@ mod tests {
             serde_json::from_slice(&std::fs::read(directory.path().join("frame-002.json"))?)?;
         assert_eq!(info.ink.len(), 5, "{:?}", info.ink);
         assert_eq!(info.marks.len(), 5);
+        moments.finish();
+        Ok(())
+    }
+
+    /// Kept ink (the default) stays on later frames until its owner stops drawing.
+    #[test]
+    fn kept_ink_stays_on_frames_until_cleared() -> Result<()> {
+        use crate::protocol::{DrawSettings, DrawingMode};
+        let directory = tempfile::tempdir()?;
+        let (feed, receiver) = Feed::for_tests();
+        let mut moments = Moments::start_in(directory.path().into(), feed)?;
+        moments.sample(flat(800, 500, 90));
+        assert_eq!(frames(&receiver, Duration::from_millis(800)).len(), 1);
+        let lee = "room:r:lee:audio";
+        let keep = DrawingMode::Draw(DrawSettings { permanent: true });
+        moments.draw(lee, "Lee", &InputEvent::DrawingMode(keep));
+        stroke(&mut moments, lee, 1, (0.4, 0.4), (0.6, 0.6));
+        std::thread::sleep(DRAW_PAUSE + Duration::from_millis(200));
+        moments.sample(flat(800, 500, 90));
+        assert_eq!(frames(&receiver, Duration::from_millis(1_500)).len(), 1);
+        let ink = |number: u32| -> Result<usize> {
+            let path = directory.path().join(format!("frame-{number:03}.json"));
+            Ok(serde_json::from_slice::<FrameInfo>(&std::fs::read(path)?)?
+                .ink
+                .len())
+        };
+        // Long after it would have faded, a bookmark's frame still shows it.
+        std::thread::sleep(VISIBLE);
+        moments.bookmark(None, "still there");
+        assert_eq!(frames(&receiver, Duration::from_millis(800)).len(), 1);
+        assert_eq!(ink(3)?, 1);
+        // Lee stops drawing, which clears it.
+        moments.draw(lee, "Lee", &InputEvent::DrawingMode(DrawingMode::Disabled));
+        moments.bookmark(None, "gone");
+        assert_eq!(frames(&receiver, Duration::from_millis(800)).len(), 1);
+        assert_eq!(ink(4)?, 0);
         moments.finish();
         Ok(())
     }

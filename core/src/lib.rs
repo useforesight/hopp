@@ -499,7 +499,8 @@ impl<'a> Application<'a> {
             socket_responses,
             room_service: None,
             event_loop_proxy,
-            controller_draw_persist: false,
+            // Ink stays until it's cleared unless the app says otherwise.
+            controller_draw_persist: true,
             last_mode: None,
             window_manager: None,
             audio_capturer,
