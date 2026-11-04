@@ -23,15 +23,31 @@ use crate::{
 
 /// How often your stamp looks for words you've said.
 const STAMP_LISTEN_EVERY: Duration = Duration::from_millis(300);
-/// A stamp you've spoken into finishes itself once you've been quiet this long.
-const STAMP_SAID_DONE: Duration = Duration::from_secs(3);
+/// Holding the stamp down this long records what you say; a shorter click gives a stamp
+/// to type into.
+const STAMP_HOLD: Duration = Duration::from_millis(350);
+/// Speech starting this long before you pressed still counts: people start talking as
+/// they click.
+const STAMP_LEAD_MS: i64 = 500;
+/// After you let go, the stamp finishes once your words have been final this long.
+const STAMP_SETTLED: Duration = Duration::from_millis(600);
+/// Nothing heard this long after letting go: it was silence.
+const STAMP_NOTHING_SAID: Duration = Duration::from_secs(4);
+/// However far behind transcription is, finish with what's there by this long after.
+const STAMP_GIVE_UP: Duration = Duration::from_secs(12);
 
 /// The words going into your stamp.
 #[derive(Default)]
 struct StampWords {
     typed: String,
-    /// While the call is captured, what you say after placing it.
+    /// While the call is captured, what you say while holding it down.
     heard: Option<Heard>,
+}
+
+/// The stamp you're holding down: when you pressed, and whether that unmuted you.
+struct StampHold {
+    pressed: Instant,
+    unmuted: bool,
 }
 
 /// Your words, from the capture's transcript as it's written.
@@ -40,13 +56,25 @@ struct Heard {
     call: String,
     /// The end of your speaker id: `:` and your user id.
     me: String,
-    /// Lines up to this id were said before the stamp.
-    after_id: i64,
+    /// When the capture started, in Unix milliseconds: its lines are timed from then.
+    started_ms: i64,
+    /// Your lines starting from this capture time count…
+    from_ms: i64,
+    /// …up to this one, once you've let go.
+    until_ms: Option<i64>,
+    released: Option<Instant>,
     /// Changes up to this revision have been read.
     rev: i64,
     /// Your lines since, by id: (final, text).
     lines: BTreeMap<i64, (bool, String)>,
     changed: Instant,
+}
+
+/// Now, in Unix milliseconds.
+fn unix_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_millis() as i64)
 }
 
 /// Cut `text` to at most `max` bytes, on a character boundary.
@@ -196,6 +224,13 @@ pub struct Session {
     pub active_stamp: Option<u64>,
     /// What goes into it: typed, and heard while the call is captured.
     stamp_words: StampWords,
+    /// You're holding the stamp down to say its note.
+    stamp_hold: Option<StampHold>,
+    /// A note you've started typing over someone's screen, not yet stamped down: it
+    /// follows the pointer, and a click puts it there.
+    pub note: Option<String>,
+    /// Where the pointer last was over the shared screen.
+    pub hover: Option<Point>,
     next_stamp: u64,
     pub paths: Vec<Stroke>,
     pub pointers: HashMap<String, super::marks::Pointer>,
@@ -293,6 +328,9 @@ impl Session {
             stamping: false,
             active_stamp: None,
             stamp_words: StampWords::default(),
+            stamp_hold: None,
+            note: None,
+            hover: None,
             next_stamp: 0,
             screen: None,
             ambient: None,
@@ -407,7 +445,12 @@ impl Session {
         super::marks::Scene {
             paths: self.paths.clone(),
             ripples: self.ripples.clone(),
-            stamps: self.stamps.clone(),
+            stamps: self
+                .stamps
+                .iter()
+                .cloned()
+                .chain(self.note_ghost().filter(|_| !over_own))
+                .collect(),
             pointers,
             colours: std::rc::Rc::new(colours),
         }
@@ -818,6 +861,7 @@ impl Session {
             draft: String::new(),
             listening: true,
             voice: false,
+            ghost: false,
             placed: Instant::now(),
             removed: None,
         });
@@ -830,6 +874,15 @@ impl Session {
         if let Some(stamp) = self.own_stamp(id) {
             stamp.voice = voice;
         }
+        // Held down, it records what you say, so you're heard: unmute until you let go.
+        let unmuted = voice && !self.microphone;
+        if unmuted {
+            self.toggle_microphone(cx);
+        }
+        self.stamp_hold = Some(StampHold {
+            pressed: Instant::now(),
+            unmuted,
+        });
         if voice {
             // Your words reach the transcript a moment after you say them; look often.
             cx.spawn(async move |session, cx| {
@@ -851,6 +904,152 @@ impl Session {
             y: point.y,
         }));
         cx.notify();
+    }
+
+    /// You let go of the stamp. Held long enough, it keeps what you said while holding and
+    /// finishes once that's written down; a quick click leaves it to type into.
+    fn release_stamp(&mut self, cx: &mut Context<Self>) {
+        let Some(hold) = self.stamp_hold.take() else {
+            return;
+        };
+        if hold.unmuted && self.microphone {
+            self.toggle_microphone(cx);
+        }
+        let Some(id) = self.active_stamp else {
+            return;
+        };
+        if hold.pressed.elapsed() < STAMP_HOLD {
+            // A click: a note to type.
+            self.stamp_words.heard = None;
+            if let Some(stamp) = self.own_stamp(id) {
+                stamp.voice = false;
+                stamp.draft.clear();
+            }
+        } else if let Some(heard) = self.stamp_words.heard.as_mut() {
+            heard.until_ms = Some(unix_ms() - heard.started_ms);
+            heard.released = Some(Instant::now());
+        }
+        cx.notify();
+    }
+
+    /// Keys for a note typed over someone's screen: the first printable key starts one,
+    /// Enter stamps it where the pointer is, Escape drops it. Returns whether the key was
+    /// used.
+    pub fn note_key(&mut self, key: &gpui_kit::Keystroke, cx: &mut Context<Self>) -> bool {
+        let modifiers = key.modifiers;
+        let viewing = self.connected && self.remote_identity.is_some();
+        if !viewing
+            || self.active_stamp.is_some()
+            || (self.peer_control && !self.drawing)
+            || modifiers.control
+            || modifiers.alt
+            || modifiers.platform
+        {
+            return false;
+        }
+        let typed = key.key_char.as_deref().filter(|typed| !typed.is_empty());
+        let Some(note) = self.note.as_mut() else {
+            // Only a word starts one, not a space or a stray key.
+            let Some(typed) = typed.filter(|typed| !typed.trim().is_empty()) else {
+                return false;
+            };
+            self.note = Some(typed.to_owned());
+            cx.notify();
+            return true;
+        };
+        match key.key.as_str() {
+            "escape" => self.note = None,
+            "enter" => {
+                if let Some(point) = self.hover {
+                    self.stamp_note(point, cx);
+                }
+            }
+            "backspace" => {
+                note.pop();
+                if note.is_empty() {
+                    self.note = None;
+                }
+            }
+            _ => match typed {
+                Some(typed) if note.len() + typed.len() <= crate::protocol::STAMP_TEXT_MAX => {
+                    note.push_str(typed)
+                }
+                _ => return false,
+            },
+        }
+        cx.notify();
+        true
+    }
+
+    /// Put your typed note down at `point` as a finished stamp.
+    fn stamp_note(&mut self, point: Point, cx: &mut Context<Self>) {
+        let Some(text) = self.note.take() else {
+            return;
+        };
+        let text = text.trim().to_owned();
+        if text.is_empty() {
+            cx.notify();
+            return;
+        }
+        self.finish_stamp(cx);
+        self.next_stamp = self.next_stamp.wrapping_add(1);
+        let id = self.next_stamp;
+        self.stamp_count += 1;
+        self.stamps.push(super::marks::Stamp {
+            id,
+            number: self.stamp_count,
+            owner: String::new(),
+            name: self.own_first_name(),
+            point,
+            text: text.clone(),
+            draft: String::new(),
+            listening: false,
+            voice: false,
+            ghost: false,
+            placed: Instant::now(),
+            removed: None,
+        });
+        self.send(Command::SendStamp(StampMessage::StampPlace {
+            id,
+            x: point.x,
+            y: point.y,
+        }));
+        self.send(Command::SendStamp(StampMessage::StampText {
+            id,
+            text,
+            draft: String::new(),
+            done: true,
+        }));
+        cx.notify();
+    }
+
+    fn own_first_name(&self) -> String {
+        self.user
+            .as_ref()
+            .map(|user| user.first_name.clone())
+            .unwrap_or_else(|| "You".into())
+    }
+
+    /// The note you're typing, as a faint stamp under the pointer, for the screen you
+    /// view.
+    fn note_ghost(&self) -> Option<super::marks::Stamp> {
+        let (text, point) = (self.note.as_ref()?, self.hover?);
+        let placed = Instant::now();
+        let placed = placed.checked_sub(Duration::from_secs(5)).unwrap_or(placed);
+        Some(super::marks::Stamp {
+            id: u64::MAX,
+            number: self.stamp_count + 1,
+            owner: String::new(),
+            name: self.own_first_name(),
+            point,
+            text: text.clone(),
+            draft: String::new(),
+            listening: false,
+            voice: false,
+            ghost: true,
+            placed,
+            removed: None,
+        })
     }
 
     fn own_stamp(&mut self, id: u64) -> Option<&mut super::marks::Stamp> {
@@ -920,22 +1119,25 @@ impl Session {
         let call = self.capture.as_ref()?.id.clone();
         let me = format!(":{}", self.user.as_ref()?.id);
         let store = crate::capture::store::Store::open_default().ok()?;
-        let after_id = store.last_line_id(&call).ok()?;
+        let started_ms = store.call(&call).ok()??.started_ms;
         let rev = store.latest_rev(&call).ok()?;
         Some(Heard {
             store,
             call,
             me,
-            after_id,
+            started_ms,
+            from_ms: unix_ms() - started_ms - STAMP_LEAD_MS,
+            until_ms: None,
+            released: None,
             rev,
             lines: BTreeMap::new(),
             changed: Instant::now(),
         })
     }
 
-    /// Bring in what you've said into stamp `id` since the last look. A stamp you've
-    /// spoken into finishes itself once you've stopped talking for [`STAMP_SAID_DONE`].
-    /// Returns whether it is still listening.
+    /// Bring in what you've said into stamp `id` since the last look: your lines that
+    /// start while you hold it down. Once you've let go and they're written down, it
+    /// finishes. Returns whether it is still listening.
     fn hear_stamp(&mut self, id: u64, cx: &mut Context<Self>) -> bool {
         use crate::capture::store::Kind;
         if self.active_stamp != Some(id) {
@@ -954,7 +1156,9 @@ impl Session {
                 .speaker_id
                 .as_deref()
                 .is_some_and(|speaker| speaker.ends_with(&heard.me));
-            if line.id <= heard.after_id || !mine {
+            let held =
+                line.t_ms >= heard.from_ms && heard.until_ms.is_none_or(|until| line.t_ms <= until);
+            if !mine || !held {
                 continue;
             }
             match line.kind {
@@ -978,14 +1182,24 @@ impl Session {
             cx.notify();
             return true;
         }
+        let Some(released) = heard.released else {
+            return true;
+        };
         let said = heard.lines.values().any(|(done, _)| *done);
         let talking = heard.lines.values().any(|(done, _)| !done);
-        if said
-            && !talking
-            && self.stamp_words.typed.is_empty()
-            && heard.changed.elapsed() >= STAMP_SAID_DONE
+        if (said && !talking && heard.changed.elapsed() >= STAMP_SETTLED)
+            || released.elapsed() >= STAMP_GIVE_UP
         {
             self.finish_stamp(cx);
+            return false;
+        }
+        if !said && !talking && released.elapsed() >= STAMP_NOTHING_SAID {
+            // Nothing was said: leave it to type into.
+            self.stamp_words.heard = None;
+            if let Some(stamp) = self.own_stamp(id) {
+                stamp.voice = false;
+            }
+            cx.notify();
             return false;
         }
         true
@@ -1047,14 +1261,18 @@ impl Session {
 
     /// How to use the stamp tool right now, for whatever shows it.
     pub fn stamp_hint(&self) -> &'static str {
-        match (
-            self.active_stamp.is_some(),
-            self.stamp_words.heard.is_some(),
-        ) {
-            (true, true) => "Say it or type it · Enter to finish · Esc removes it",
-            (true, false) => "Type your note · Enter to finish · Esc removes it",
-            (false, _) if self.capture.is_some() => "Click a spot, then say or type your note",
-            (false, _) => "Click a spot, then type your note",
+        if self.note.is_some() {
+            return "Click to stamp your note there · Esc drops it";
+        }
+        let heard = self.stamp_words.heard.as_ref();
+        match (self.active_stamp.is_some(), heard) {
+            (true, Some(_)) if self.stamp_hold.is_some() => "Listening · let go to stamp it",
+            (true, Some(_)) => "Writing down what you said…",
+            (true, None) => "Type your note · Enter to finish · Esc removes it",
+            (false, _) if self.capture.is_some() => {
+                "Hold on a spot and say your note, or click and type"
+            }
+            (false, _) => "Click a spot and type your note",
         }
     }
 
@@ -1088,7 +1306,18 @@ impl Session {
         self.send_stamp_text(true);
         self.active_stamp = None;
         self.stamp_words = StampWords::default();
+        self.drop_hold(cx);
         cx.notify();
+    }
+
+    /// A stamp ended while still held down: give back the microphone it unmuted.
+    fn drop_hold(&mut self, cx: &mut Context<Self>) {
+        if let Some(hold) = self.stamp_hold.take()
+            && hold.unmuted
+            && self.microphone
+        {
+            self.toggle_microphone(cx);
+        }
     }
 
     /// Take your unfinished stamp away.
@@ -1097,6 +1326,7 @@ impl Session {
             return;
         };
         self.stamp_words = StampWords::default();
+        self.drop_hold(cx);
         if let Some(stamp) = self.own_stamp(id) {
             stamp.listening = false;
             stamp.removed = Some(Instant::now());
@@ -1128,6 +1358,7 @@ impl Session {
                     draft: String::new(),
                     listening: true,
                     voice: false,
+                    ghost: false,
                     placed: Instant::now(),
                     removed: None,
                 });
@@ -1198,6 +1429,11 @@ impl Session {
         if !self.connected {
             return;
         }
+        self.hover = Some(point);
+        if self.note.is_some() {
+            // The note follows the pointer.
+            cx.notify();
+        }
         if self.drawing {
             if let Some(index) = self.drawing_path
                 && dragging
@@ -1249,7 +1485,9 @@ impl Session {
         if !self.connected {
             return;
         }
-        if self.stamping && button == MouseButton::Left {
+        if self.note.is_some() && button == MouseButton::Left {
+            self.stamp_note(point, cx);
+        } else if self.stamping && button == MouseButton::Left {
             self.place_stamp(point, cx);
         } else if self.drawing && button == MouseButton::Right {
             // Right-click clears your ink, as in the Mac app.
@@ -1287,6 +1525,9 @@ impl Session {
         modifiers: Modifiers,
         cx: &mut Context<Self>,
     ) {
+        if button == MouseButton::Left && self.stamp_hold.is_some() {
+            self.release_stamp(cx);
+        }
         if let Some(index) = self.drawing_path.take() {
             let held = self.straight_held.take();
             self.straight_sent = None;

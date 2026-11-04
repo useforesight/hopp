@@ -730,6 +730,8 @@ pub struct Stamp {
     pub listening: bool,
     /// Yours, and hearing what you say (the call is captured), not only what you type.
     pub voice: bool,
+    /// A note you're still typing, under your pointer: shown faint, not yet stamped.
+    pub ghost: bool,
     pub placed: Instant,
     pub removed: Option<Instant>,
 }
@@ -765,7 +767,7 @@ pub fn paint_stamp(
     });
     let drop = progress(age, STAMP_DROP);
     let landed = ease_out_back(drop);
-    let alpha = step((drop * 3.).min(1.) * leaving);
+    let alpha = step((drop * 3.).min(1.) * leaving) * if stamp.ghost { 0.7 } else { 1. };
     if alpha <= 0. {
         return;
     }
@@ -892,7 +894,7 @@ fn paint_bubble(
         let waiting = if !stamp.owner.is_empty() {
             "Adding a note"
         } else if stamp.voice {
-            "Listening: talk or type"
+            "Listening"
         } else {
             "Type a note"
         };

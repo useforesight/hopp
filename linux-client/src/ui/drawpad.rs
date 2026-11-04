@@ -11,8 +11,9 @@
 //!
 //! The stamp tool (Stamp on the pill, Super+Alt+P, `hopp stamp`, or S on the pad) uses
 //! the pad too: a click drops a
-//! numbered stamp, and what you then say (while the call is captured) or type goes on it.
-//! Enter finishes it, Escape removes it, D goes back to the pen.
+//! numbered stamp. Hold it down and what you say (while the call is captured) goes on it
+//! until you let go; click and you type instead. Enter finishes it, Escape removes it, D
+//! goes back to the pen.
 //!
 //! The pad shows nothing itself: the sharing pill turns into the drawing bar, so there's
 //! one overlay to look at. The pad takes the pointer only over the usable area minus the

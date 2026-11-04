@@ -215,6 +215,14 @@ impl ViewerView {
         {
             return true;
         }
+        // Typing over their screen starts a note to stamp down with a click.
+        if self.focus.is_focused(window)
+            && self
+                .session
+                .update(cx, |session, cx| session.note_key(&event.keystroke, cx))
+        {
+            return true;
+        }
         if key == "escape" {
             let controlling = self.session.read(cx).peer_control;
             if controlling {
@@ -958,11 +966,15 @@ impl Render for ViewerView {
                         let Some(point) = view.to_frame(event.position, cx) else {
                             return;
                         };
-                        let (controlling, drawing) = {
+                        let (controlling, marking) = {
                             let session = view.session.read(cx);
-                            (session.peer_control, session.drawing)
+                            (
+                                session.peer_control,
+                                session.drawing || session.stamping || session.note.is_some(),
+                            )
                         };
-                        if !controlling && !drawing && event.button == MouseButton::Left {
+                        // Dragging pans the view, unless a click means something.
+                        if !controlling && !marking && event.button == MouseButton::Left {
                             view.drag = Some((event.position, view.viewport.center));
                             return;
                         }
@@ -1192,7 +1204,7 @@ impl Render for ViewerView {
         self.painted.finish(window);
         let stamp_hint = {
             let session = self.session.read(cx);
-            session.stamping.then(|| session.stamp_hint())
+            (session.stamping || session.note.is_some()).then(|| session.stamp_hint())
         };
         stage
             .when_some(stamp_hint, |stage, hint| {

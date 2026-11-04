@@ -337,15 +337,6 @@ impl Store {
         Ok(lines)
     }
 
-    /// The id of a call's newest line, or 0.
-    pub fn last_line_id(&self, call_id: &str) -> Result<i64> {
-        Ok(self.connection.query_row(
-            "SELECT COALESCE(MAX(id), 0) FROM lines WHERE call_id = ?1",
-            [call_id],
-            |row| row.get(0),
-        )?)
-    }
-
     /// The latest revision of a call's lines, or 0.
     pub fn latest_rev(&self, call_id: &str) -> Result<i64> {
         Ok(self.connection.query_row(

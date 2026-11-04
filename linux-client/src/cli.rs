@@ -93,8 +93,8 @@ pub enum Command {
     /// Start or stop drawing: on a screen someone shares with you, or on your own while
     /// you share it (Super+Alt+D; Escape or right-click stops).
     Draw,
-    /// Pick up or put down the stamp tool (Super+Alt+P): click a spot on the shared
-    /// screen, then say (while the call is captured) or type a note; Enter finishes it.
+    /// Pick up or put down the stamp tool (Super+Alt+P): hold down on a spot of the shared
+    /// screen and say your note (while the call is captured), or click and type one.
     Stamp,
     /// Open Hopp in the bar, or its window if the bar plugin is off (Super+Alt+H).
     Panel,
