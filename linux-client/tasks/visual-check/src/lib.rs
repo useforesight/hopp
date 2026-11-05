@@ -24,6 +24,7 @@ pub mod ui;
 pub mod wake;
 pub mod api {
     pub type RoomsPresence = std::collections::HashMap<String, Vec<String>>;
+    pub type CallsPresence = std::collections::HashMap<String, Vec<String>>;
     pub const DEFAULT_API_BASE: &str = "https://pair.gethopp.app";
     #[derive(Clone, Debug)]
     pub struct RoomInfo {
@@ -99,7 +100,13 @@ pub mod engine {
         },
         Refresh,
         CreateRoom(String),
+        RenameRoom {
+            id: String,
+            name: String,
+        },
+        DeleteRoom(String),
         JoinRoom(RoomInfo),
+        JoinSession(String),
         Leave,
         Share {
             window_only: bool,
@@ -236,6 +243,7 @@ pub mod engine {
         TransportReconnected,
         SignedOut,
         RoomPresence(crate::api::RoomsPresence),
+        CallsPresence(crate::api::CallsPresence),
         Capture(Option<CaptureStatus>),
         CaptureChanged,
     }

@@ -190,10 +190,14 @@ pub struct Session {
     pub user: Option<UserInfo>,
     pub rooms: Vec<RoomInfo>,
     pub room_presence: RoomsPresence,
+    /// Who each teammate is in a call with, by user id.
+    pub calls_presence: crate::api::CallsPresence,
     pub room: Option<RoomInfo>,
     pub participants: Vec<Participant>,
     pub teammates: Vec<Teammate>,
     pub ringing: Option<Ringing>,
+    /// The card saying who else is transcribing this call, while it shows.
+    capture_card: Option<String>,
     /// Counts rings, so a ring-out timer knows whether it's still the same one ringing.
     ring_serial: u64,
     /// Calls and invitations nobody answered, newest first (see `missed`).
@@ -306,11 +310,13 @@ impl Session {
             user: None,
             rooms: Vec::new(),
             room_presence: Default::default(),
+            calls_presence: Default::default(),
             room: None,
             participants: Vec::new(),
             teammates: Vec::new(),
             ringing: None,
             ring_serial: 0,
+            capture_card: None,
             missed: crate::missed::load(),
             missed_card: true,
             dialing: None,
@@ -705,6 +711,74 @@ impl Session {
             .flatten()
     }
 
+    /// A card saying who else is transcribing this call, as on the Mac: the call
+    /// window's badges only help if it's open, and on an audio call it needn't be. It
+    /// stays until dismissed, comes back when someone new starts, and goes when nobody is
+    /// capturing any more.
+    fn tell_capturers(&mut self, names: &[String], cx: &mut Context<Self>) {
+        if let Some(id) = self.capture_card.take() {
+            self.settle_card(&id, crate::cards::CardState::Cancelled, cx);
+        }
+        let Some((last, rest)) = names.split_last() else {
+            return;
+        };
+        let who = if rest.is_empty() {
+            last.clone()
+        } else {
+            format!("{} and {last}", rest.join(", "))
+        };
+        let one = rest.is_empty();
+        let request = crate::cards::CardRequest {
+            id: crate::cards::new_id(),
+            title: format!(
+                "{who} {} transcribing this call",
+                if one { "is" } else { "are" }
+            ),
+            body: Some(format!(
+                "What's said and shown is being saved on {}.",
+                if one {
+                    "their computer"
+                } else {
+                    "their computers"
+                }
+            )),
+            sender: Some("Hopp".into()),
+            question: None,
+            ephemeral: false,
+        };
+        self.capture_card = Some(request.id.clone());
+        self.post_card(request, cx);
+    }
+
+    /// First names of whoever `user_id` is in a call with ("you" for you), if anyone.
+    pub fn call_peers(&self, user_id: &str) -> Option<String> {
+        let peers = self.calls_presence.get(user_id)?;
+        let own = self.user.as_ref().map(|user| user.id.as_str());
+        let names: Vec<String> = peers
+            .iter()
+            .filter(|peer| peer.as_str() != user_id)
+            .map(|peer| {
+                if Some(peer.as_str()) == own {
+                    "you".to_owned()
+                } else {
+                    self.teammates
+                        .iter()
+                        .find(|teammate| &teammate.id == peer)
+                        .map_or_else(
+                            || "someone".to_owned(),
+                            |teammate| teammate.first_name.clone(),
+                        )
+                }
+            })
+            .collect();
+        let (last, rest) = names.split_last()?;
+        Some(if rest.is_empty() {
+            last.clone()
+        } else {
+            format!("{} and {last}", rest.join(", "))
+        })
+    }
+
     /// Call back whoever missed you, or just forget them if they're no longer a teammate.
     pub fn call_back(&mut self, caller_id: &str, cx: &mut Context<Self>) {
         match self
@@ -787,6 +861,21 @@ impl Session {
     pub fn create_room(&mut self, name: String, cx: &mut Context<Self>) {
         if !name.is_empty() && self.user.is_some() {
             self.send(Command::CreateRoom(name));
+            cx.notify();
+        }
+    }
+
+    pub fn rename_room(&mut self, id: String, name: String, cx: &mut Context<Self>) {
+        if !name.is_empty() && self.user.is_some() {
+            self.send(Command::RenameRoom { id, name });
+            cx.notify();
+        }
+    }
+
+    /// Delete a room for everyone on the team. Not the one you're in.
+    pub fn delete_room(&mut self, id: String, cx: &mut Context<Self>) {
+        if self.user.is_some() && self.room.as_ref().is_none_or(|room| room.id != id) {
+            self.send(Command::DeleteRoom(id));
             cx.notify();
         }
     }
@@ -2005,6 +2094,7 @@ impl Session {
             }
             Event::Rooms(rooms) => self.rooms = rooms,
             Event::RoomPresence(presence) => self.room_presence = presence,
+            Event::CallsPresence(calls) => self.calls_presence = calls,
             Event::SignedOut => {
                 self.release_input();
                 self.end_call();
@@ -2099,6 +2189,13 @@ impl Session {
             }
             Event::Status(status) => self.status = status,
             Event::Joined(room) => {
+                // Your microphone and camera as you like to start a call (Settings).
+                if self.settings.start_microphone {
+                    self.send(Command::Microphone(true));
+                }
+                if self.settings.start_camera {
+                    self.send(Command::Camera(true));
+                }
                 self.dialing = None;
                 if self.ringing.take().is_some() {
                     cx.emit(SessionEvent::RingingChanged);
@@ -2132,6 +2229,7 @@ impl Session {
                 let had_share = self.remote_identity.is_some();
                 self.release_input();
                 self.end_call();
+                self.tell_capturers(&[], cx);
                 self.status = reason;
                 if !self.missed.is_empty() {
                     self.missed_card = true;
@@ -2181,6 +2279,16 @@ impl Session {
                 }
                 for name in before.iter().filter(|name| !after.contains(name)) {
                     self.status = format!("{name} stopped capturing");
+                }
+                // Once dismissed, the card stays away until someone new starts.
+                let someone_new = after.iter().any(|name| !before.contains(name));
+                let showing = self.capture_card.as_ref().is_some_and(|id| {
+                    self.cards.iter().any(|card| {
+                        &card.request.id == id && card.state == crate::cards::CardState::Showing
+                    })
+                });
+                if someone_new || (showing && after != before) {
+                    self.tell_capturers(&after, cx);
                 }
             }
             Event::RemoteShare { identity, active } => {
@@ -2610,6 +2718,7 @@ impl Session {
                     "name": full_name(&teammate.first_name, &teammate.last_name),
                     "online": teammate.is_active,
                     "room": room_of(&teammate.id),
+                    "with": self.call_peers(&teammate.id),
                 }))
                 .collect::<Vec<_>>(),
             "rooms": self.rooms.iter().map(|room| json!({

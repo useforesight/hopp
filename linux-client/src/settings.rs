@@ -16,6 +16,12 @@ pub struct Settings {
     pub face_size: FaceSize,
     #[serde(default)]
     pub face_layout: FaceLayout,
+    /// Unmute as soon as a call connects. Off by default: you join muted.
+    #[serde(default)]
+    pub start_microphone: bool,
+    /// Turn the camera on as soon as a call connects.
+    #[serde(default)]
+    pub start_camera: bool,
 }
 
 /// Tile size in the call window.
@@ -48,6 +54,8 @@ impl Default for Settings {
             camera_device: None,
             face_size: FaceSize::default(),
             face_layout: FaceLayout::default(),
+            start_microphone: false,
+            start_camera: false,
         }
     }
 }

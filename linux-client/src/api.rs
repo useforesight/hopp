@@ -41,6 +41,22 @@ pub struct Teammate {
 
 pub type RoomsPresence = HashMap<String, Vec<String>>;
 
+/// Who each teammate is in a call with, by user id: what shows a call between two
+/// people, which has no room of its own in the room list.
+pub type CallsPresence = HashMap<String, Vec<String>>;
+
+#[derive(Deserialize)]
+struct CallsPresenceResponse {
+    #[serde(default)]
+    presence: HashMap<String, CallPresence>,
+}
+
+#[derive(Deserialize)]
+struct CallPresence {
+    #[serde(default, rename = "peerIds")]
+    peer_ids: Vec<String>,
+}
+
 #[derive(Deserialize)]
 struct PresenceResponse {
     rooms: RoomsPresence,
@@ -146,6 +162,51 @@ fn server_base(value: &str) -> Result<Url> {
 /// Login remains in the system browser, including social login and verification.
 pub fn login_url(api_base: &str) -> Result<String> {
     Ok(server_base(api_base)?.join("login-app")?.to_string())
+}
+
+/// What a `hopp://` link asks for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeepLink {
+    /// `hopp:///authenticate?token=…`, from signing in in the browser.
+    SignIn(String),
+    /// `hopp:///join-session?sessionId=…`, from a Slack pairing session.
+    JoinSession(String),
+}
+
+pub fn parse_deep_link(value: &str) -> Result<DeepLink> {
+    let uri = Url::parse(value).map_err(|_| anyhow::anyhow!("Invalid Hopp link"))?;
+    let join = match uri.host_str() {
+        None => uri.path() == "/join-session",
+        Some("join-session") => matches!(uri.path(), "" | "/"),
+        _ => false,
+    };
+    if !join {
+        return parse_auth_deep_link(value).map(DeepLink::SignIn);
+    }
+    if uri.scheme() != "hopp"
+        || !uri.username().is_empty()
+        || uri.password().is_some()
+        || uri.port().is_some()
+        || uri.fragment().is_some()
+    {
+        bail!("This is not a Hopp link");
+    }
+    let ids: Vec<_> = uri
+        .query_pairs()
+        .filter(|(key, _)| key == "sessionId")
+        .map(|(_, value)| value.into_owned())
+        .collect();
+    match ids.as_slice() {
+        [id] if !id.is_empty()
+            && id.len() <= 128
+            && id
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || character == '-') =>
+        {
+            Ok(DeepLink::JoinSession(id.clone()))
+        }
+        _ => bail!("Hopp session link needs one session id"),
+    }
 }
 
 /// Hopp's browser returns `hopp:///authenticate?token=...`.
@@ -307,6 +368,17 @@ impl ApiClient {
             .rooms)
     }
 
+    pub async fn calls_presence(&self) -> Result<CallsPresence> {
+        Ok(self
+            .get::<CallsPresenceResponse>("api/auth/calls/presence")
+            .await?
+            .presence
+            .into_iter()
+            .filter(|(_, call)| !call.peer_ids.is_empty())
+            .map(|(user, call)| (user, call.peer_ids))
+            .collect())
+    }
+
     pub async fn server_url(&self) -> Result<String> {
         let server: ServerResponse = self.get("api/auth/livekit/server-url").await?;
         validate_livekit_url(&server.url)?;
@@ -359,8 +431,40 @@ impl ApiClient {
         .map_err(|_| anyhow::anyhow!("Hopp server returned an unexpected room"))
     }
 
+    pub async fn rename_room(&self, id: &str, name: &str) -> Result<()> {
+        let name = name.trim();
+        if name.is_empty() {
+            bail!("Enter a room name");
+        }
+        self.request(
+            Method::PUT,
+            &Self::room_endpoint(id, false)?,
+            Some(serde_json::json!({"name": name})),
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete_room(&self, id: &str) -> Result<()> {
+        self.request(Method::DELETE, &Self::room_endpoint(id, false)?, None)
+            .await?;
+        Ok(())
+    }
+
     pub async fn join_room(&self, id: &str) -> Result<RoomTokens> {
-        let endpoint = Self::room_endpoint(id, false)?;
+        self.room_tokens(id, &Self::room_endpoint(id, false)?).await
+    }
+
+    /// Tokens for a pairing session started from Slack (`hopp:///join-session`). The
+    /// session is a room, left the same way.
+    pub async fn join_session(&self, id: &str) -> Result<RoomTokens> {
+        Self::room_endpoint(id, false)?;
+        self.room_tokens(id, &format!("api/auth/slack/session/{id}/tokens"))
+            .await
+    }
+
+    async fn room_tokens(&self, id: &str, endpoint: &str) -> Result<RoomTokens> {
+        let endpoint = endpoint.to_owned();
         // Fetch/validate configuration first: fetching room tokens already marks us in the room.
         let livekit_url = self.server_url().await?;
         let response = self.request(Method::GET, &endpoint, None).await?;
@@ -397,6 +501,33 @@ impl ApiClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn joins_slack_sessions_by_link() {
+        assert_eq!(
+            parse_deep_link("hopp:///join-session?sessionId=ab12-cd34").unwrap(),
+            DeepLink::JoinSession("ab12-cd34".into())
+        );
+        assert_eq!(
+            parse_deep_link("hopp://join-session?sessionId=x1").unwrap(),
+            DeepLink::JoinSession("x1".into())
+        );
+        assert_eq!(
+            parse_deep_link("hopp:///authenticate?token=abc").unwrap(),
+            DeepLink::SignIn("abc".into())
+        );
+        for uri in [
+            "hopp:///join-session",
+            "hopp:///join-session?sessionId=",
+            "hopp:///join-session?sessionId=a&sessionId=b",
+            "hopp:///join-session?sessionId=../escape",
+            "hopp:///join-session?sessionId=x#frag",
+            "https://example.com/join-session?sessionId=x",
+            "hopp://evil/join-session?sessionId=x",
+        ] {
+            assert!(parse_deep_link(uri).is_err(), "unexpectedly accepted {uri}");
+        }
+    }
 
     #[test]
     fn authenticates_only_hopp_sign_in_links() {

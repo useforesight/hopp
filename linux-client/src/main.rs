@@ -84,7 +84,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
     if let Some(link) = &link {
-        api::parse_auth_deep_link(link)?;
+        api::parse_deep_link(link)?;
     }
     if input_test {
         return input_probe::run();
@@ -106,10 +106,16 @@ fn main() -> Result<()> {
         scope::enter();
     }
     let mut settings = settings::load()?;
-    if let Some(link) = link {
-        settings.token = Some(api::parse_auth_deep_link(&link)?);
+    let mut session_link = None;
+    match link.as_deref().map(api::parse_deep_link).transpose()? {
+        Some(api::DeepLink::SignIn(token)) => settings.token = Some(token),
+        Some(api::DeepLink::JoinSession(id)) => session_link = Some(id),
+        None => {}
     }
     let engine = engine::Engine::start(settings.clone());
+    if let Some(id) = session_link {
+        let _ = engine.commands.try_send(engine::Command::JoinSession(id));
+    }
     let instance = if smoke_test {
         None
     } else {

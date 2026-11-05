@@ -183,11 +183,28 @@ impl Call {
     pub fn heading(&self) -> String {
         self.title
             .clone()
-            .unwrap_or_else(|| format!("Call in {}", self.room))
+            .unwrap_or_else(|| untitled(&self.room, &self.participants))
     }
 
     pub fn live(&self) -> bool {
         self.ended_ms.is_none()
+    }
+}
+
+/// A call with no title. A call between two people isn't in a room, so it's named for
+/// who was there (as on the Mac).
+fn untitled(room: &str, participants: &[String]) -> String {
+    if !room.is_empty() {
+        return format!("Call in {room}");
+    }
+    match participants {
+        [] => "Call".to_string(),
+        [one] => format!("Call with {one}"),
+        [first, second] => format!("Call with {first} and {second}"),
+        [first, second, third] => format!("Call with {first}, {second} and {third}"),
+        [first, second, rest @ ..] => {
+            format!("Call with {first}, {second} and {} others", rest.len())
+        }
     }
 }
 
@@ -477,7 +494,7 @@ impl Store {
         let mut statement = self.connection.prepare(
             "SELECT lines.id, lines.t_ms, lines.kind, lines.speaker_id, lines.speaker, lines.text,
                     lines.end_ms, lines.rev, lines.call_id,
-                    COALESCE(calls.title, 'Call in ' || calls.room),
+                    calls.title, calls.room, calls.participants,
                     snippet(lines_fts, 0, '[', ']', '…', 16)
              FROM lines_fts
              JOIN lines ON lines.id = lines_fts.rowid
@@ -488,11 +505,19 @@ impl Store {
         )?;
         let hits = statement
             .query_map(params![query, limit as i64], |row| {
+                let title: Option<String> = row.get(9)?;
+                let room: String = row.get(10)?;
+                let participants: String = row.get(11)?;
                 Ok(Hit {
                     line: line_from_row(row)?,
                     call_id: row.get(8)?,
-                    call: row.get(9)?,
-                    snippet: row.get(10)?,
+                    call: title.unwrap_or_else(|| {
+                        untitled(
+                            &room,
+                            &serde_json::from_str::<Vec<String>>(&participants).unwrap_or_default(),
+                        )
+                    }),
+                    snippet: row.get(12)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
@@ -932,6 +957,22 @@ pub(crate) mod tests {
         // Opening again doesn't migrate again.
         assert_eq!(Store::open(&path)?.latest_rev("c_old")?, 3);
         Ok(())
+    }
+
+    #[test]
+    fn a_call_without_a_title_says_where_or_who() {
+        let people = |names: &[&str]| names.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert_eq!(untitled("Standup", &people(&["Mira"])), "Call in Standup");
+        assert_eq!(untitled("", &[]), "Call");
+        assert_eq!(untitled("", &people(&["Mira"])), "Call with Mira");
+        assert_eq!(
+            untitled("", &people(&["Mira", "Jonas"])),
+            "Call with Mira and Jonas"
+        );
+        assert_eq!(
+            untitled("", &people(&["Mira", "Jonas", "Lee", "Ann", "Bo"])),
+            "Call with Mira, Jonas and 3 others"
+        );
     }
 
     pub fn fixture() -> Result<(tempfile::TempDir, Store)> {

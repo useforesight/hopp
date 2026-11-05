@@ -87,7 +87,14 @@ pub enum Command {
     SignOut,
     Refresh,
     CreateRoom(String),
+    RenameRoom {
+        id: String,
+        name: String,
+    },
+    DeleteRoom(String),
     JoinRoom(RoomInfo),
+    /// Join a pairing session started from Slack, by its id (`hopp:///join-session`).
+    JoinSession(String),
     Leave,
     Share {
         window_only: bool,
@@ -144,6 +151,8 @@ pub enum Event {
     SignedOut,
     Rooms(Vec<RoomInfo>),
     RoomPresence(crate::api::RoomsPresence),
+    /// Who each teammate is in a call with.
+    CallsPresence(crate::api::CallsPresence),
     Status(String),
     Joined(RoomInfo),
     Connected,
@@ -269,6 +278,8 @@ pub struct Engine {
 
 enum JoinTarget {
     Room(RoomInfo),
+    /// A Slack pairing session: a room reached through the session's own token endpoint.
+    Session(RoomInfo),
     Direct {
         payload: serde_json::Value,
         peer: String,
@@ -370,6 +381,7 @@ struct Refreshed {
     rooms: Vec<RoomInfo>,
     teammates: Vec<crate::api::Teammate>,
     presence: crate::api::RoomsPresence,
+    calls: crate::api::CallsPresence,
 }
 
 /// Reopening an audio device that failed mid-call. Glitches happen (a late period while the
@@ -804,10 +816,13 @@ impl Worker {
             self.refresh_task = Some(tokio::spawn(async move {
                 let (rooms, teammates, presence) =
                     tokio::try_join!(api.rooms(), api.teammates(), api.rooms_presence())?;
+                // Older servers don't have it; nothing else depends on it.
+                let calls = api.calls_presence().await.unwrap_or_default();
                 Ok(Refreshed {
                     rooms,
                     teammates,
                     presence,
+                    calls,
                 })
             }));
         }
@@ -843,11 +858,35 @@ impl Worker {
                 api.create_room(name.trim()).await?;
                 self.refresh().await?;
             }
+            Command::RenameRoom { id, name } => {
+                let api = self.api.as_ref().context("Sign in first")?;
+                api.rename_room(&id, &name).await?;
+                self.refresh().await?;
+            }
+            Command::DeleteRoom(id) => {
+                let api = self.api.as_ref().context("Sign in first")?;
+                api.delete_room(&id).await?;
+                self.refresh().await?;
+            }
             Command::JoinRoom(room) => {
                 self.api.as_ref().context("Sign in first")?;
                 self.leave().await;
                 self.emit(Event::Status(format!("Connecting to {}…", room.name)));
                 self.begin_join(JoinTarget::Room(room))?;
+            }
+            Command::JoinSession(id) => {
+                self.api.as_ref().context("Sign in first")?;
+                if self.room.as_ref().is_some_and(|room| room.id == id) {
+                    return Ok(());
+                }
+                if self.session.is_some() || self.pending_join.is_some() {
+                    bail!("Leave your current call first");
+                }
+                self.emit(Event::Status("Joining the Slack session…".into()));
+                self.begin_join(JoinTarget::Session(RoomInfo {
+                    id,
+                    name: "Slack session".into(),
+                }))?;
             }
             Command::Leave => self.leave().await,
             Command::Share { window_only } => {
@@ -1221,7 +1260,7 @@ impl Worker {
             let mut rollback = JoinRollback {
                 api: api.clone(),
                 room: match &target {
-                    JoinTarget::Room(room) => Some(room.id.clone()),
+                    JoinTarget::Room(room) | JoinTarget::Session(room) => Some(room.id.clone()),
                     _ => None,
                 },
                 peer: match &target {
@@ -1237,6 +1276,7 @@ impl Worker {
             let fetched = async {
                 let (tokens, room, peer) = match target {
                     JoinTarget::Room(room) => (api.join_room(&room.id).await?, room, None),
+                    JoinTarget::Session(room) => (api.join_session(&room.id).await?, room, None),
                     JoinTarget::Direct {
                         payload,
                         peer,
@@ -1362,7 +1402,11 @@ impl Worker {
                 }
                 Ok(Ok(None)) => {}
                 result => {
-                    self.call_peer = None;
+                    // Tell them, or they'd be left waiting in a call on their own (the
+                    // Mac does the same when a call fails to start).
+                    if let Some(peer) = self.call_peer.take() {
+                        let _ = self.send_socket(presence::call_end(&peer)).await;
+                    }
                     self.reset_session_events();
                     let message = match result {
                         Ok(Err(error)) => format!("{error:#}"),
@@ -1463,6 +1507,7 @@ impl Worker {
                     self.emit(Event::Rooms(refreshed.rooms));
                     self.emit(Event::Teammates(refreshed.teammates));
                     self.emit(Event::RoomPresence(refreshed.presence));
+                    self.emit(Event::CallsPresence(refreshed.calls));
                 }
                 Ok(Err(error)) => self.emit(Event::Error(format!("{error:#}"))),
                 _ => {}
@@ -2420,12 +2465,12 @@ impl Worker {
         let session = self.session.as_ref().context("Join a call to capture it")?;
         let chosen = config::load();
         let model = models::find(&chosen.model).or_else(|_| models::find(models::DEFAULT))?;
-        let room = self
-            .room
-            .as_ref()
-            .map(|room| room.name.clone())
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| session.room_name());
+        // A call between two people has no room: its capture is named for who was there.
+        let room = match self.room.as_ref() {
+            Some(room) if room.id.starts_with("call:") => String::new(),
+            Some(room) if !room.name.is_empty() => room.name.clone(),
+            _ => session.room_name(),
+        };
         let changed = self.internal_tx.clone();
         let recorder = recorder::Recorder::start(recorder::Options {
             room,

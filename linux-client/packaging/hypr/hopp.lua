@@ -60,3 +60,9 @@ o.bind("SUPER + CTRL + ESCAPE", "Hopp: revoke remote control", hopp .. " revoke"
 o.bind("SUPER + ALT + C", "Hopp: capture the call, or stop", hopp .. " capture toggle")
 o.bind("SUPER + ALT + D", "Hopp: draw on the shared screen, or stop", hopp .. " draw")
 o.bind("SUPER + ALT + P", "Hopp: stamp a note on the shared screen, or stop", hopp .. " stamp")
+-- Call controls from anywhere, as the Mac app's global shortcuts. Super+Alt+S is
+-- Omarchy's scratchpad, so sharing is X. Rebind any of these in your own Hyprland config.
+o.bind("SUPER + ALT + M", "Hopp: mute or unmute", hopp .. " mute")
+o.bind("SUPER + ALT + V", "Hopp: camera on or off", hopp .. " camera")
+o.bind("SUPER + ALT + X", "Hopp: share your screen, or stop", hopp .. " share")
+o.bind("SUPER + ALT + L", "Hopp: leave the call", hopp .. " leave")

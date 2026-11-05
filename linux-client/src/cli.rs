@@ -473,9 +473,12 @@ pub fn describe(state: &Value) -> String {
                 "○"
             };
             let name = teammate["name"].as_str().unwrap_or("?");
-            match teammate["room"].as_str() {
-                Some(room) => out.push_str(&format!("  {mark} {name} · in {room}\n")),
-                None => out.push_str(&format!("  {mark} {name}\n")),
+            match (teammate["room"].as_str(), teammate["with"].as_str()) {
+                (Some(room), _) => out.push_str(&format!("  {mark} {name} · in {room}\n")),
+                (None, Some(with)) => {
+                    out.push_str(&format!("  {mark} {name} · in a call with {with}\n"))
+                }
+                (None, None) => out.push_str(&format!("  {mark} {name}\n")),
             }
         }
     }

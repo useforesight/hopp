@@ -44,7 +44,7 @@ Ui.BorderSurface {
             Text {
                 Layout.fillWidth: true
                 textFormat: Text.PlainText
-                text: root.person.room ? "In " + root.person.room : root.person.online ? "Available" : "Away"
+                text: root.person.room ? "In " + root.person.room : root.person.with ? "In a call with " + root.person.with : root.person.online ? "Available" : "Away"
                 elide: Text.ElideRight
                 color: Qt.darker(Color.popups.text, 1.5)
                 font.family: Style.font.family

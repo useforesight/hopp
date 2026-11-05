@@ -26,6 +26,10 @@ pub struct HomeView {
     room_name: Entity<InputState>,
     token_form: bool,
     room_form: bool,
+    /// The room the form renames, rather than creating one.
+    renaming: Option<String>,
+    /// A room whose Delete was pressed once: the next press deletes it.
+    deleting: Option<String>,
 }
 
 impl HomeView {
@@ -51,8 +55,11 @@ impl HomeView {
             |view, state, event: &InputEvent, window, cx| {
                 if matches!(event, InputEvent::PressEnter { .. }) {
                     let name = state.read(cx).value().trim().to_owned();
-                    view.session
-                        .update(cx, |session, cx| session.create_room(name, cx));
+                    let renaming = view.renaming.take();
+                    view.session.update(cx, |session, cx| match renaming {
+                        Some(id) => session.rename_room(id, name, cx),
+                        None => session.create_room(name, cx),
+                    });
                     state.update(cx, |state, cx| state.set_value("", window, cx));
                     view.room_form = false;
                     cx.notify();
@@ -89,6 +96,8 @@ impl HomeView {
             room_name,
             token_form: false,
             room_form: false,
+            renaming: None,
+            deleting: None,
         }
     }
 
@@ -326,6 +335,15 @@ impl HomeView {
             session.selection_canceled,
         );
         let remote = session.remote_identity.is_some();
+        // A named room has a link to send people, as on the Mac; a call between two
+        // people doesn't.
+        let room_link = (!room.id.starts_with("call:")).then(|| {
+            format!(
+                "{}/room/{}",
+                session.settings.server.trim_end_matches('/'),
+                room.id
+            )
+        });
         let headline = if people.is_empty() {
             room.name.clone()
         } else {
@@ -475,6 +493,24 @@ impl HomeView {
                 )
             })
             .child(div().flex_1())
+            .when_some(room_link, |row, link| {
+                row.child(
+                    style::control(
+                        "call-link",
+                        IconName::Link,
+                        Tone::Plain,
+                        "Copy room link",
+                        cx,
+                    )
+                    .on_click(cx.listener(move |view, _, _, cx| {
+                        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(link.clone()));
+                        view.session.update(cx, |session, cx| {
+                            session.status = "Room link copied".into();
+                            cx.notify();
+                        });
+                    })),
+                )
+            })
             .child(
                 style::control("call-faces", IconName::Users, Tone::Plain, "Show faces", cx)
                     .on_click(cx.listener(|_, _, _, cx| cx.defer(Shell::show_faces))),
@@ -572,7 +608,13 @@ impl HomeView {
             .filter(|teammate| Some(&teammate.id) != own.as_ref())
             .map(|teammate| {
                 let name = full_name(&teammate.first_name, &teammate.last_name);
-                (teammate.clone(), name, room_of(&teammate.id))
+                // A named room, or else a call with someone.
+                let room = room_of(&teammate.id).or_else(|| {
+                    session
+                        .call_peers(&teammate.id)
+                        .map(|peers| format!("a call with {peers}"))
+                });
+                (teammate.clone(), name, room)
             })
             .filter(|(_, name, _)| query.is_empty() || name.to_lowercase().contains(&query))
             .collect();
@@ -808,6 +850,8 @@ impl HomeView {
                 .unwrap_or_default();
             let here = current.as_ref() == Some(&room.id);
             let target = room.clone();
+            let (rename, delete) = (room.clone(), room.id.clone());
+            let confirming = self.deleting.as_ref() == Some(&room.id);
             let mut faces = div().flex().flex_shrink_0().items_center().gap(px(2.));
             for name in members.iter().take(4) {
                 faces = faces.child(style::avatar(name, 18., cx));
@@ -859,6 +903,66 @@ impl HomeView {
                             )),
                     )
                     .child(faces)
+                    .child(
+                        div()
+                            .flex()
+                            .gap(px(4.))
+                            .when(!confirming, |actions| {
+                                actions
+                                    .invisible()
+                                    .group_hover("room", |style| style.visible())
+                            })
+                            .child(
+                                style::chip(
+                                    SharedString::from(format!("rename-{}", room.id)),
+                                    "",
+                                    Some(IconName::Pencil),
+                                    Tone::Plain,
+                                    cx,
+                                )
+                                .on_click(cx.listener(
+                                    move |view, _, window, cx| {
+                                        view.renaming = Some(rename.id.clone());
+                                        view.deleting = None;
+                                        view.room_form = true;
+                                        let name = rename.name.clone();
+                                        view.room_name.update(cx, |state, cx| {
+                                            state.set_value(name, window, cx)
+                                        });
+                                        cx.notify();
+                                    },
+                                )),
+                            )
+                            .when(!here, |actions| {
+                                actions.child(
+                                    style::chip(
+                                        SharedString::from(format!("delete-{}", room.id)),
+                                        if confirming { "Delete?" } else { "" },
+                                        Some(IconName::Trash),
+                                        if confirming {
+                                            Tone::Danger
+                                        } else {
+                                            Tone::Plain
+                                        },
+                                        cx,
+                                    )
+                                    .on_click(cx.listener(
+                                        move |view, _, _, cx| {
+                                            if view.deleting.as_ref() == Some(&delete) {
+                                                view.deleting = None;
+                                                let id = delete.clone();
+                                                view.session.update(cx, |session, cx| {
+                                                    session.delete_room(id, cx)
+                                                });
+                                            } else {
+                                                view.deleting = Some(delete.clone());
+                                            }
+                                            cx.notify();
+                                        },
+                                    )),
+                                )
+                            }),
+                    )
                     .when(!here, |row| {
                         row.child(
                             div()
@@ -909,7 +1013,8 @@ impl HomeView {
                                     .hover(|style| style.text_color(theme.bright))
                                     .child(icon(IconName::Plus).size(px(13.)))
                                     .on_click(cx.listener(|view, _, _, cx| {
-                                        view.room_form = !view.room_form;
+                                        view.room_form = !view.room_form || view.renaming.is_some();
+                                        view.renaming = None;
                                         cx.notify();
                                     })),
                             ),

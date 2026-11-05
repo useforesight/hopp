@@ -462,7 +462,46 @@ impl SettingsView {
             };
             page = page.child(Self::row(title, Some(description), control, cx));
         }
-        page.into_any_element()
+        let settings = self.session.read(cx).settings.clone();
+        let microphone = self.segmented(
+            "start-microphone",
+            &[(false, "Muted"), (true, "On")],
+            settings.start_microphone,
+            |view, on, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.settings.start_microphone = on;
+                    let _ = crate::settings::save(&session.settings);
+                    cx.notify();
+                })
+            },
+            cx,
+        );
+        let camera = self.segmented(
+            "start-camera",
+            &[(false, "Off"), (true, "On")],
+            settings.start_camera,
+            |view, on, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.settings.start_camera = on;
+                    let _ = crate::settings::save(&session.settings);
+                    cx.notify();
+                })
+            },
+            cx,
+        );
+        page.child(Self::row(
+            "Microphone when a call starts",
+            Some("Muted, or on as soon as you're connected."),
+            microphone,
+            cx,
+        ))
+        .child(Self::row(
+            "Camera when a call starts",
+            None::<&str>,
+            camera,
+            cx,
+        ))
+        .into_any_element()
     }
 
     fn call_window(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -725,6 +764,19 @@ impl SettingsView {
             },
             cx,
         );
+        let every = self.segmented(
+            "auto",
+            &[(false, "Off"), (true, "On")],
+            config::load().auto,
+            |_, auto, _| {
+                let mut settings = config::load();
+                settings.auto = auto;
+                if let Err(error) = config::save(&settings) {
+                    crate::logger::line(format!("Saving capture settings: {error:#}"));
+                }
+            },
+            cx,
+        );
         let live = self.segmented(
             "drafts",
             &[(false, "Off"), (true, "On")],
@@ -805,6 +857,15 @@ impl SettingsView {
                     }
                 )),
                 processor,
+                cx,
+            ))
+            .child(Self::row(
+                "Capture every call",
+                Some(
+                    "Start capturing as soon as a call connects. Off: only when you start it."
+                        .to_owned(),
+                ),
+                every,
                 cx,
             ))
             .child(Self::row(
@@ -902,7 +963,13 @@ impl SettingsView {
         for (keys, action) in [
             ("Super Alt H", "Open Hopp from anywhere"),
             ("Super H", "Peek at the whole shared screen"),
+            ("Super Alt M", "Mute or unmute, from anywhere"),
+            ("Super Alt V", "Camera on or off, from anywhere"),
+            ("Super Alt X", "Share your screen, or stop, from anywhere"),
+            ("Super Alt L", "Leave the call, from anywhere"),
             ("Super Alt C", "Capture the call, or stop"),
+            ("Super Alt D", "Draw on the shared screen, or stop"),
+            ("Super Alt P", "Stamp a note on the shared screen, or stop"),
             ("Super Ctrl Esc", "Take back remote control, from anywhere"),
             ("Ctrl Shift M", "Mute or unmute, in Hopp windows"),
             ("Ctrl Shift S", "Share or stop sharing"),
@@ -925,7 +992,15 @@ impl SettingsView {
                 cx,
             ));
         }
-        page.into_any_element()
+        page.child(
+            style::muted_text(
+                "The Super shortcuts are Hyprland bindings in ~/.config/hypr/hopp.lua; rebind \
+                 them in your own Hyprland config.",
+                cx,
+            )
+            .pt(px(10.)),
+        )
+        .into_any_element()
     }
 }
 

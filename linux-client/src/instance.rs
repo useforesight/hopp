@@ -24,7 +24,10 @@ use std::{
 };
 use tokio::sync::mpsc::Sender;
 
-use crate::{api::parse_auth_deep_link, engine::Command};
+use crate::{
+    api::{DeepLink, parse_deep_link},
+    engine::Command,
+};
 
 const MAX_REQUEST: usize = 64 * 1024;
 
@@ -325,7 +328,7 @@ fn forward_at(directory: &Path, instance: &str, link: Option<&str>) -> Result<bo
         bail!("Hopp launch request is too large");
     }
     if let Some(link) = link {
-        parse_auth_deep_link(link)?;
+        parse_deep_link(link)?;
     }
     forward_request(
         directory,
@@ -512,12 +515,17 @@ fn receive_launch(
     }
     let has_link = request.link.is_some();
     if let Some(link) = request.link {
-        let token = parse_auth_deep_link(&link)?;
-        let server = crate::settings::load()
-            .map(|settings| settings.server)
-            .unwrap_or_else(|_| server.to_owned());
+        let command = match parse_deep_link(&link)? {
+            DeepLink::SignIn(token) => Command::SignIn {
+                server: crate::settings::load()
+                    .map(|settings| settings.server)
+                    .unwrap_or_else(|_| server.to_owned()),
+                token,
+            },
+            DeepLink::JoinSession(id) => Command::JoinSession(id),
+        };
         commands
-            .try_send(Command::SignIn { server, token })
+            .try_send(command)
             .map_err(|_| anyhow::anyhow!("Hopp session worker is unavailable"))?;
     }
     // Activate is best effort after successful token delivery: a full queue
