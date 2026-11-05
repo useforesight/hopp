@@ -36,6 +36,7 @@ use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
     convert::{CAMERA_PREVIEW_EDGE, ScreenFrame, display_bgra},
+    device_health::{CaptureHealth, LevelMeter, MicrophoneStalls, StallAction},
     engine::{Event, Participant},
     frames::{CameraSlots, FrameSlot, VideoFrame},
     wake::Sender,
@@ -67,6 +68,8 @@ const MAX_CAPTURE_RATE: u32 = 192000;
 const MAX_AUDIO_BLOCK_SAMPLES: usize = MAX_CAPTURE_RATE as usize / 100 * 2;
 const AUDIO_PROCESSING_QUEUE: usize = 4;
 const AUDIO_MAX_BLOCK_AGE: Duration = Duration::from_millis(60);
+/// How long the microphone loop waits for a block before checking the device's health.
+const MICROPHONE_CHECK_EVERY: Duration = Duration::from_millis(250);
 type AudioQueues = Arc<Mutex<HashMap<String, VecDeque<f32>>>>;
 
 struct AudioBlock {
@@ -232,6 +235,9 @@ pub struct Session {
     /// you as muted from this track's mute state, so with no track (or a new one after
     /// each unmute) they showed the wrong state.
     voice: Option<(LocalAudioTrack, NativeAudioSource)>,
+    /// The chosen microphone's stalls across reopens in this call, so a microphone that
+    /// keeps stalling is reported rather than reopened forever.
+    microphone_stalls: Arc<Mutex<MicrophoneStalls>>,
     camera: Option<Camera>,
     camera_slots: CameraSlots,
     input_device: Option<String>,
@@ -369,6 +375,7 @@ impl Session {
             render_reference,
             microphone: None,
             voice: None,
+            microphone_stalls: Default::default(),
             camera: None,
             camera_slots,
             input_device: None,
@@ -509,9 +516,14 @@ impl Session {
         let (track, source) = self.voice().await?;
         let (mut stream, samples, sample_rate, channels, failed) =
             microphone_device(self.input_device.as_deref(), self.events.clone())?;
+        // A test voice from a file is exact silence once it ends, which isn't a stall.
+        let mut watching = !matches!(stream, MicrophoneStream::File(..));
         stream
             .play(&samples, &self.events, &failed)
             .context("Starting microphone device")?;
+        let stalls = self.microphone_stalls.clone();
+        let health = CaptureHealth::new(Instant::now(), stalls.lock().unwrap().silence_timeout());
+        let device_name = self.input_device.clone().unwrap_or_default();
         let events = self.events.clone();
         let worker_track = track.clone();
         let worker_failed = failed.clone();
@@ -525,8 +537,50 @@ impl Session {
             RenderSubscription::new(self.render_reference.clone());
         let processing = tokio::spawn(async move {
             let mut processor = AudioProcessor::new();
+            let mut meter = LevelMeter::default();
+            let mut heard = false;
             loop {
-                let block = samples.next().await;
+                // Bounded, so a microphone that stops delivering is still noticed.
+                let block = tokio::time::timeout(MICROPHONE_CHECK_EVERY, samples.next())
+                    .await
+                    .ok();
+                let now = Instant::now();
+                if let Some(block) = &block {
+                    let raw = &block.samples[..block.len];
+                    health.record_frame(now, raw.iter().any(|&sample| sample != 0));
+                }
+                if !heard && health.has_had_signal() {
+                    heard = true;
+                    if stalls.lock().unwrap().heard() {
+                        let _ = events.send(Event::MicrophoneSilent(None));
+                    }
+                }
+                if watching && let Some(reason) = health.check(now) {
+                    let action = stalls.lock().unwrap().stalled(reason);
+                    // Whatever the level last was, it isn't now.
+                    let _ = events.send(Event::MicrophoneLevel(0.));
+                    match action {
+                        StallAction::Reopen => {
+                            // Marked failed first, so the engine reopens it straight away.
+                            worker_failed.store(true, Ordering::Release);
+                            let _ = events.send(Event::AudioDeviceFailed {
+                                input: true,
+                                error: format!("Microphone {}", reason.describe()),
+                            });
+                            break;
+                        }
+                        StallAction::Ignore => watching = false,
+                        StallAction::GiveUp => {
+                            watching = false;
+                            crate::logger::line(format!(
+                                "microphone {}, still after reopening it; telling the user",
+                                reason.describe()
+                            ));
+                            let _ = events.send(Event::MicrophoneSilent(Some(device_name.clone())));
+                        }
+                    }
+                }
+                let Some(block) = block else { continue };
                 // Process exactly the mixed, clipped samples written to CPAL,
                 // including silence on underflow, before the near-end signal.
                 let result = (|| {
@@ -550,6 +604,9 @@ impl Session {
                 };
                 // Your own voice, after echo cancellation: what everyone else hears.
                 tap.audio(&me, &data);
+                if let Some(level) = meter.block(&data, now) {
+                    let _ = events.send(Event::MicrophoneLevel(level));
+                }
                 let frame = AudioFrame {
                     samples_per_channel: AUDIO_BLOCK_SAMPLES as u32,
                     data: Cow::Owned(data),
@@ -589,6 +646,14 @@ impl Session {
         self.playback
             .as_ref()
             .is_some_and(|playback| playback.failed.load(Ordering::Acquire))
+    }
+
+    /// The open speaker stopped asking for audio, without an error.
+    pub fn speaker_stalled(&self) -> bool {
+        self.playback
+            .as_ref()
+            .and_then(|playback| playback.health.as_ref())
+            .is_some_and(|health| health.check(Instant::now()).is_some())
     }
 
     /// Close a failed speaker stream straight away: CPAL keeps polling a broken device in a
@@ -727,6 +792,10 @@ impl Session {
             self.set_microphone(false).await?;
         }
         let old_input = std::mem::replace(&mut self.input_device, input);
+        // Each device has its own history.
+        if old_input != self.input_device {
+            *self.microphone_stalls.lock().unwrap() = MicrophoneStalls::default();
+        }
         if was_enabled && let Err(error) = self.set_microphone(true).await {
             self.input_device = old_input;
             let _ = self.set_microphone(true).await;
@@ -1209,6 +1278,24 @@ async fn room_events(
                     topic,
                 });
             }
+            RoomEvent::ActiveSpeakersChanged { speakers } if !is_video => {
+                // LiveKit's server decides who is speaking, for you as well as others,
+                // so every client lights up the same people.
+                let own = room.local_participant().identity();
+                let own = canonical_identity(own.as_str());
+                let mut you = false;
+                let mut identities = Vec::new();
+                for speaker in &speakers {
+                    let identity = speaker.identity();
+                    let identity = canonical_identity(identity.as_str());
+                    if identity == own {
+                        you = true;
+                    } else {
+                        identities.push(identity.to_owned());
+                    }
+                }
+                let _ = events.send(Event::Speaking { identities, you });
+            }
             RoomEvent::Reconnecting if !is_video => {
                 let _ = events.send(Event::TransportReconnecting);
             }
@@ -1282,6 +1369,8 @@ struct Playback {
     _stream: Option<Stream>,
     selected: Option<String>,
     failed: Arc<AtomicBool>,
+    /// When the device last asked for audio. None for the silent test speaker.
+    health: Option<Arc<CaptureHealth>>,
 }
 impl Playback {
     fn new_selected(
@@ -1295,6 +1384,7 @@ impl Playback {
                 _stream: None,
                 selected: selected.map(str::to_owned),
                 failed: Arc::new(AtomicBool::new(false)),
+                health: None,
             });
         }
         let device = selected_audio_device(false, selected)?;
@@ -1317,6 +1407,8 @@ impl Playback {
         let format = supported.sample_format();
         let mut config = low_latency_audio_config(supported.config(), supported.buffer_size());
         let failed = Arc::new(AtomicBool::new(false));
+        // A speaker only ever stalls by not asking: its silence is ours, not a fault.
+        let health = Arc::new(CaptureHealth::new(Instant::now(), Duration::MAX));
         let build = |config: &StreamConfig| match format {
             SampleFormat::F32 => output_stream::<f32>(
                 &device,
@@ -1325,6 +1417,7 @@ impl Playback {
                 events.clone(),
                 render_reference.clone(),
                 failed.clone(),
+                health.clone(),
             ),
             SampleFormat::I16 => output_stream::<i16>(
                 &device,
@@ -1333,6 +1426,7 @@ impl Playback {
                 events.clone(),
                 render_reference.clone(),
                 failed.clone(),
+                health.clone(),
             ),
             SampleFormat::U16 => output_stream::<u16>(
                 &device,
@@ -1341,6 +1435,7 @@ impl Playback {
                 events.clone(),
                 render_reference.clone(),
                 failed.clone(),
+                health.clone(),
             ),
             other => Err(anyhow::anyhow!(
                 "Unsupported speaker sample format: {other:?}"
@@ -1360,6 +1455,7 @@ impl Playback {
             _stream: Some(stream),
             selected: selected.map(str::to_owned),
             failed,
+            health: Some(health),
         })
     }
 
@@ -1462,6 +1558,7 @@ fn output_stream<T: SizedSample + FromSample<f32>>(
     events: Sender<Event>,
     render_reference: Arc<RenderReference>,
     failed: Arc<AtomicBool>,
+    health: Arc<CaptureHealth>,
 ) -> Result<Stream> {
     let channels = config.channels as usize;
     let mut reference = [0_i16; AUDIO_BLOCK_SAMPLES];
@@ -1469,6 +1566,7 @@ fn output_stream<T: SizedSample + FromSample<f32>>(
     Ok(device.build_output_stream(
         config,
         move |output: &mut [T], info| {
+            health.record_frame(Instant::now(), true);
             let sender = render_reference
                 .sender
                 .try_lock()

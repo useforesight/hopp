@@ -7,6 +7,7 @@ mod cards;
 mod cli;
 mod clipboard;
 mod convert;
+mod device_health;
 mod engine;
 #[cfg(test)]
 mod engine_tests;

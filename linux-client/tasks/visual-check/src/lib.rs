@@ -183,6 +183,12 @@ pub mod engine {
             input: bool,
             error: String,
         },
+        Speaking {
+            identities: Vec<String>,
+            you: bool,
+        },
+        MicrophoneLevel(f32),
+        MicrophoneSilent(Option<String>),
         Data {
             sender: String,
             payload: Vec<u8>,

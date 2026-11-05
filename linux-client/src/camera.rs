@@ -1,6 +1,7 @@
 //! V4L2 camera capture, on its own cancellable thread.
 use crate::{
     convert::{CAMERA_PREVIEW_EDGE, display_bgra},
+    device_health::CameraWatch,
     engine::Event,
     frames::{FrameSlot, VideoFrame},
     wake::Sender,
@@ -18,7 +19,7 @@ use std::{
         mpsc::sync_channel,
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use v4l::{
     Device, Format, FourCC,
@@ -123,7 +124,7 @@ impl CameraCapture {
                     for path in &candidates {
                         match open(path) {
                             Ok(camera) => {
-                                opened = Some(camera);
+                                opened = Some((path.clone(), camera));
                                 break;
                             }
                             Err(error) => {
@@ -132,53 +133,49 @@ impl CameraCapture {
                             }
                         }
                     }
-                    let Some((format, mut stream)) = opened else {
+                    let Some((path, (mut format, stream))) = opened else {
                         return Err(failure.expect("at least one camera was tried"));
                     };
                     let _ = ready_tx.send(Ok(()));
+                    let mut stream = Some(stream);
+                    let mut watch = CameraWatch::new(Instant::now());
                     while !worker_stop.load(Ordering::Relaxed) {
-                        let (data, metadata) = match stream.next() {
-                            Ok(frame) => frame,
+                        let Some(live) = stream.as_mut() else { break };
+                        let problem = match live.next() {
+                            Ok((data, metadata)) => {
+                                // Truncated and undecodable frames don't count: a camera
+                                // sending only those stalls like one sending nothing.
+                                let used = metadata.bytesused as usize;
+                                if let Some(frame) =
+                                    data.get(..used).and_then(|data| decode(data, &format).ok())
+                                {
+                                    watch.frame(Instant::now());
+                                    publish(frame, &source, &worker_preview, &events);
+                                }
+                                None
+                            }
                             Err(error)
                                 if matches!(
                                     error.kind(),
                                     std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
                                 ) =>
                             {
-                                continue;
+                                watch
+                                    .stalled(Instant::now())
+                                    .then(|| "stopped sending video".to_owned())
                             }
-                            Err(error) => return Err(error).context("Reading camera frame"),
+                            Err(error) => Some(format!("failed: {error}")),
                         };
-                        let used = metadata.bytesused as usize;
-                        if used > data.len() {
-                            continue;
+                        let Some(problem) = problem else { continue };
+                        // Closed before reopening: most cameras open only once at a time.
+                        drop(stream.take());
+                        match reopen(&path, problem, &mut watch, &worker_stop)? {
+                            Some((new_format, new_stream)) => {
+                                format = new_format;
+                                stream = Some(new_stream);
+                            }
+                            None => break,
                         }
-                        let frame = match decode(&data[..used], &format) {
-                            Ok(frame) => frame,
-                            Err(_) => continue,
-                        };
-                        let mut buffer = I420Buffer::new(frame.width, frame.height);
-                        let (sy, su, sv) = buffer.strides();
-                        let (y, u, v) = buffer.data_mut();
-                        yuv_helper::argb_to_i420(
-                            &frame.bgra,
-                            frame.width * 4,
-                            y,
-                            sy,
-                            u,
-                            su,
-                            v,
-                            sv,
-                            frame.width as i32,
-                            frame.height as i32,
-                        );
-                        // Your own tile only needs a small copy.
-                        let preview = display_bgra(&mut buffer, Some(CAMERA_PREVIEW_EDGE));
-                        source.capture_frame(&RtcFrame::new(VideoRotation::VideoRotation0, buffer));
-                        if let Ok(mut latest) = worker_preview.lock() {
-                            *latest = preview;
-                        }
-                        events.wake();
                     }
                     Ok(())
                 })();
@@ -187,7 +184,10 @@ impl CameraCapture {
                 {
                     worker_failed.store(true, Ordering::Release);
                     let _ = ready_tx.send(Err(format!("{error:#}")));
-                    let _ = events.send(Event::Error(format!("Camera capture failed: {error:#}")));
+                    let _ = events.send(Event::Error(format!(
+                        "Your camera stopped working ({error:#}). Turn it on again or choose \
+                         another camera in Settings."
+                    )));
                     let _ = events.send(Event::Camera(false));
                 }
                 if let Ok(mut latest) = worker_preview.lock() {
@@ -223,6 +223,75 @@ impl Drop for CameraCapture {
         }
         if let Ok(mut latest) = self.preview.lock() {
             *latest = None;
+        }
+    }
+}
+
+/// Send a frame to the call and a small copy to your own tile.
+fn publish(
+    frame: VideoFrame,
+    source: &NativeVideoSource,
+    preview: &FrameSlot,
+    events: &Sender<Event>,
+) {
+    let mut buffer = I420Buffer::new(frame.width, frame.height);
+    let (sy, su, sv) = buffer.strides();
+    let (y, u, v) = buffer.data_mut();
+    yuv_helper::argb_to_i420(
+        &frame.bgra,
+        frame.width * 4,
+        y,
+        sy,
+        u,
+        su,
+        v,
+        sv,
+        frame.width as i32,
+        frame.height as i32,
+    );
+    let small = display_bgra(&mut buffer, Some(CAMERA_PREVIEW_EDGE));
+    source.capture_frame(&RtcFrame::new(VideoRotation::VideoRotation0, buffer));
+    if let Ok(mut latest) = preview.lock() {
+        *latest = small;
+    }
+    events.wake();
+}
+
+/// Reopen a camera that stalled or failed, waiting longer before each try, as choosing it
+/// again by hand would. `Ok(None)` when the camera is being turned off meanwhile; an error
+/// once the tries are used up, which turns the camera off.
+fn reopen(
+    path: &str,
+    problem: String,
+    watch: &mut CameraWatch,
+    stop: &AtomicBool,
+) -> Result<Option<(Format, Stream<'static>)>> {
+    let mut last_error = None;
+    loop {
+        let Some(delay) = watch.retry() else {
+            let detail = last_error
+                .map(|error| format!(": {error}"))
+                .unwrap_or_default();
+            bail!("it {problem}, and reopening it didn't help{detail}");
+        };
+        crate::logger::line(format!("Camera {path} {problem}; reopening in {delay:?}"));
+        let until = Instant::now() + delay;
+        while Instant::now() < until {
+            if stop.load(Ordering::Relaxed) {
+                return Ok(None);
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        match open(path) {
+            Ok(camera) => {
+                watch.reopened(Instant::now());
+                crate::logger::line(format!("Camera {path} reopened"));
+                return Ok(Some(camera));
+            }
+            Err(error) => {
+                crate::logger::line(format!("Camera {path} didn't reopen: {error:#}"));
+                last_error = Some(format!("{error:#}"));
+            }
         }
     }
 }

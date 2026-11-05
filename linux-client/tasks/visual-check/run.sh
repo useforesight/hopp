@@ -76,6 +76,10 @@ shot faces-3       212 658 --scene faces --people 3
 shot faces-large   332 692 --scene faces --people 2 --size large
 shot faces-row     426 124 --scene faces --people 3 --layout row --size small
 shot faces-bubbles 76  314 --scene faces --people 3 --layout bubbles
+# Who is speaking (green name, your mic ring) and a microphone that gives no sound.
+shot faces-speaking 212 658 --scene faces-speaking --people 3
+shot faces-speaking-bubbles 76 314 --scene faces-speaking --people 3 --layout bubbles
+shot faces-silent  212 452 --scene faces-silent --people 2
 # Shared screen as a tiled viewport (wide and narrow tiles) and as a fitted peek.
 shot viewer-wide   1400 820 --scene viewer --people 3
 shot viewer-narrow 640  860 --scene viewer --people 3

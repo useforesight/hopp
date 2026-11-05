@@ -25,6 +25,7 @@ mod palette;
 mod session;
 mod settings;
 mod sharing;
+mod speaking;
 mod style;
 mod toast;
 mod tones;

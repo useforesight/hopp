@@ -281,6 +281,13 @@ pub struct Session {
     tones: Tones,
     /// Notices and questions from agents and scripts, newest last (see `cards`).
     pub cards: Vec<Card>,
+    /// Who is speaking, for the call tiles.
+    pub speaking: super::speaking::Speaking,
+    /// Your microphone level, 0–1, for the ring round your tile.
+    pub microphone_level: f32,
+    /// Your microphone gives no sound and reopening it didn't help: its name, or empty
+    /// for the default.
+    pub microphone_silent: Option<String>,
 }
 
 /// A card and where it has got to.
@@ -372,6 +379,9 @@ impl Session {
             stamp_count: 0,
             tones: Tones::default(),
             cards: Vec::new(),
+            speaking: Default::default(),
+            microphone_level: 0.,
+            microphone_silent: None,
         }
     }
 
@@ -1953,6 +1963,9 @@ impl Session {
         while let Ok(event) = self.engine.events.try_recv() {
             if matches!(event, Event::Pointer { .. }) {
                 screen = true;
+            } else if matches!(event, Event::Speaking { .. } | Event::MicrophoneLevel(_)) {
+                // Only the tiles show these; they arrive many times a second.
+                cameras = true;
             } else {
                 dirty = true;
             }
@@ -2327,7 +2340,46 @@ impl Session {
                 self.selecting_source = active;
                 self.selection_canceled = false;
             }
-            Event::Microphone(active) => self.microphone = active,
+            Event::Microphone(active) => {
+                self.microphone = active;
+                self.microphone_level = 0.;
+                if !active {
+                    self.microphone_silent = None;
+                }
+            }
+            Event::Speaking { identities, you } => {
+                let mut keys = identities;
+                if you {
+                    keys.push(super::speaking::YOU.into());
+                }
+                if let Some(wait) = self.speaking.update(keys, Instant::now()) {
+                    // Draw the tiles again once the hold ends.
+                    cx.spawn(async move |session, cx| {
+                        cx.background_executor().timer(wait).await;
+                        let _ = session.update(cx, |session, cx| {
+                            if session.speaking.expire(Instant::now()) {
+                                cx.emit(SessionEvent::Cameras);
+                            }
+                        });
+                    })
+                    .detach();
+                }
+            }
+            Event::MicrophoneLevel(level) => self.microphone_level = level,
+            Event::MicrophoneSilent(device) => {
+                if let Some(device) = &device {
+                    let name = if device.is_empty() {
+                        "your microphone"
+                    } else {
+                        device
+                    };
+                    self.push_error(format!(
+                        "No sound from {name}. Hopp tried restarting it. Check it isn't muted \
+                         or choose another microphone in Settings."
+                    ));
+                }
+                self.microphone_silent = device;
+            }
             Event::Camera(active) => {
                 self.camera = active;
                 if !active {
@@ -2393,6 +2445,9 @@ impl Session {
         self.selecting_source = false;
         self.microphone = false;
         self.camera = false;
+        self.speaking.clear();
+        self.microphone_level = 0.;
+        self.microphone_silent = None;
         self.peer_control = false;
         self.grant = None;
         self.remote_identity = None;

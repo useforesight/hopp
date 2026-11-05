@@ -136,12 +136,19 @@ pub(super) struct Face {
     pub name: String,
     pub picture: Option<Picture>,
     pub badges: Vec<(IconName, bool)>,
+    /// The call hears them speaking: their name shows, in green.
+    pub speaking: bool,
+    /// Your own microphone level while you're unmuted, 0–1, for the ring round your tile.
+    pub level: Option<f32>,
+    /// Your microphone gives no sound and reopening it didn't help.
+    pub silent: bool,
 }
 
 /// Everyone in the call: the sharer first, you last, so the person you're watching is
 /// nearest the screen.
 pub(super) fn faces_for(session: &Session) -> Vec<Face> {
     let sharer = session.remote_identity.clone();
+    let now = std::time::Instant::now();
     let mut others: Vec<(bool, Face)> = session
         .participants
         .iter()
@@ -163,16 +170,22 @@ pub(super) fn faces_for(session: &Session) -> Vec<Face> {
             let face = Face {
                 picture: session.camera_for(&participant.identity).cloned(),
                 name: session.name_for(&participant.identity),
+                speaking: session.speaking.is_speaking(&key, now),
                 key,
                 badges,
+                level: None,
+                silent: false,
             };
             (sharing, face)
         })
         .collect();
     others.sort_by_key(|(sharing, _)| !*sharing);
     let mut badges = Vec::new();
+    let silent = session.microphone && session.microphone_silent.is_some();
     if !session.microphone {
         badges.push((IconName::MicOff, true));
+    } else if silent {
+        badges.push((IconName::TriangleAlert, true));
     }
     if session.sharing {
         badges.push((IconName::Monitor, false));
@@ -181,7 +194,10 @@ pub(super) fn faces_for(session: &Session) -> Vec<Face> {
         badges.push((IconName::AudioLines, false));
     }
     let you = Face {
-        key: "you".into(),
+        key: super::speaking::YOU.into(),
+        speaking: session.speaking.is_speaking(super::speaking::YOU, now),
+        level: session.microphone.then_some(session.microphone_level),
+        silent,
         name: session.display_name(),
         picture: if session.camera {
             session.local_camera.clone()
@@ -344,6 +360,9 @@ pub(super) fn face_tile(
         name,
         picture,
         badges,
+        speaking,
+        level,
+        silent,
     } = face;
     let theme = cx.omarchy().clone();
     let radius = if round { side / 2. } else { 9. };
@@ -390,24 +409,50 @@ pub(super) fn face_tile(
             .inset_0(),
         );
     }
-    if !round {
+    // Your microphone level, as the Mac app draws it: a green ring that thickens and
+    // brightens as you speak. Bubbles have no name label, so a speaker gets a thin ring.
+    let ring = match level {
+        Some(level) => Some(mic_ring(level)),
+        None if speaking && round => Some((2., 0.9)),
+        None => None,
+    };
+    if let Some((width, opacity)) = ring {
         tile = tile.child(
             div()
                 .absolute()
-                .left(px(5.))
-                .bottom(px(5.))
-                .max_w(px(side - 10.))
-                .px(px(5.))
-                .py(px(1.))
-                .rounded(px(4.))
-                .bg(theme.background.opacity(0.78))
+                .inset_0()
+                .rounded(px(radius))
+                .border(px(width))
+                .border_color(theme.success.opacity(opacity)),
+        );
+    }
+    if !round {
+        // Hidden until hovered, but always shown, in green, while they're speaking.
+        let label = div()
+            .absolute()
+            .left(px(5.))
+            .bottom(px(5.))
+            .max_w(px(side - 10.))
+            .px(px(5.))
+            .py(px(1.))
+            .rounded(px(4.))
+            .bg(theme.background.opacity(0.78))
+            .text_size(px(10.))
+            .text_ellipsis()
+            .child(name);
+        tile = tile.child(if speaking {
+            label
+                .text_color(theme.success)
+                .font_weight(FontWeight::SEMIBOLD)
+        } else {
+            label
                 .text_color(theme.bright)
-                .text_size(px(10.))
-                .text_ellipsis()
                 .invisible()
                 .group_hover("tile", |style| style.visible())
-                .child(name),
-        );
+        });
+        if silent {
+            tile = tile.child(silent_notice(side, cx));
+        }
     }
     let mut corner = div()
         .absolute()
@@ -433,6 +478,48 @@ pub(super) fn face_tile(
         );
     }
     tile.child(corner)
+}
+
+/// The ring's width in pixels and its opacity for a 0–1 level.
+fn mic_ring(level: f32) -> (f32, f32) {
+    let level = level.clamp(0., 1.);
+    (1. + level * 3.5, 0.4 + level * 0.4)
+}
+
+/// Over your tile when your microphone gives no sound: what's wrong and a way to pick
+/// another, since Hopp has already tried reopening it.
+fn silent_notice(side: f32, cx: &gpui_kit::App) -> gpui_kit::Div {
+    let theme = cx.omarchy();
+    div()
+        .absolute()
+        .left_0()
+        .right_0()
+        .top(px(side * 0.22))
+        .mx(px(6.))
+        .p(px(6.))
+        .rounded(px(6.))
+        .bg(theme.background.opacity(0.88))
+        .flex()
+        .flex_col()
+        .items_center()
+        .gap(px(4.))
+        .text_size(px(10.))
+        .text_color(theme.bright)
+        .child("No sound from your mic")
+        .child(
+            style::chip(
+                "choose-mic",
+                "Choose mic",
+                Some(IconName::Mic),
+                Tone::Plain,
+                cx,
+            )
+            // A click here must not start a window drag.
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(|_, _, cx| {
+                super::Shell::show_settings_at(super::settings::Section::Devices, cx)
+            }),
+        )
 }
 
 pub struct FacesView {
@@ -679,6 +766,13 @@ mod tests {
         assert_eq!(row.width, 3. * 112. + 2. * GAP + GAP + 60. + 12.);
         let bubbles = window_size(4, FaceLayout::Bubbles, FaceSize::Large);
         assert_eq!(bubbles.width, 64. + 12.);
+    }
+
+    #[test]
+    fn the_mic_ring_grows_and_brightens_with_your_level() {
+        assert_eq!(mic_ring(0.), (1., 0.4));
+        assert_eq!(mic_ring(1.), (4.5, 0.8));
+        assert_eq!(mic_ring(3.), mic_ring(1.), "clamped");
     }
 
     #[test]

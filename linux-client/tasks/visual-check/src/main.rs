@@ -235,6 +235,17 @@ fn main() {
                 .insert(identity.replace(":audio", ":camera"), slot);
         }
     }
+    if scene == "faces-speaking" {
+        // Mira is talking and you're speaking up: her name in green, your ring thick.
+        send(Event::Speaking {
+            identities: vec!["mira".into()],
+            you: true,
+        });
+        send(Event::MicrophoneLevel(0.8));
+    }
+    if scene == "faces-silent" {
+        send(Event::MicrophoneSilent(Some("USB Microphone".into())));
+    }
     if matches!(scene.as_str(), "viewer" | "peek" | "faces-sharing") {
         send(Event::RemoteShare {
             identity: "mira:video".into(),
@@ -526,7 +537,7 @@ fn main() {
     let only = match scene.as_str() {
         "signin" | "home" | "home-call" | "home-missed" => "home",
         "call-missed" => "call",
-        "faces" | "faces-sharing" => "faces",
+        "faces" | "faces-sharing" | "faces-speaking" | "faces-silent" => "faces",
         // The pill alone: the pad (transparent) would cover it in the harness.
         "sharing-draw" | "sharing-stamp" => "sharing",
         other => other,

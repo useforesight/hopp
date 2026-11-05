@@ -173,6 +173,16 @@ pub enum Event {
         input: bool,
         error: String,
     },
+    /// Who the call hears speaking now: others by identity, and whether you are.
+    Speaking {
+        identities: Vec<String>,
+        you: bool,
+    },
+    /// Your microphone's level, 0–1, at most every 40 ms while you're unmuted.
+    MicrophoneLevel(f32),
+    /// Your microphone gives no sound and reopening it hasn't helped: its name (empty for
+    /// the system default). `None` once it works again.
+    MicrophoneSilent(Option<String>),
     ControlGranted(Option<String>),
     PeerControl {
         enabled: bool,
@@ -1632,6 +1642,12 @@ impl Worker {
             self.microphone = Recovery::default();
             return;
         };
+        // A speaker can stop asking for audio without reporting an error.
+        if session.speaker_stalled() {
+            session.close_speaker();
+            crate::logger::line("speaker stopped playing, reopening");
+            self.speaker.failed();
+        }
         if self.speaker.due() {
             match session.reopen_speaker() {
                 Ok(()) => {
