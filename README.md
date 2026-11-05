@@ -39,7 +39,32 @@ Release builds connect to `pair.gethopp.app`, upstream's managed service, until 
 
 ## What's new
 
-### In the latest release (v1.1.0)
+### In the latest release (v1.2.0)
+
+Captures and the `hopp` command are in the Mac app. Windows doesn't have them.
+
+**Captures.** A transcript of each call, one track per person, transcribed and saved on your own computer. It keeps pictures of what was drawn and shown too. Right-click the capture button in the call window to read them, search them or follow one live.
+
+> [!IMPORTANT]
+> Capture is on by default, so every call is transcribed unless you turn it off in Settings > Capture. The first call downloads a 731 MB speech model. People on older versions of Hopp see no sign that you're capturing, so tell them.
+
+**Stamps.** Hold down on a spot on the shared screen and say your note, and your words appear on the stamp as you speak. Let go and it's stamped once they're written down. If you're muted, holding unmutes you until you let go. Or click a spot and type, then press Enter. Right-click a stamp to remove it, or anywhere else to clear all of yours.
+
+<img src="./docs/src/assets/readme/stamps.png" alt="The sharing toolbar with Draw, Stamp, Revoke and Stop buttons, above three stamps with notes" width="640" />
+
+**Coding agents.** `hopp mcp` gives an agent your captures over MCP, including following a live call and waking when someone says "jeepers". Agents can read captures but can't start one.
+
+```bash
+hopp capture search "discount code"       # search every call
+hopp capture follow --on-wake             # wait until someone says "jeepers"
+hopp ask --title "Ship this?"             # show a card, and exit 0 if they accept
+```
+
+Settings > Capture has the MCP setup to copy, and the command to put `hopp` on your `PATH`.
+
+**Also new:** drawings that stay until you clear them, a sharing toolbar with Draw, Stamp, Revoke and Stop, a colour for each person on the call, and call controls that stay usable when the camera window is very small.
+
+### Earlier, in v1.1.0
 
 <img src="./docs/src/assets/readme/people.png" alt="The People window in dark mode, with a missed call at the top and teammates to call below" width="320" align="right" />
 
@@ -51,31 +76,6 @@ Release builds connect to `pair.gethopp.app`, upstream's managed service, until 
 - **Fewer surprise shortcuts.** Only the mic shortcut is on by default. Turn the others on in Settings.
 
 <br clear="right" />
-
-### On `main`, coming in the next release
-
-These are on the Mac app. Until the next release is out, you'd have to build from source to get them.
-
-**Captures.** A transcript of each call, one track per person, transcribed and saved on your own computer. It keeps pictures of what was drawn and shown too. Right-click the capture button in the call window to read them, search them or follow one live.
-
-> [!IMPORTANT]
-> Capture is on by default, so every call is transcribed unless you turn it off in Settings > Capture. The first call downloads a 731 MB speech model. People on older versions of Hopp see no sign that you're capturing, so tell them.
-
-**Stamps.** Hold down on a spot on the shared screen and say your note, and your words appear on the stamp as you speak. Let go and it's stamped once they're written down. If you're muted, holding unmutes you until you let go. Or click a spot and type, then press Enter. Right-click a stamp to remove it, or anywhere else to clear all of yours.
-
-<img src="./docs/src/assets/readme/stamps.png" alt="The sharing toolbar with Draw, Stamp, Revoke and Stop buttons, above three stamps with notes" width="640" />
-
-**Coding agents.** `hopp mcp` gives an agent your captures over MCP, including following a live call and waking when someone says its name. Agents can read captures but can't start one.
-
-```bash
-hopp capture search "discount code"       # search every call
-hopp capture follow --on-wake claude      # wait until someone says "claude"
-hopp ask --title "Ship this?"             # show a card, and exit 0 if they accept
-```
-
-Settings > Capture has the MCP setup to copy, and the command to put `hopp` on your `PATH`.
-
-**Also new:** a sharing toolbar with Draw, Stamp, Revoke and Stop, a colour for each person on the call, and call controls that stay usable when the camera window is very small.
 
 ## Self-host
 
