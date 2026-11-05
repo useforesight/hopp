@@ -39,7 +39,12 @@ Release builds connect to `pair.gethopp.app`, upstream's managed service, until 
 
 ## What's new
 
-### In the latest release (v1.2.0)
+### In the latest release (v1.3.0)
+
+- **Available, Away and Do not disturb.** Set your status from the account menu, and teammates see it before they call. Away still rings. Do not disturb doesn't: the caller is told, and it goes in your missed calls. Hopp sets you to Away when your screen locks or you've been idle a while, and back when you return. Your server needs this release's backend for statuses to appear.
+- **Quieter speaker indicators.** A small slot beside each name shows who's speaking or muted.
+
+### Earlier, in v1.2.0
 
 Captures and the `hopp` command are in the Mac app. Windows doesn't have them.
 
