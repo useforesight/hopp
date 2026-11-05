@@ -185,6 +185,7 @@ impl MarksDemo {
             paths: self.strokes.clone(),
             ripples: self.ripples.clone(),
             stamps: self.stamps.clone(),
+            targets: None,
             pointers: vec![
                 ScenePointer {
                     sender: POINTER.into(),

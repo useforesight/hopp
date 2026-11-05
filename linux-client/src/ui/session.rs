@@ -240,6 +240,8 @@ pub struct Session {
     stamp_count: u32,
     pub ripples: Vec<Ripple>,
     pub stamps: Vec<super::marks::Stamp>,
+    /// Where stamps were last painted, so a right-click can find one.
+    stamp_targets: super::marks::StampTargets,
     pub screen: Option<Picture>,
     /// Small, blurred, translucent copy of `screen` for the viewer's empty bands.
     pub ambient: Option<Picture>,
@@ -325,6 +327,7 @@ impl Session {
             pointers: HashMap::new(),
             ripples: Vec::new(),
             stamps: Vec::new(),
+            stamp_targets: Default::default(),
             stamping: false,
             active_stamp: None,
             stamp_words: StampWords::default(),
@@ -451,6 +454,7 @@ impl Session {
                 .cloned()
                 .chain(self.note_ghost().filter(|_| !over_own))
                 .collect(),
+            targets: Some(self.stamp_targets.clone()),
             pointers,
             colours: std::rc::Rc::new(colours),
         }
@@ -1406,6 +1410,92 @@ impl Session {
         cx.notify();
     }
 
+    /// Take away every stamp of yours, here and for everyone, the one you're on too.
+    pub fn clear_own_stamps(&mut self, cx: &mut Context<Self>) {
+        self.cancel_stamp(cx);
+        let now = Instant::now();
+        let mut gone = Vec::new();
+        for stamp in &mut self.stamps {
+            if stamp.owner.is_empty() && !stamp.ghost && stamp.removed.is_none() {
+                stamp.listening = false;
+                stamp.removed = Some(now);
+                gone.push(stamp.id);
+            }
+        }
+        if self.connected {
+            for id in gone {
+                self.send(Command::SendStamp(StampMessage::StampRemove { id }));
+            }
+        }
+        cx.emit(SessionEvent::Screen);
+        cx.notify();
+    }
+
+    /// Clear: all your ink and all your stamps go, here and for everyone.
+    pub fn clear_own_marks(&mut self, cx: &mut Context<Self>) {
+        self.clear_own_drawings(cx);
+        self.clear_own_stamps(cx);
+    }
+
+    /// Take away one stamp of yours.
+    fn remove_own_stamp(&mut self, id: u64, cx: &mut Context<Self>) {
+        if self.active_stamp == Some(id) {
+            self.cancel_stamp(cx);
+            return;
+        }
+        let Some(stamp) = self.own_stamp(id) else {
+            return;
+        };
+        stamp.listening = false;
+        stamp.removed.get_or_insert_with(Instant::now);
+        self.send(Command::SendStamp(StampMessage::StampRemove { id }));
+        cx.emit(SessionEvent::Screen);
+        cx.notify();
+    }
+
+    /// Whether you have ink or stamps up for Clear to take away.
+    pub fn has_own_marks(&self) -> bool {
+        self.paths
+            .iter()
+            .any(|path| path.sender.is_empty() && path.fading.is_none())
+            || self.has_own_stamps()
+    }
+
+    pub fn has_own_stamps(&self) -> bool {
+        self.stamps
+            .iter()
+            .any(|stamp| stamp.owner.is_empty() && !stamp.ghost && stamp.removed.is_none())
+    }
+
+    /// A right-click on the shared screen, as on the Mac: on a stamp of yours it takes
+    /// that one away; elsewhere, with the pen or the stamp tool, all your ink and stamps
+    /// go. Someone else's stamp isn't yours to take. Returns whether the click was used.
+    pub fn right_click(&mut self, point: Point, cx: &mut Context<Self>) -> bool {
+        let marking = self.drawing || self.stamping;
+        let under = super::marks::stamp_at(&self.stamp_targets.borrow(), point).cloned();
+        match under {
+            Some(stamp) if stamp.owner.is_empty() => {
+                self.remove_own_stamp(stamp.id, cx);
+                true
+            }
+            Some(_) => marking,
+            None if marking => {
+                self.clear_own_marks(cx);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The screen they were on has gone: stamps only mean something on it. Yours are
+    /// taken away for everyone.
+    fn drop_stamps(&mut self, cx: &mut Context<Self>) {
+        self.clear_own_stamps(cx);
+        self.note = None;
+        self.stamps.clear();
+        self.stamp_targets.borrow_mut().clear();
+    }
+
     pub fn dismiss_error(&mut self, index: usize, cx: &mut Context<Self>) {
         if index < self.errors.len() {
             self.errors.remove(index);
@@ -1485,13 +1575,17 @@ impl Session {
         if !self.connected {
             return;
         }
+        // While controlling their screen, a right-click is theirs unless you're marking.
+        if button == MouseButton::Right
+            && (!self.peer_control || self.drawing || self.stamping)
+            && self.right_click(point, cx)
+        {
+            return;
+        }
         if self.note.is_some() && button == MouseButton::Left {
             self.stamp_note(point, cx);
         } else if self.stamping && button == MouseButton::Left {
             self.place_stamp(point, cx);
-        } else if self.drawing && button == MouseButton::Right {
-            // Right-click clears your ink, as in the Mac app.
-            self.clear_own_drawings(cx);
         } else if self.drawing && button == MouseButton::Left {
             self.next_path = self.next_path.wrapping_add(1);
             self.paths.push(Stroke {
@@ -1909,6 +2003,19 @@ impl Session {
                 // Say when someone else starts or stops capturing; badges show it too.
                 let before = self.capturing_others();
                 self.participants = participants;
+                // Someone who left can't take their stamps away any more.
+                let here: HashSet<&str> = self
+                    .participants
+                    .iter()
+                    .map(|participant| canonical_identity(&participant.identity))
+                    .collect();
+                let now = Instant::now();
+                for stamp in &mut self.stamps {
+                    if !stamp.owner.is_empty() && !here.contains(canonical_identity(&stamp.owner)) {
+                        stamp.listening = false;
+                        stamp.removed.get_or_insert(now);
+                    }
+                }
                 let after = self.capturing_others();
                 for name in after.iter().filter(|name| !before.contains(name)) {
                     self.status = format!("{name} is capturing this call");
@@ -1927,6 +2034,7 @@ impl Session {
                     self.peer_control = false;
                     self.screen = None;
                     self.ambient = None;
+                    self.drop_stamps(cx);
                     cx.emit(SessionEvent::RemoteShareEnded);
                 }
             }
@@ -1940,6 +2048,9 @@ impl Session {
                 if !active {
                     if self.selecting_source {
                         self.selection_canceled = true;
+                    }
+                    if self.remote_identity.is_none() {
+                        self.drop_stamps(cx);
                     }
                     self.grant = None;
                     self.stopped_sharing_status();
@@ -2026,6 +2137,12 @@ impl Session {
         self.incoming_paths.clear();
         self.pointers.clear();
         self.pens.clear();
+        self.stamps.clear();
+        self.stamp_targets.borrow_mut().clear();
+        self.active_stamp = None;
+        self.stamp_words = StampWords::default();
+        self.stamp_hold = None;
+        self.note = None;
         self.stamp_count = 0;
         self.screen = None;
         self.ambient = None;

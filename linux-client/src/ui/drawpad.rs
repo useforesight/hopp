@@ -5,7 +5,8 @@
 //! `hopp draw`), this pad covers the same monitor and turns the pointer into ink: your
 //! strokes go to everyone in the call as Hopp's usual draw messages, and the overlay
 //! underneath paints them for you. It takes the keyboard when it opens: Escape stops,
-//! right-click or C clears your ink, Ctrl+Z undoes your last stroke and K keeps your ink
+//! right-click on a stamp of yours takes it away and elsewhere (or C) clears your ink and
+//! stamps, Ctrl+Z undoes your last stroke and K keeps your ink
 //! instead of letting it fade (the Mac app's drawing rules). Closing it gives focus back
 //! to your app.
 //!
@@ -155,12 +156,15 @@ impl Render for DrawPad {
                     });
                 }),
             )
-            // Right-click clears your ink, as in the Mac app; Escape stops drawing.
+            // Right-click takes away the stamp of yours under it, or else all your ink and
+            // stamps, as in the Mac app; Escape stops drawing.
             .on_mouse_down(
                 MouseButton::Right,
-                cx.listener(|view, _: &gpui_kit::MouseDownEvent, _, cx| {
-                    view.session
-                        .update(cx, |session, cx| session.clear_own_drawings(cx))
+                cx.listener(|view, event: &gpui_kit::MouseDownEvent, window, cx| {
+                    let at = normalised(event.position, window);
+                    view.session.update(cx, |session, cx| {
+                        session.right_click(at, cx);
+                    })
                 }),
             )
             .on_key_down(cx.listener(|view, event: &gpui_kit::KeyDownEvent, _, cx| {
@@ -180,9 +184,9 @@ impl Render for DrawPad {
                 };
                 match event.keystroke.key.as_str() {
                     "escape" => view.stop(cx),
-                    "c" | "backspace" | "delete" if plain && drawing => view
+                    "c" | "backspace" | "delete" if plain && (drawing || stamping) => view
                         .session
-                        .update(cx, |session, cx| session.clear_own_drawings(cx)),
+                        .update(cx, |session, cx| session.clear_own_marks(cx)),
                     "k" if plain && drawing => view
                         .session
                         .update(cx, |session, cx| session.toggle_keep_ink(cx)),

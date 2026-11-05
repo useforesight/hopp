@@ -536,7 +536,7 @@ impl ViewerView {
         let (controlling, drawing, own_drawings) = (
             session.peer_control,
             session.drawing,
-            session.paths.iter().any(|path| path.sender.is_empty()),
+            session.has_own_marks(),
         );
         let sharer_key = session
             .remote_identity
@@ -627,7 +627,7 @@ impl ViewerView {
                     style::chip("clear", "Clear", None, Tone::Plain, cx).on_click(cx.listener(
                         |view, _, _, cx| {
                             view.session
-                                .update(cx, |session, cx| session.clear_own_drawings(cx))
+                                .update(cx, |session, cx| session.clear_own_marks(cx))
                         },
                     )),
                 )

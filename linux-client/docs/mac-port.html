@@ -514,6 +514,7 @@ input.field{font:inherit;font-size:14px;border:1px solid var(--border-strong);bo
       <ul>
         <li><strong>Viewer:</strong> add <strong>Stamp</strong> to the segmented control in <code>screensharing_window.rs:323-339</code> (Remote control, Draw, Point). Stamp and Draw turn each other off.</li>
         <li><strong>Keys:</strong> while a stamp is active, typed keys go into it, not to the remote screen. <kbd>Enter</kbd> finishes it and <kbd>Esc</kbd> removes it.</li>
+        <li><strong>Taking stamps away:</strong> right-click one of yours to remove it; with the pen or stamp tool, right-click elsewhere to remove all your ink and stamps. <strong>Clear</strong> shows on the viewer pill and the sharing pill whenever you have ink or stamps up. Stamps stay when you press Done. Everyone's stamps go when the share ends (yours are removed for everyone). Someone's stamps go when they leave the call. <strong>Mac gap:</strong> <code>sender_left</code> only stops a leaver's stamps listening, so they stay up; remove them, and drop all stamps when the share ends.</li>
         <li><strong>Receiving:</strong> <code>room_service.rs</code> routes only <code>app_veil</code> and <code>participant_in_control</code> by topic, and parses the rest as <code>ClientEvent</code>. Add a branch for <code>hopp_stamp</code> before that.</li>
         <li><strong>Drawing:</strong> paint markers and cards in <code>ParticipantOverlay</code> (viewer) and the overlay window (sharer).</li>
         <li><strong>Ripple:</strong> with each <code>StampPlace</code>, also send a <code>ClickAnimation</code> on <code>draw</code>, so older apps show a ripple.</li>
@@ -739,6 +740,7 @@ input.field{font:inherit;font-size:14px;border:1px solid var(--border-strong);bo
     <li><strong>Reactions don't split someone else's turn.</strong> A reaction is at most 3 words and 1.5 s, such as "Yeah" or "Hmm". It's shown after the message it interrupted. On one 17-minute call this took 113 messages down to 85. The stored lines are unchanged.</li>
     <li><strong>One voice on two mics shows once.</strong> Lines from two people within 3 s, with Dice-bigram similarity of 0.6 or more and a length ratio of 0.55 or more, are merged. The first speaker is kept, with "also on Alex's mic, shown once".</li>
     <li><strong>Wake phrases match known mishearings.</strong> Parakeet heard "hey Claude" as "Heckord" and "Hey Cord". "hey claude" also wakes on heckord, hey cord, hey clod, hey cloud, hey claud and hey clawed. Wake phrases match final text only.</li>
+    <li><strong>The wake word is "Jeepers".</strong> <code>DEFAULT_WAKE</code> in <code>follow.rs</code>, which the MCP instructions name and <code>--on-wake</code> with no phrase uses. Its guessed mishearings: jeeper, jepers, geepers, jeepas, cheepers.</li>
     <li><strong>A wake phrase starts a request; the end of the turn finishes it.</strong> The name can be anywhere in what someone says. The follower waits until they've finished: 2 s with no new line or open draft from them, someone else saying more than a reaction, the call ending, or 20 s after the name. It then wakes with their whole message as <code>asked</code>, the lines before it, a count of earlier lines and frames not shown, and <code>next</code>: an instruction to read back and look at the frames before answering. A timeout without a wake returns only new lines, not the context again.</li>
   </ul>
 </section>
@@ -945,7 +947,7 @@ input.field{font:inherit;font-size:14px;border:1px solid var(--border-strong);bo
       <ul>
         <li><strong>Calls:</strong> <code>status [--json]</code>, <code>call WHO</code>, <code>join</code>, <code>accept</code>, <code>decline</code>, <code>leave</code>, <code>mute</code>, <code>camera</code>, <code>share</code>, <code>draw</code>.</li>
         <li><strong>Captures:</strong> <code>capture start | stop | window [id|last|live] | bookmark | list | show | search | follow | annotate | delete | model …</code></li>
-        <li><strong>Following:</strong> <code>capture follow --on-wake claude --json</code>; the last JSON line has kind <code>woke</code> with <code>asked</code> and <code>next</code>, or <code>--wake-if PROGRAM</code>.</li>
+        <li><strong>Following:</strong> <code>capture follow --on-wake --json</code> (the phrase defaults to <code>jeepers</code>); the last JSON line has kind <code>woke</code> with <code>asked</code> and <code>next</code>, or <code>--wake-if PROGRAM</code>.</li>
         <li><strong>Cards:</strong> <code>hopp notify</code>, and <code>hopp ask</code>, which exits 0 on accept, 1 on reject and 2 on timeout.</li>
         <li><strong>Hooks:</strong> executables in <code>~/.config/hopp/hooks/</code> for <code>capture-started</code> and <code>capture-complete</code>, given JSON on stdin and killed after 10 minutes.</li>
       </ul>

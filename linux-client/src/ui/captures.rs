@@ -364,8 +364,9 @@ impl CapturesView {
             format!(
                 "I'm in a Hopp call that is being transcribed on this computer (capture {id}). \
                  Read what's been said with `hopp capture show {id}`. To keep listening, run \
-                 `hopp capture follow {id} --on-wake \"hey claude\"`: it returns when someone \
-                 says \"hey claude\", with the lines leading up to it. Answer, then run it again.",
+                 `hopp capture follow {id} --on-wake jeepers`: it returns once someone has said \
+                 \"Jeepers\" to ask you something and finished talking, with their words and \
+                 what to read first. Answer, then run it again.",
                 id = call.id
             )
         } else {

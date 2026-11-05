@@ -3,7 +3,8 @@
 //!
 //! It is the one control you see while you share. When you draw, it turns into the
 //! drawing bar (Keep ink, Undo, Clear, Stamp, Done); with the stamp tool, it says how to
-//! leave a stamp and what to do next. No second overlay appears: the draw pad underneath
+//! leave a stamp and what to do next. Clear shows whenever you have ink or stamps up, and
+//! takes them all away. No second overlay appears: the draw pad underneath
 //! only catches the pen, with a hole where this pill is. It is a
 //! layer-shell surface on the shared monitor, excluded from screen sharing by Hopp's
 //! Hyprland rules, so viewers never see it.
@@ -62,10 +63,7 @@ impl Render for SharingView {
         let stamp_hint = session.stamp_hint();
         let active_stamp = session.active_stamp_number();
         let keep_ink = session.keep_ink;
-        let has_ink = session
-            .paths
-            .iter()
-            .any(|path| path.sender.is_empty() && path.fading.is_none());
+        let has_marks = session.has_own_marks();
         let edge = if drawing || stamping {
             theme.accent
         } else {
@@ -73,6 +71,15 @@ impl Render for SharingView {
         };
         let chip = |id: &'static str, label: &'static str, glyph, tone, cx: &Context<Self>| {
             style::chip(id, label, glyph, tone, cx).rounded(px(12.))
+        };
+        // Takes away your ink and stamps, here and for everyone.
+        let clear_chip = |cx: &mut Context<Self>| {
+            chip("clear", "Clear", Some(IconName::Eraser), Tone::Plain, cx).on_click(cx.listener(
+                |view, _, _, cx| {
+                    view.session
+                        .update(cx, |session, cx| session.clear_own_marks(cx))
+                },
+            ))
         };
         let pill = div()
             .h_full()
@@ -113,7 +120,7 @@ impl Render for SharingView {
             )
             .child(
                 chip("undo", "Undo", Some(IconName::Undo2), Tone::Plain, cx)
-                    .when(!has_ink, |chip| chip.opacity(0.5))
+                    .when(!has_marks, |chip| chip.opacity(0.5))
                     .on_click(cx.listener(|view, _, _, cx| {
                         view.session
                             .update(cx, |session, cx| session.undo_stroke(cx))
@@ -121,10 +128,10 @@ impl Render for SharingView {
             )
             .child(
                 chip("clear", "Clear", Some(IconName::Eraser), Tone::Plain, cx)
-                    .when(!has_ink, |chip| chip.opacity(0.5))
+                    .when(!has_marks, |chip| chip.opacity(0.5))
                     .on_click(cx.listener(|view, _, _, cx| {
                         view.session
-                            .update(cx, |session, cx| session.clear_own_drawings(cx))
+                            .update(cx, |session, cx| session.clear_own_marks(cx))
                     })),
             )
             .child(
@@ -174,22 +181,23 @@ impl Render for SharingView {
                     ),
                 )
             } else {
-                pill.child(
-                    chip("pen", "Draw", Some(IconName::Pencil), Tone::Plain, cx).on_click(
-                        cx.listener(|view, _, _, cx| {
-                            view.session
-                                .update(cx, |session, cx| session.toggle_drawing(cx))
-                        }),
-                    ),
-                )
-                .child(
-                    chip("done", "Done", Some(IconName::Check), Tone::On, cx).on_click(
-                        cx.listener(|view, _, _, cx| {
-                            view.session
-                                .update(cx, |session, cx| session.stop_marking(cx))
-                        }),
-                    ),
-                )
+                pill.when(has_marks, |pill| pill.child(clear_chip(cx)))
+                    .child(
+                        chip("pen", "Draw", Some(IconName::Pencil), Tone::Plain, cx).on_click(
+                            cx.listener(|view, _, _, cx| {
+                                view.session
+                                    .update(cx, |session, cx| session.toggle_drawing(cx))
+                            }),
+                        ),
+                    )
+                    .child(
+                        chip("done", "Done", Some(IconName::Check), Tone::On, cx).on_click(
+                            cx.listener(|view, _, _, cx| {
+                                view.session
+                                    .update(cx, |session, cx| session.stop_marking(cx))
+                            }),
+                        ),
+                    )
             }
         } else {
             pill.child(
@@ -224,6 +232,7 @@ impl Render for SharingView {
                     ),
                 )
             })
+            .when(has_marks, |pill| pill.child(clear_chip(cx)))
             .when(controller.is_some(), |pill| {
                 pill.child(
                     chip("revoke", "Revoke", Some(IconName::Hand), Tone::Plain, cx).on_click(

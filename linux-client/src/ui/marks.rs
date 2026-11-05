@@ -624,6 +624,27 @@ pub struct ScenePointer {
 /// Each person's colour, by sender (empty for you).
 pub type Colours = std::rc::Rc<dyn Fn(&str) -> [u8; 3]>;
 
+/// Where a stamp was last painted, as fractions of the shared screen (left, top, right,
+/// bottom) covering its pin and card, so a right-click can find it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StampTarget {
+    /// Empty for yours.
+    pub owner: String,
+    pub id: u64,
+    pub bounds: [f64; 4],
+}
+
+/// Filled in each time stamps are painted, newest on top last.
+pub type StampTargets = std::rc::Rc<std::cell::RefCell<Vec<StampTarget>>>;
+
+/// The top stamp at `point`, if any.
+pub fn stamp_at(targets: &[StampTarget], point: Point) -> Option<&StampTarget> {
+    targets.iter().rev().find(|target| {
+        let [left, top, right, bottom] = target.bounds;
+        (left..=right).contains(&point.x) && (top..=bottom).contains(&point.y)
+    })
+}
+
 /// Everything people have put on one shared screen, ready to paint.
 pub struct Scene {
     pub paths: Vec<Stroke>,
@@ -631,6 +652,8 @@ pub struct Scene {
     pub stamps: Vec<Stamp>,
     pub pointers: Vec<ScenePointer>,
     pub colours: Colours,
+    /// Where the stamps land, for right-clicks; `None` where nobody clicks them.
+    pub targets: Option<StampTargets>,
 }
 
 /// Paint `scene` over a screen shown at `area`; bubbles stay inside `visible`. Returns
@@ -673,8 +696,9 @@ pub fn paint_scene(
             now.duration_since(ripple.at),
         );
     }
+    let mut targets = Vec::new();
     for stamp in &scene.stamps {
-        paint_stamp(
+        let painted = paint_stamp(
             window,
             cx,
             sprites,
@@ -684,7 +708,20 @@ pub fn paint_scene(
             now,
             visible,
         );
+        if let Some(bounds) = painted
+            && !stamp.ghost
+            && stamp.removed.is_none()
+        {
+            targets.push(StampTarget {
+                owner: stamp.owner.clone(),
+                id: stamp.id,
+                bounds: fraction_of(area, bounds),
+            });
+        }
         animating |= stamp.animating(now);
+    }
+    if let Some(shared) = &scene.targets {
+        *shared.borrow_mut() = targets;
     }
     for shown in &scene.pointers {
         let position = shown.pen_tip.unwrap_or_else(|| shown.pointer.position(now));
@@ -749,7 +786,24 @@ impl Stamp {
     }
 }
 
-/// A stamp with its pin's tip at `at`. `area` keeps the bubble on screen.
+/// `bounds` on screen as fractions of the screen shown at `area`.
+fn fraction_of(area: Bounds<Pixels>, bounds: Bounds<Pixels>) -> [f64; 4] {
+    let x = |value: Pixels| {
+        f64::from(f32::from(value - area.origin.x) / f32::from(area.size.width).max(1.))
+    };
+    let y = |value: Pixels| {
+        f64::from(f32::from(value - area.origin.y) / f32::from(area.size.height).max(1.))
+    };
+    [
+        x(bounds.origin.x),
+        y(bounds.origin.y),
+        x(bounds.origin.x + bounds.size.width),
+        y(bounds.origin.y + bounds.size.height),
+    ]
+}
+
+/// A stamp with its pin's tip at `at`. `area` keeps the bubble on screen. Returns what it
+/// covers: its pin, and its card once that shows.
 #[allow(clippy::too_many_arguments)]
 pub fn paint_stamp(
     window: &mut Window,
@@ -760,7 +814,7 @@ pub fn paint_stamp(
     rgb: [u8; 3],
     now: Instant,
     area: Bounds<Pixels>,
-) {
+) -> Option<Bounds<Pixels>> {
     let age = now.duration_since(stamp.placed);
     let leaving = stamp.removed.map_or(1., |removed| {
         1. - progress(now.duration_since(removed), STAMP_FADE)
@@ -769,7 +823,7 @@ pub fn paint_stamp(
     let landed = ease_out_back(drop);
     let alpha = step((drop * 3.).min(1.) * leaving) * if stamp.ghost { 0.7 } else { 1. };
     if alpha <= 0. {
-        return;
+        return None;
     }
 
     // Its shadow on the screen sharpens and widens as it lands.
@@ -818,7 +872,11 @@ pub fn paint_stamp(
     }) {
         paint_sprite(window, tip, sprite);
     }
-    paint_bubble(
+    let pin = Bounds::from_corners(
+        point(head.x - px(radius + 2.), head.y - px(radius + 2.)),
+        point(tip.x + px(radius + 2.), tip.y + px(2.)),
+    );
+    let bubble = paint_bubble(
         window,
         cx,
         stamp,
@@ -829,6 +887,7 @@ pub fn paint_stamp(
         area,
         alpha * leaving,
     );
+    Some(bubble.map_or(pin, |bubble| pin.union(&bubble)))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -842,14 +901,14 @@ fn paint_bubble(
     now: Instant,
     area: Bounds<Pixels>,
     alpha: f32,
-) {
+) -> Option<Bounds<Pixels>> {
     let age = now.duration_since(stamp.placed);
     let shown = ease_out_cubic(progress(
         age.saturating_sub(Duration::from_millis(180)),
         Duration::from_millis(280),
     )) * alpha;
     if shown <= 0.01 {
-        return;
+        return None;
     }
     let text_size = px(13.5);
     let line_height = px(19.);
@@ -907,7 +966,7 @@ fn paint_bubble(
             .text_system()
             .shape_text(body.into(), text_size, &runs, Some(wrap), Some(6))
     else {
-        return;
+        return None;
     };
     let text_width = lines
         .iter()
@@ -1005,11 +1064,30 @@ fn paint_bubble(
         );
         y += line.size(line_height).height;
     }
+    Some(bubble)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A right-click finds the top stamp under it, and nothing beside them.
+    #[test]
+    fn a_right_click_finds_the_stamp_on_top() {
+        let target = |owner: &str, id, bounds| StampTarget {
+            owner: owner.into(),
+            id,
+            bounds,
+        };
+        let targets = [
+            target("", 1, [0.1, 0.1, 0.3, 0.2]),
+            target("mira", 2, [0.2, 0.15, 0.4, 0.25]),
+        ];
+        let at = |x, y| stamp_at(&targets, Point { x, y }).map(|found| found.id);
+        assert_eq!(at(0.15, 0.12), Some(1));
+        assert_eq!(at(0.25, 0.18), Some(2), "the newer one is on top");
+        assert_eq!(at(0.5, 0.5), None);
+    }
 
     #[test]
     fn a_pointer_glides_to_where_it_was_sent() {
