@@ -64,15 +64,20 @@ const stopRinging = () => {
   ringTimeout = undefined;
 };
 
-const rejectCall = (callerId: string, rejectReason: "rejected" | "in-call") => {
+const isDoNotDisturb = () => useStore.getState().user?.status === "dnd";
+
+const rejectCall = (callerId: string, rejectReason: "rejected" | "in-call" | "do-not-disturb") => {
   socketService.send({
     type: "call_reject",
     payload: { caller_id: callerId, reject_reason: rejectReason },
   } as TRejectCallMessage);
 };
 
-const rejectInvite = (inviterId: string, inviteId: string) => {
-  socketService.send({ type: "invite_reject", payload: { inviter_id: inviterId, invite_id: inviteId } });
+const rejectInvite = (inviterId: string, inviteId: string, rejectReason?: "do-not-disturb") => {
+  socketService.send({
+    type: "invite_reject",
+    payload: { inviter_id: inviterId, invite_id: inviteId, reject_reason: rejectReason },
+  });
 };
 
 export const requestCallback = (userId: string) => {
@@ -109,6 +114,9 @@ export const clearMissedCall = (callerId: string) => {
  * in progress, unless this miss has just happened, as the card is then the only way to find out in time.
  */
 const showLatestMissedCall = (isNewMiss = false) => {
+  // Do not disturb keeps them listed and on the badge, and the card waits until it's turned off
+  if (isDoNotDisturb()) return;
+
   const { missedCalls, teammates, callTokens, calling, callbackUserId, incomingCallCallerId, incomingInviteInviterId } =
     useStore.getState();
   const latest = missedCalls[0];
@@ -339,6 +347,10 @@ const handleIncomingCall = (data: TWebSocketMessage) => {
     console.log("Received call from current participant - closing current call and accepting new one");
     setCallTokens(null);
     tauriUtils.endCallCleanup();
+  } else if (isDoNotDisturb()) {
+    rejectCall(callerId, "do-not-disturb");
+    recordMissedCall(callerId, "call");
+    return;
   }
 
   ringForCall(callerId);
@@ -401,6 +413,11 @@ const handleIncomingInvite = (data: TWebSocketMessage) => {
     recordMissedCall(inviterId, "invite");
     return;
   }
+  if (isDoNotDisturb()) {
+    rejectInvite(inviterId, inviteId, "do-not-disturb");
+    recordMissedCall(inviterId, "invite");
+    return;
+  }
   if (incomingInviteInviterId && activeInviteId && activeInviteId !== inviteId) {
     rejectInvite(incomingInviteInviterId, activeInviteId);
     if (incomingInviteInviterId !== inviterId) recordMissedCall(incomingInviteInviterId, "invite");
@@ -429,6 +446,7 @@ export const setupIncomingCallHandling = () => {
     }
     // This is what gives missed calls a name, so saved ones wait for it
     if (state.teammates && !previousState.teammates) showLatestMissedCall();
+    if (previousState.user?.status === "dnd" && state.user?.status !== "dnd") showLatestMissedCall();
 
     if (!state.callTokens) {
       ringersDuringCall.clear();

@@ -4,6 +4,7 @@ import toast from "react-hot-toast";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   HiArrowDownTray,
+  HiCheck,
   HiOutlineArrowRightOnRectangle,
   HiOutlineBugAnt,
   HiOutlineComputerDesktop,
@@ -35,6 +36,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { avatarGradient } from "@/components/ui/hopp-avatar";
+import { USER_STATUS_DOTS, USER_STATUS_LABELS, USER_STATUSES, UserStatus, useSetUserStatus } from "@/lib/user-status";
 import { appVersion, tauriUtils } from "@/windows/window-utils.ts";
 import { Constants, OS } from "@/constants";
 import { useQueryClient } from "@tanstack/react-query";
@@ -334,6 +336,28 @@ const ThemeSwitch = () => {
   );
 };
 
+const StatusPicker = ({ status }: { status: UserStatus }) => {
+  const setUserStatus = useSetUserStatus();
+
+  return (
+    <div role="group" aria-label="Your status">
+      {USER_STATUSES.map((option) => (
+        <DropdownMenuItem
+          key={option}
+          aria-checked={status === option}
+          onClick={() => {
+            setUserStatus(option).catch(() => toast.error("Couldn't change your status"));
+          }}
+        >
+          <span aria-hidden className={clsx("mx-1 size-2 rounded-full", USER_STATUS_DOTS[option])} />
+          {USER_STATUS_LABELS[option]}
+          {status === option && <HiCheck className="ml-auto" />}
+        </DropdownMenuItem>
+      ))}
+    </div>
+  );
+};
+
 export const Sidebar = () => {
   const { tab, setTab, user, reset, missedCalls } = useStore();
   const queryClient = useQueryClient();
@@ -400,7 +424,7 @@ export const Sidebar = () => {
           <DropdownMenu>
             <DropdownMenuTrigger
               aria-label="Account menu"
-              className="rounded-[11px] transition-transform duration-150 hover:scale-[1.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="relative rounded-[11px] transition-transform duration-150 hover:scale-[1.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               {!user && (
                 <div className="flex size-9 shrink-0 items-center justify-center rounded-[11px] bg-subtle text-muted-foreground ring-1 ring-inset ring-border">
@@ -420,6 +444,15 @@ export const Sidebar = () => {
                   {user.avatar_url ? "" : user.first_name.charAt(0).toUpperCase()}
                 </div>
               )}
+              {(user?.status === "away" || user?.status === "dnd") && (
+                <span
+                  aria-label={USER_STATUS_LABELS[user.status]}
+                  className={clsx(
+                    "absolute -bottom-0.5 -right-0.5 size-[11px] rounded-full border-[2.5px] border-rail",
+                    USER_STATUS_DOTS[user.status],
+                  )}
+                />
+              )}
             </DropdownMenuTrigger>
             <DropdownMenuContent className="w-[220px]" side="top" align="start" sideOffset={6}>
               {user && (
@@ -431,6 +464,12 @@ export const Sidebar = () => {
                     <span className="truncate text-xs leading-4 text-muted-foreground">{user.email}</span>
                   </div>
                   <DropdownMenuSeparator />
+                  {user.status && (
+                    <>
+                      <StatusPicker status={user.status} />
+                      <DropdownMenuSeparator />
+                    </>
+                  )}
                 </>
               )}
               <DropdownMenuItem onClick={() => openUrl(Constants.webAppUrl)}>

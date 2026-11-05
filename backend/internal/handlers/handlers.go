@@ -778,6 +778,52 @@ func (h *AuthHandler) UpdateName(c echo.Context) error {
 	return c.JSON(http.StatusOK, user)
 }
 
+// UpdateStatus sets what teammates see before ringing the authenticated user.
+// An automatic change never replaces a status the user chose themselves.
+func (h *AuthHandler) UpdateStatus(c echo.Context) error {
+	user, isAuthenticated := h.getAuthenticatedUserFromJWT(c)
+	if !isAuthenticated {
+		return c.String(http.StatusUnauthorized, "Unauthorized")
+	}
+
+	type UpdateRequest struct {
+		Status string `json:"status"`
+		Auto   bool   `json:"auto"`
+	}
+
+	req := new(UpdateRequest)
+	if err := c.Bind(req); err != nil {
+		c.Logger().Error("Failed to bind request:", err)
+		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+	}
+	if !models.IsValidStatus(req.Status) {
+		return echo.NewHTTPError(http.StatusBadRequest, "Unknown status")
+	}
+
+	query := h.DB.Model(&models.User{}).Where("id = ?", user.ID)
+	if req.Auto {
+		query = query.Where("status = ? OR status_auto = ?", models.StatusAvailable, true)
+	}
+	if err := query.Updates(map[string]interface{}{
+		"status":      req.Status,
+		"status_auto": req.Auto && req.Status != models.StatusAvailable,
+	}).Error; err != nil {
+		c.Logger().Error("Failed to save to db:", err)
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to update status")
+	}
+
+	var current models.UserProfile
+	if err := h.DB.Model(&models.User{}).Where("id = ?", user.ID).First(&current).Error; err != nil {
+		c.Logger().Error("Failed to read from db:", err)
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to update status")
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"status":      current.Status,
+		"status_auto": current.StatusAuto,
+	})
+}
+
 // UpdateTeam updates the authenticated admin's team. Currently only the team
 // name can be changed. Used by onboarding to rename the placeholder team created
 // at signup.

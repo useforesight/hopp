@@ -967,6 +967,39 @@ fn set_show_dock_icon_in_call(app: tauri::AppHandle, enabled: bool) {
 }
 
 #[tauri::command(async)]
+fn set_auto_away_enabled(app: tauri::AppHandle, enabled: bool) {
+    log::info!("set_auto_away_enabled: {enabled}");
+    let data = app.state::<Mutex<AppData>>();
+    let mut data = data.lock().unwrap();
+    data.app_state
+        .update_user_setting(|s| s.auto_away_enabled = enabled);
+}
+
+#[tauri::command(async)]
+fn set_auto_away_minutes(app: tauri::AppHandle, minutes: u32) {
+    log::info!("set_auto_away_minutes: {minutes}");
+    let data = app.state::<Mutex<AppData>>();
+    let mut data = data.lock().unwrap();
+    data.app_state
+        .update_user_setting(|s| s.auto_away_minutes = minutes);
+}
+
+/// Whether the person has stepped away, going by the Away settings.
+fn has_stepped_away(app: &tauri::AppHandle) -> bool {
+    let settings = {
+        let data = app.state::<Mutex<AppData>>();
+        let data = data.lock().unwrap();
+        data.app_state.user_settings()
+    };
+    settings.auto_away_enabled && hopp::idle::has_stepped_away(settings.auto_away_minutes)
+}
+
+#[tauri::command(async)]
+fn get_stepped_away(app: tauri::AppHandle) -> bool {
+    has_stepped_away(&app)
+}
+
+#[tauri::command(async)]
 fn set_auto_update_enabled(app: tauri::AppHandle, enabled: bool) {
     log::info!("set_auto_update_enabled: {enabled}");
     let data = app.state::<Mutex<AppData>>();
@@ -1619,6 +1652,20 @@ fn main() {
                 }
             });
 
+            let idle_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                let mut stepped_away = false;
+                loop {
+                    std::thread::sleep(hopp::idle::CHECK_EVERY);
+                    let now_away = has_stepped_away(&idle_handle);
+                    if now_away != stepped_away {
+                        stepped_away = now_away;
+                        log::info!("stepped_away_changed: {stepped_away}");
+                        let _ = idle_handle.emit("stepped_away_changed", stepped_away);
+                    }
+                }
+            });
+
             let (_core_process, sender, mut event_socket) =
                 create_core_process(app.handle()).expect("Failed to create core process");
 
@@ -1965,6 +2012,9 @@ fn main() {
             set_telemetry_enabled,
             set_show_dock_icon_in_call,
             set_auto_update_enabled,
+            set_auto_away_enabled,
+            set_auto_away_minutes,
+            get_stepped_away,
             set_start_camera_on_call,
             set_start_mic_on_call,
             set_remote_control_enabled,

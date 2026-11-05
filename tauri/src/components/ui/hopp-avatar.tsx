@@ -3,7 +3,7 @@ import { clsx } from "clsx";
 import { cn } from "@/lib/utils";
 import { LuMicOff } from "react-icons/lu";
 
-type Status = "online" | "offline";
+type Status = "online" | "offline" | "away" | "dnd";
 
 interface CallPeer {
   avatarUrl?: string;
@@ -104,6 +104,8 @@ export const HoppAvatar = ({ src, firstName, lastName, status, className, isMute
               {
                 "bg-success": status === "online",
                 "bg-faint-foreground": status === "offline",
+                "bg-warning": status === "away",
+                "bg-destructive": status === "dnd",
               },
             )}
           />

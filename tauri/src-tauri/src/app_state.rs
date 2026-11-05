@@ -72,6 +72,14 @@ pub struct UserSettings {
     pub auto_update_enabled: bool,
     #[serde(default = "default_app_veil_applications")]
     pub app_veil_applications: Vec<AppVeilApplication>,
+    #[serde(default = "default_true")]
+    pub auto_away_enabled: bool,
+    #[serde(default = "default_auto_away_minutes")]
+    pub auto_away_minutes: u32,
+}
+
+fn default_auto_away_minutes() -> u32 {
+    10
 }
 
 impl Default for UserSettings {
@@ -94,6 +102,8 @@ impl Default for UserSettings {
             telemetry_enabled: true,
             auto_update_enabled: true,
             app_veil_applications: default_app_veil_applications(),
+            auto_away_enabled: true,
+            auto_away_minutes: default_auto_away_minutes(),
         }
     }
 }

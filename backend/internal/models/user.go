@@ -38,6 +38,17 @@ func (es *EmailSubscriptions) Scan(value interface{}) error {
 	return json.Unmarshal(b, &es)
 }
 
+const (
+	StatusAvailable    = "available"
+	StatusAway         = "away"
+	StatusDoNotDisturb = "dnd"
+)
+
+// IsValidStatus reports whether status is one a user can have.
+func IsValidStatus(status string) bool {
+	return status == StatusAvailable || status == StatusAway || status == StatusDoNotDisturb
+}
+
 type UserProfile struct {
 	ID        string    `json:"id" gorm:"unique;not null"` // Standard field for the primary key
 	FirstName string    `gorm:"not null" json:"first_name" validate:"required"`
@@ -48,6 +59,11 @@ type UserProfile struct {
 	AvatarURL string    `json:"avatar_url"`
 	CreatedAt time.Time `json:"created_at"` // Automatically managed by GORM for creation time
 	UpdatedAt time.Time `json:"updated_at"` // Automatically managed by GORM for update time
+
+	// What teammates see before ringing: StatusAvailable, StatusAway or StatusDoNotDisturb.
+	Status string `gorm:"not null;default:available" json:"status"`
+	// The app set Status because the user stepped away, so it can undo it when they're back.
+	StatusAuto bool `gorm:"not null;default:false" json:"status_auto"`
 }
 
 type User struct {

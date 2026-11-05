@@ -717,6 +717,82 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/auth/status": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** Set what teammates see before ringing you */
+    put: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path?: never;
+        cookie?: never;
+      };
+      requestBody: {
+        content: {
+          "application/json": {
+            /** @enum {string} */
+            status: "available" | "away" | "dnd";
+            /** @description Set because the user stepped away or came back. Never replaces a status they chose. */
+            auto?: boolean;
+          };
+        };
+      };
+      responses: {
+        /** @description The status now in place */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": {
+              /** @enum {string} */
+              status: "available" | "away" | "dnd";
+              status_auto: boolean;
+            };
+          };
+        };
+        /** @description Unknown status */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Unauthorized */
+        401: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Internal server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+      };
+    };
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/auth/team": {
     parameters: {
       query?: never;
@@ -2661,6 +2737,13 @@ export interface components {
       is_admin: boolean;
       /** @description Whether the user is currently active (connected via websocket) */
       is_active?: boolean;
+      /**
+       * @description What teammates see before ringing. Servers older than this field leave it out.
+       * @enum {string}
+       */
+      status?: "available" | "away" | "dnd";
+      /** @description Whether the app set the status because the user stepped away */
+      status_auto?: boolean;
       /** Format: uint */
       team_id?: number;
       /** Format: date-time */
