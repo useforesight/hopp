@@ -134,7 +134,7 @@ hopp capture list                     # newest first (--json)
 hopp capture show latest              # Markdown (--json); an id, latest or current
 hopp capture search xrun
 hopp capture follow                   # new lines as they're said
-hopp capture follow --on-wake claude   # wait until someone asks Claude something, print it, exit
+hopp capture follow --on-wake         # wait until someone says "Jeepers…", print it, exit
 hopp capture annotate ID --title T --summary S   # or --json on stdin
 hopp capture delete ID
 hopp capture model list | download NAME | use NAME
@@ -154,9 +154,9 @@ Its tools are `call_status`, `capture_list`, `capture_search`,
 `capture_annotate`. The reading tools are marked read-only, so agents run them
 without asking. Agents can read and annotate captures but cannot start one.
 
-**Asking an agent in a call.** Give the agent its name as the wake phrase and say
-the name anywhere: "Claude, why is that failing?" or "…what do you reckon,
-Claude?". It wakes once you've finished talking: after 2 seconds of quiet, or when
+**Asking an agent in a call.** Say "Jeepers" anywhere in what you ask:
+"Jeepers, why is that failing?" or "…what do you reckon, Jeepers?". Hopp tells
+agents to listen for it; `--on-wake` or `wake_phrase` can name another. It wakes once you've finished talking: after 2 seconds of quiet, or when
 someone else speaks. A short reaction like "yeah" doesn't count. The reply holds
 your words as `asked`, the lines before them, and `next`. `next` tells the agent
 how much of the call it hasn't seen and to read back and look at the frames before

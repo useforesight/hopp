@@ -110,8 +110,9 @@ export const agentPrompt = (call: CaptureCall): string =>
   call.ended_ms === undefined ?
     `I'm in a Hopp call that is being transcribed on this computer (capture ${call.id}). ` +
     `Read what's been said with \`hopp capture show ${call.id}\`. To keep listening, run ` +
-    `\`hopp capture follow ${call.id} --on-wake claude\`: it returns once someone has asked ` +
-    `for Claude by name and finished talking, with their words and what to read first. ` +
+    `\`hopp capture follow ${call.id} --on-wake jeepers\`: it returns once someone has said ` +
+    `"Jeepers" to ask you something and finished talking, with their words and what to read ` +
+    `first. ` +
     `Answer, then run it again.`
   : `Read the transcript of a Hopp call with \`hopp capture show ${call.id}\`. Write a short ` +
     `title and a two- or three-line summary with any decisions and follow-ups, then ` +

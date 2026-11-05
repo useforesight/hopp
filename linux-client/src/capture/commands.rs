@@ -9,7 +9,7 @@ use crate::protocol::UiRequest;
 
 use super::{
     config,
-    follow::{Follower, Tools, Wake, brief, frame_range},
+    follow::{DEFAULT_WAKE, Follower, Tools, Wake, brief, frame_range},
     models,
     recorder::{Input, Options, Recorder, Speaker},
     resample,
@@ -70,10 +70,10 @@ pub enum CaptureCommand {
         #[arg(default_value = "current")]
         id: String,
         /// Wake when someone says this, anywhere in what they say, once they've
-        /// finished talking. Separate alternatives with |, as in "claude|computer";
-        /// "claude" and "hey claude" also wake on how speech recognition often
-        /// mishears them ("Claud", "Heckord").
-        #[arg(long, value_name = "PHRASE")]
+        /// finished talking: "jeepers" if no phrase is given. Separate alternatives with
+        /// |, as in "jeepers|claude"; known phrases also wake on how speech recognition often
+        /// mishears them ("Geepers", "Heckord").
+        #[arg(long, value_name = "PHRASE", num_args = 0..=1, default_missing_value = DEFAULT_WAKE)]
         on_wake: Option<String>,
         /// Wake when this program, given the held lines as JSON lines, exits 0.
         #[arg(long, value_name = "PROGRAM")]

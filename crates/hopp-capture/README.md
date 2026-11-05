@@ -31,8 +31,8 @@ told why in your terminal; the app answers once it has passed the request on. `h
 viewer's window.
 Agents can't start a capture: `mcp` has no tool for it.
 
-An agent in a call waits with its name as the wake phrase, as in `hopp capture follow --on-wake claude`
-or `wake_phrase` on the `capture_follow` tool, and the name can come anywhere in what someone says.
+An agent in a call waits for "jeepers", as in `hopp capture follow --on-wake` (or `--on-wake PHRASE`)
+or `wake_phrase` on the `capture_follow` tool, and the word can come anywhere in what someone says.
 `follow` wakes it once they've finished: 2 s of quiet, someone else saying more than a reaction, the
 call ending, or 20 s after the name. The reply holds their words as `asked`, the lines before them, a
 count of what isn't shown, and `next`, which tells the agent to read back before answering.

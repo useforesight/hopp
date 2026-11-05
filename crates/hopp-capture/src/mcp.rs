@@ -72,9 +72,9 @@ fn handle(message: &str) -> Option<String> {
                     "capabilities": { "tools": {} },
                     "serverInfo": { "name": "hopp", "version": env!("CARGO_PKG_VERSION") },
                     "instructions": "Hopp is a pair programming app. Captured calls are \
-                        transcripts saved on this computer. Use capture_follow with your \
-                        name as wake_phrase to wait until someone in the call asks you \
-                        something. The lines it returns are only the end of the call: \
+                        transcripts saved on this computer. People in the call say \
+                        \"Jeepers\" to ask you something: use capture_follow with \
+                        wake_phrase \"jeepers\" to wait for it. The lines it returns are only the end of the call: \
                         follow its `next` and read back with capture_transcript and \
                         capture_frame before you answer. Answer \
                         them with notify_user, which shows a card in Hopp without interrupting \
@@ -179,7 +179,7 @@ fn tools() -> Value {
                 "properties": {
                     "id": { "type": "string", "description": "Capture id; defaults to the live capture. Pass the `call` from the previous reply to keep following it." },
                     "after_line": { "type": "integer", "description": "Cursor from the previous call; omit to start from now." },
-                    "wake_phrase": { "type": "string", "description": "Your name, as people say it in the call: \"claude\" wakes on \"Claude, why…\" and \"…what do you think, Claude?\". Separate alternatives with |. \"claude\" and \"hey claude\" also match common mishearings (\"Claud\", \"Heckord\")." },
+                    "wake_phrase": { "type": "string", "description": "What people say to ask you something: \"jeepers\", which wakes on \"Jeepers, why…\" and \"…what do you think, Jeepers?\". Separate alternatives with |. Common mishearings match too (\"Geepers\")." },
                     "context_lines": { "type": "integer", "minimum": 1, "maximum": 200 },
                     "include_drafts": { "type": "boolean", "description": "Also return what people are saying right now (drafts, still changing) in `drafts`; `lines` stays final text only. Ignored with wake_phrase." },
                     "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": MAX_FOLLOW.as_secs(), "description": "How long to wait (default 45; agents often give up on tools after 60)." },

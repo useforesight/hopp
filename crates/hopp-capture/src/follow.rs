@@ -1,8 +1,9 @@
 //! Following a capture as it is written: new lines as they arrive, or (for agents) held
 //! back until someone asks for the agent by name, or a script decides it's time.
 //!
-//! The name can come anywhere in what someone says: "Claude, why is that failing?" or
-//! "…what do you reckon, Claude?". Hearing it starts a request, and the follower wakes
+//! The wake phrase, "jeepers" unless the agent asks for another ([`DEFAULT_WAKE`]), can
+//! come anywhere in what someone says: "Jeepers, why is that failing?" or "…what do you
+//! reckon, Jeepers?". Hearing it starts a request, and the follower wakes
 //! once that person has finished: they go quiet, someone else starts talking, or
 //! [`TURN_LIMIT`] passes. The agent gets their words as the request ([`Follower::asked`])
 //! with the lines that led up to it, and is told how much of the call it hasn't seen
@@ -23,6 +24,9 @@ use crate::store::{self, Kind, Line, Store};
 pub const POLL: Duration = Duration::from_millis(300);
 /// The longest a `--wake-if` script may take to decide.
 const WAKE_SCRIPT_LIMIT: Duration = Duration::from_secs(10);
+/// What people say to ask the agent something. Unlike "Claude", nobody says it by
+/// chance on a call about software, and speech recognition hears it reliably.
+pub const DEFAULT_WAKE: &str = "jeepers";
 /// After the wake phrase, how long the person must be quiet for their turn to be over.
 /// Their drafts count as talking, so a pause to think doesn't cut them off while they
 /// still have a line being transcribed.
@@ -425,6 +429,9 @@ const SOUND_ALIKES: &[(&str, &[&str])] = &[
         ],
     ),
     ("claude", &["claud", "clawed", "clod"]),
+    // Guesses until a real call shows how it's misheard. Not "keepers" or "cheapest",
+    // which are words people say.
+    ("jeepers", &["jeeper", "jepers", "geepers", "jeepas", "cheepers"]),
 ];
 
 /// The phrases that wake for `phrase`: each of its `|`-separated alternatives, and the
@@ -514,6 +521,20 @@ mod tests {
         }
         assert!(!contains_phrase("deploy it to the cloud", "claude"));
         assert!(contains_phrase("Claud, are you there", "claude"));
+    }
+
+    #[test]
+    fn jeepers_wakes_wherever_it_comes() {
+        for heard in [
+            "Jeepers, why does the port close?",
+            "What do you reckon, jeepers?",
+            "Geepers can you check the log",
+        ] {
+            assert!(contains_phrase(heard, DEFAULT_WAKE), "{heard}");
+        }
+        for not in ["the goalkeepers", "keepers of the lock", "cheapest option"] {
+            assert!(!contains_phrase(not, DEFAULT_WAKE), "{not}");
+        }
     }
 
     #[test]
