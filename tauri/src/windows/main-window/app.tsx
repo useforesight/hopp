@@ -60,6 +60,8 @@ function App() {
   const { error: userError } = useQuery("get", "/api/auth/user", undefined, {
     enabled: !!authToken,
     refetchInterval: 30_000,
+    // The window is usually hidden, and a status set elsewhere has to reach the call handling
+    refetchIntervalInBackground: true,
     retry: true,
     queryHash: `user-${authToken}`,
     select: (data) => {
