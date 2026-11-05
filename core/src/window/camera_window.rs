@@ -142,6 +142,7 @@ const PIN_CORNER_HEIGHT: f64 = CAMERA_WINDOW_MIN_HEIGHT;
 const PIN_CORNER_MARGIN: f64 = 40.0;
 
 const ICON_EYE_ON_SVG: &[u8] = include_bytes!("../../resources/icons/EyeOn.svg");
+const ICON_MICROPHONE_SVG: &[u8] = include_bytes!("../../resources/icons/microphone.svg");
 const ICON_EYE_OFF_SVG: &[u8] = include_bytes!("../../resources/icons/EyeOff.svg");
 
 const AVATAR_SIZE: f32 = 130.0;
@@ -1038,10 +1039,8 @@ fn truncate_name(name: &str) -> String {
 
 /// Create a name label badge.
 ///
-/// Variants
-/// - **Speaking**: Lime800→Lime950 gradient
-/// - **Default**: Slate950→Slate900 gradient
-/// - **Muted**: Slate800→Slate700 gradient + `ICON_MICROPHONE_OFF` (Slate400)
+/// The label never changes with who is speaking; only the slot before the name does
+/// (see [`voice_slot`]), so the name never moves. As on Linux.
 fn name_label<'a>(
     name: &str,
     is_small_window: bool,
@@ -1056,47 +1055,23 @@ fn name_label<'a>(
     };
 
     let display_name = truncate_name(name);
-
-    // Icon uses the same point size as the name so the row height matches the unmuted
-    // single-line label (a larger icon glyph would grow the pill vertically).
     let name_el = text(display_name)
         .size(font_size)
         .color(Color::WHITE)
         .font(GEIST_MEDIUM)
         .align_y(Alignment::Center);
-
-    let label_row: iced::Element<'a, CameraMessage, Theme, iced::Renderer> = if is_muted {
-        let mic = text(ICON_MICROPHONE_OFF.to_string())
-            .font(ICONS_FONT)
-            .size(font_size)
-            .color(ColorToken::Slate400.to_color())
-            .align_y(Alignment::Center);
-        row![mic, Space::new().width(Length::Fixed(6.0)), name_el]
-            .spacing(0.0)
-            .align_y(Alignment::Center)
-            .into()
-    } else {
-        row![name_el].spacing(0.0).align_y(Alignment::Center).into()
-    };
+    let slot = voice_slot(name, font_size * 0.85, is_speaking, is_muted);
+    let label_row = row![slot, Space::new().width(Length::Fixed(6.0)), name_el]
+        .spacing(0.0)
+        .align_y(Alignment::Center);
 
     container(label_row)
         .padding(padding)
         .style(move |_theme: &Theme| {
             // Linear gradient from top to bottom (180deg = PI radians)
-            let grad = if is_muted {
-                gradient::Linear::new(Radians(std::f32::consts::PI))
-                    .add_stop(0.0, ColorToken::Slate800.to_color())
-                    .add_stop(1.0, ColorToken::Slate700.to_color())
-            } else if is_speaking {
-                gradient::Linear::new(Radians(std::f32::consts::PI))
-                    .add_stop(0.0, ColorToken::Lime800.to_color())
-                    .add_stop(1.0, ColorToken::Lime950.to_color())
-            } else {
-                gradient::Linear::new(Radians(std::f32::consts::PI))
-                    .add_stop(0.0, ColorToken::Slate950.to_color())
-                    .add_stop(1.0, ColorToken::Slate900.to_color())
-            };
-
+            let grad = gradient::Linear::new(Radians(std::f32::consts::PI))
+                .add_stop(0.0, ColorToken::Slate950.to_color())
+                .add_stop(1.0, ColorToken::Slate900.to_color());
             container::Style {
                 background: Some(Background::Gradient(grad.into())),
                 border: Border {
@@ -1109,6 +1084,76 @@ fn name_label<'a>(
             }
         })
         .into()
+}
+
+/// Before someone's name: a dim mic, green bars that move while they speak, or a red
+/// crossed-out mic when they're muted. A square of fixed `size`, so nothing beside it
+/// moves when it changes.
+fn voice_slot<'a>(
+    name: &str,
+    size: f32,
+    is_speaking: bool,
+    is_muted: bool,
+) -> iced::Element<'a, CameraMessage, Theme, iced::Renderer> {
+    let content: iced::Element<'a, CameraMessage, Theme, iced::Renderer> = if is_muted {
+        text(ICON_MICROPHONE_OFF.to_string())
+            .font(ICONS_FONT)
+            .size(size)
+            .color(ColorToken::Red400.to_color())
+            .align_y(Alignment::Center)
+            .into()
+    } else if is_speaking {
+        let seed = name.bytes().fold(0u32, |sum, byte| {
+            sum.wrapping_mul(31).wrapping_add(byte as u32)
+        }) % 97;
+        let seconds = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0.0, |since| (since.as_millis() % 1_000_000) as f32 / 1000.0);
+        let bar = (size / 5.0).max(2.0);
+        let mut bars = row![].spacing(bar).align_y(Alignment::Center);
+        for height in bar_heights(seed as f32, seconds) {
+            bars = bars.push(
+                container(Space::new())
+                    .width(Length::Fixed(bar))
+                    .height(Length::Fixed(height * size))
+                    .style(move |_theme: &Theme| container::Style {
+                        background: Some(Background::Color(ColorToken::Green400.to_color())),
+                        border: Border {
+                            radius: (bar / 2.0).into(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }),
+            );
+        }
+        bars.into()
+    } else {
+        let dim = ColorToken::Slate400.to_color();
+        svg(svg::Handle::from_memory(ICON_MICROPHONE_SVG))
+            .width(Length::Fixed(size))
+            .height(Length::Fixed(size))
+            .style(move |_theme: &Theme, _status| svg::Style { color: Some(dim) })
+            .into()
+    };
+    container(content)
+        .width(Length::Fixed(size))
+        .height(Length::Fixed(size))
+        .center_x(Length::Fixed(size))
+        .center_y(Length::Fixed(size))
+        .into()
+}
+
+/// The three bars' heights as fractions of the slot, 0.2 to 1. LiveKit says who is
+/// speaking but not how loudly, so they move steadily while someone speaks. Linux's
+/// `faces::bar_heights` is the same, so both apps look alike.
+fn bar_heights(seed: f32, seconds: f32) -> [f32; 3] {
+    let lift = 0.35 + 0.65 * ((seconds * 7.3 + seed).sin() * (seconds * 2.1 + seed).sin()).abs();
+    let mut heights = [0.0; 3];
+    for (index, scale) in [0.7, 1.0, 0.55].into_iter().enumerate() {
+        let wobble = 1.0 + 0.3 * (seconds * 11.0 + index as f32 * 2.0).sin();
+        heights[index] = 0.2 + (lift * scale * wobble).clamp(0.0, 1.0) * 0.8;
+    }
+    heights
 }
 
 fn get_initials(name: &str) -> Vec<String> {
@@ -1466,6 +1511,27 @@ fn participant_card<'a>(
         vec![bg_element];
     if !hide_name {
         tile_layers.push(overlay.into());
+    } else if is_speaking || is_muted {
+        // Too small for a name: the slot alone, while it has something to say.
+        let chip = container(voice_slot(&name_owned, 10.0, is_speaking, is_muted))
+            .padding(4.0)
+            .style(|_theme: &Theme| container::Style {
+                background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.6))),
+                border: Border {
+                    radius: 100.0.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+        tile_layers.push(
+            container(chip)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_x(Alignment::Start)
+                .align_y(Alignment::End)
+                .padding(4.0)
+                .into(),
+        );
     }
     if let Some(eye_btn) = eye_button_overlay {
         tile_layers.push(eye_btn);
@@ -1500,20 +1566,13 @@ fn participant_card<'a>(
     let border_frame = container(Space::new())
         .width(Length::Fill)
         .height(Length::Fill)
-        .style(move |_theme: &Theme| {
-            let border_color = if hide_name && is_speaking {
-                ColorToken::Green400.to_color()
-            } else {
-                Color::from_rgba(0.0, 0.0, 0.0, 0.45)
-            };
-            container::Style {
-                border: Border {
-                    color: border_color,
-                    width: 1.0,
-                    radius: TILE_RADIUS.into(),
-                },
-                ..Default::default()
-            }
+        .style(move |_theme: &Theme| container::Style {
+            border: Border {
+                color: Color::from_rgba(0.0, 0.0, 0.0, 0.45),
+                width: 1.0,
+                radius: TILE_RADIUS.into(),
+            },
+            ..Default::default()
         });
 
     // Stack: clipped video below, border on top.
@@ -1783,6 +1842,15 @@ fn create_participant_grid<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_speaking_bars_stay_in_their_slot() {
+        for step in 0..200 {
+            for height in bar_heights(13.0, step as f32 * 0.037) {
+                assert!((0.2..=1.0).contains(&height), "{height}");
+            }
+        }
+    }
 
     fn layout(width: f32, height: f32) -> (ControlsPlacement, CallControlsDensity) {
         controls_layout(IcedSize::new(width, height))

@@ -2853,6 +2853,9 @@ async fn handle_room_events(ctx: RoomEventContext) {
                         info.set_is_speaking(true);
                     }
                 }
+                // The call panel shows sound bars beside whoever is speaking.
+                drop(participants_guard);
+                snapshot_sender.send_participants_snapshot();
             }
             RoomEvent::TrackMuted {
                 participant,

@@ -224,6 +224,8 @@ export interface CoreParticipantState {
   is_screensharing: boolean;
   /** Capturing (transcribing) the call, as Hopp for Linux does. */
   capturing?: boolean;
+  /** LiveKit hears them speaking. */
+  is_speaking?: boolean;
 }
 
 export type ScreenShareResolution = "P1080" | "P1440" | "P4K";

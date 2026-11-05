@@ -80,6 +80,7 @@ pub mod engine {
         pub identity: String,
         pub name: String,
         pub capturing: bool,
+        pub muted: bool,
     }
     #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
     pub struct CaptureStatus {

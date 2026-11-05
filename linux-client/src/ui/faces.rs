@@ -136,9 +136,11 @@ pub(super) struct Face {
     pub name: String,
     pub picture: Option<Picture>,
     pub badges: Vec<(IconName, bool)>,
-    /// The call hears them speaking: their name shows, in green.
+    /// The call hears them speaking: green bars move beside their name.
     pub speaking: bool,
-    /// Your own microphone level while you're unmuted, 0–1, for the ring round your tile.
+    /// Their microphone is muted: a red mic beside their name.
+    pub muted: bool,
+    /// Your own microphone level while you're unmuted, 0–1, which the bars follow.
     pub level: Option<f32>,
     /// Your microphone gives no sound and reopening it didn't help.
     pub silent: bool,
@@ -171,6 +173,7 @@ pub(super) fn faces_for(session: &Session) -> Vec<Face> {
                 picture: session.camera_for(&participant.identity).cloned(),
                 name: session.name_for(&participant.identity),
                 speaking: session.speaking.is_speaking(&key, now),
+                muted: participant.muted,
                 key,
                 badges,
                 level: None,
@@ -182,9 +185,8 @@ pub(super) fn faces_for(session: &Session) -> Vec<Face> {
     others.sort_by_key(|(sharing, _)| !*sharing);
     let mut badges = Vec::new();
     let silent = session.microphone && session.microphone_silent.is_some();
-    if !session.microphone {
-        badges.push((IconName::MicOff, true));
-    } else if silent {
+    // Muted shows beside your name, as everyone's does.
+    if silent {
         badges.push((IconName::TriangleAlert, true));
     }
     if session.sharing {
@@ -195,7 +197,8 @@ pub(super) fn faces_for(session: &Session) -> Vec<Face> {
     }
     let you = Face {
         key: super::speaking::YOU.into(),
-        speaking: session.speaking.is_speaking(super::speaking::YOU, now),
+        speaking: session.microphone && session.speaking.is_speaking(super::speaking::YOU, now),
+        muted: !session.microphone,
         level: session.microphone.then_some(session.microphone_level),
         silent,
         name: session.display_name(),
@@ -361,6 +364,7 @@ pub(super) fn face_tile(
         picture,
         badges,
         speaking,
+        muted,
         level,
         silent,
     } = face;
@@ -409,47 +413,45 @@ pub(super) fn face_tile(
             .inset_0(),
         );
     }
-    // Your microphone level, as the Mac app draws it: a green ring that thickens and
-    // brightens as you speak. Bubbles have no name label, so a speaker gets a thin ring.
-    let ring = match level {
-        Some(level) => Some(mic_ring(level)),
-        None if speaking && round => Some((2., 0.9)),
-        None => None,
-    };
-    if let Some((width, opacity)) = ring {
+    let voice = voice(&key, muted, speaking, level, cx);
+    if round {
+        // Bubbles have no room for a name: the slot alone, while it has news.
+        if speaking || muted {
+            tile = tile.child(
+                div()
+                    .absolute()
+                    .bottom(px(4.))
+                    .left(px(side / 2. - 9.))
+                    .size(px(18.))
+                    .rounded_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(theme.background.opacity(0.8))
+                    .child(voice),
+            );
+        }
+    } else {
+        // The name is always there and never changes colour; only the slot before it
+        // does, so it never moves.
         tile = tile.child(
             div()
                 .absolute()
-                .inset_0()
-                .rounded(px(radius))
-                .border(px(width))
-                .border_color(theme.success.opacity(opacity)),
-        );
-    }
-    if !round {
-        // Hidden until hovered, but always shown, in green, while they're speaking.
-        let label = div()
-            .absolute()
-            .left(px(5.))
-            .bottom(px(5.))
-            .max_w(px(side - 10.))
-            .px(px(5.))
-            .py(px(1.))
-            .rounded(px(4.))
-            .bg(theme.background.opacity(0.78))
-            .text_size(px(10.))
-            .text_ellipsis()
-            .child(name);
-        tile = tile.child(if speaking {
-            label
-                .text_color(theme.success)
-                .font_weight(FontWeight::SEMIBOLD)
-        } else {
-            label
+                .left(px(5.))
+                .bottom(px(5.))
+                .max_w(px(side - 10.))
+                .h(px(16.))
+                .px(px(5.))
+                .rounded(px(4.))
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .bg(theme.background.opacity(0.8))
+                .text_size(px(10.))
                 .text_color(theme.bright)
-                .invisible()
-                .group_hover("tile", |style| style.visible())
-        });
+                .child(voice)
+                .child(div().min_w_0().text_ellipsis().child(name)),
+        );
         if silent {
             tile = tile.child(silent_notice(side, cx));
         }
@@ -480,10 +482,66 @@ pub(super) fn face_tile(
     tile.child(corner)
 }
 
-/// The ring's width in pixels and its opacity for a 0–1 level.
-fn mic_ring(level: f32) -> (f32, f32) {
-    let level = level.clamp(0., 1.);
-    (1. + level * 3.5, 0.4 + level * 0.4)
+/// Before someone's name: a grey mic, green bars that move while they speak, or a red
+/// mic when they're muted. A slot of fixed size, so nothing beside it moves.
+fn voice(
+    key: &str,
+    muted: bool,
+    speaking: bool,
+    level: Option<f32>,
+    cx: &gpui_kit::App,
+) -> gpui_kit::Div {
+    let theme = cx.omarchy();
+    let slot = div()
+        .size(px(10.))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_center();
+    if muted {
+        return slot.child(
+            icon(IconName::MicOff)
+                .size(px(10.))
+                .text_color(theme.danger),
+        );
+    }
+    if !speaking {
+        return slot.child(
+            icon(IconName::Mic)
+                .size(px(10.))
+                .text_color(theme.secondary.opacity(0.7)),
+        );
+    }
+    let seed = key
+        .bytes()
+        .fold(0u32, |sum, byte| sum.wrapping_mul(31) + byte as u32)
+        % 97;
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0., |since| (since.as_millis() % 1_000_000) as f32 / 1000.);
+    slot.justify_between()
+        .children(bar_heights(level, seed as f32, seconds).map(|height| {
+            div()
+                .w(px(2.))
+                .h(px(height))
+                .rounded(px(1.))
+                .bg(theme.success)
+        }))
+}
+
+/// The three bars' heights in pixels, 2 to 10: your own follow your microphone level;
+/// for others, who send no level, they move steadily while LiveKit hears them.
+fn bar_heights(level: Option<f32>, seed: f32, seconds: f32) -> [f32; 3] {
+    let lift = match level {
+        Some(level) => level.clamp(0., 1.),
+        None => 0.35 + 0.65 * ((seconds * 7.3 + seed).sin() * (seconds * 2.1 + seed).sin()).abs(),
+    };
+    let mut heights = [0.; 3];
+    for (index, scale) in [0.7, 1., 0.55].into_iter().enumerate() {
+        let wobble = 1. + 0.3 * (seconds * 11. + index as f32 * 2.).sin();
+        heights[index] = 2. + (lift * scale * wobble).clamp(0., 1.) * 8.;
+    }
+    heights
 }
 
 /// Over your tile when your microphone gives no sound: what's wrong and a way to pick
@@ -603,6 +661,10 @@ impl Render for FacesView {
         }
 
         let faces = faces_for(session);
+        // The bars move while anyone speaks.
+        if faces.iter().any(|face| face.speaking) {
+            window.request_animation_frame();
+        }
         let round = self.layout == FaceLayout::Bubbles;
         let mut tiles = div().flex().gap(px(GAP));
         tiles = if self.layout == FaceLayout::Row {
@@ -769,10 +831,19 @@ mod tests {
     }
 
     #[test]
-    fn the_mic_ring_grows_and_brightens_with_your_level() {
-        assert_eq!(mic_ring(0.), (1., 0.4));
-        assert_eq!(mic_ring(1.), (4.5, 0.8));
-        assert_eq!(mic_ring(3.), mic_ring(1.), "clamped");
+    fn the_bars_stay_in_their_slot_and_follow_your_level() {
+        for step in 0..200 {
+            let seconds = step as f32 * 0.037;
+            for level in [None, Some(0.), Some(0.5), Some(3.)] {
+                for height in bar_heights(level, 13., seconds) {
+                    assert!((2. ..=10.).contains(&height), "{height}");
+                }
+            }
+        }
+        assert_eq!(bar_heights(Some(0.), 0., 1.), [2.; 3], "silent: flat");
+        let quiet: f32 = bar_heights(Some(0.2), 0., 1.).iter().sum();
+        let loud: f32 = bar_heights(Some(0.9), 0., 1.).iter().sum();
+        assert!(loud > quiet);
     }
 
     #[test]

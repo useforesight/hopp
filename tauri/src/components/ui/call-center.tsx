@@ -1,6 +1,7 @@
 import { showCallNotice } from "@/lib/call-alert";
 import {
   LuAudioLines,
+  LuMic,
   LuMicOff,
   LuPhoneOff,
   LuVideo,
@@ -340,6 +341,7 @@ function useCallTiles() {
           name: `${user.first_name} ${user.last_name}`,
           isLocal: true,
           isMicrophoneEnabled: hasAudioEnabled,
+          isSpeaking: hasAudioEnabled && !!coreParticipants.find((p) => p.identity === "local")?.is_speaking,
           hasCamera: hasCameraEnabled,
           isScreensharing: isSharing,
           isCapturing: capturing,
@@ -361,6 +363,7 @@ function useCallTiles() {
           name: teammate ? `${teammate.first_name} ${teammate.last_name}` : p.name || "Unknown user",
           isLocal: false,
           isMicrophoneEnabled: !p.muted,
+          isSpeaking: !p.muted && !!p.is_speaking,
           hasCamera: p.has_camera,
           isScreensharing: p.is_screensharing,
           isCapturing: !!p.capturing,
@@ -440,19 +443,28 @@ function CallHeader({ onCopyRoomLink }: { onCopyRoomLink: () => void }) {
   );
 }
 
-// Grows with the local mic level. Raw RMS for speech is ~0.001–0.03, so scale until peak speech fills it.
-function MicLevelRing() {
-  const micLevel = useStore((state) => state.callTokens?.micLevel ?? 0);
-  const level = Math.min(1, Math.max(0, micLevel * 40));
-
+/**
+ * Before someone's name, as in the call window and on Linux: a dim mic, green bars that
+ * move while they speak, or a red crossed-out mic when they're muted. A slot of fixed
+ * size, so the name never moves.
+ */
+function VoiceSlot({ muted, speaking }: { muted: boolean; speaking: boolean }) {
   return (
-    <div
-      aria-hidden
-      className="absolute inset-0 rounded-[17px] transition-[box-shadow] duration-100 ease-out"
-      style={{
-        boxShadow: `0 0 0 ${1 + level * 3.5}px color-mix(in srgb, var(--success) ${40 + level * 40}%, transparent)`,
-      }}
-    />
+    <span aria-hidden className="inline-flex size-3 shrink-0 items-center justify-center">
+      {muted ?
+        <LuMicOff className="size-3 text-destructive" />
+      : speaking ?
+        <span className="flex size-3 items-center justify-between">
+          {[0.9, 0.7, 1.1].map((duration, index) => (
+            <span
+              key={index}
+              className="block w-[2px] rounded-full bg-success"
+              style={{ animation: `hopp-voice ${duration}s ease-in-out ${index * -0.25}s infinite` }}
+            />
+          ))}
+        </span>
+      : <LuMic className="size-3 text-faint-foreground" />}
+    </span>
   );
 }
 
@@ -527,7 +539,6 @@ function CallParticipants() {
             )}
           </div>
           <div className="relative">
-            {tile.isLocal && tile.isMicrophoneEnabled && <MicLevelRing />}
             {tile.user ?
               <HoppAvatar
                 src={tile.user.avatar_url || undefined}
@@ -539,18 +550,16 @@ function CallParticipants() {
                 ?
               </div>
             }
-            {!tile.isMicrophoneEnabled && (
-              <span
-                aria-label="Muted"
-                className="absolute -bottom-1 -right-1 flex size-[22px] items-center justify-center rounded-full bg-destructive text-destructive-foreground ring-[3px] ring-background"
-              >
-                <LuMicOff className="size-3" />
-              </span>
-            )}
           </div>
-          <span className="relative max-w-full truncate text-[13px] leading-[18px] font-medium text-foreground">
-            {tile.name}
-            {tile.isLocal && <span className="font-normal text-muted-foreground"> (You)</span>}
+          <span
+            aria-label={tile.isMicrophoneEnabled ? undefined : `${tile.name}, muted`}
+            className="relative flex max-w-full items-center gap-1.5 text-[13px] leading-[18px] font-medium text-foreground"
+          >
+            <VoiceSlot muted={!tile.isMicrophoneEnabled} speaking={tile.isSpeaking} />
+            <span className="truncate">
+              {tile.name}
+              {tile.isLocal && <span className="font-normal text-muted-foreground"> (You)</span>}
+            </span>
           </span>
         </div>
       ))}

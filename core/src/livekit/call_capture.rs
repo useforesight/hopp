@@ -691,6 +691,7 @@ mod tests {
             has_camera: false,
             is_screensharing: sharing,
             capturing: false,
+            is_speaking: false,
         }
     }
 

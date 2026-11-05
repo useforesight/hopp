@@ -207,8 +207,9 @@ fn main() {
                 .map(|(index, (identity, name))| Participant {
                     identity: (*identity).into(),
                     name: (*name).into(),
-                    // One person is capturing, to show the badge.
+                    // One person is capturing, to show the badge, and one is muted.
                     capturing: index == 0,
+                    muted: index == 1,
                 })
                 .collect(),
         ));

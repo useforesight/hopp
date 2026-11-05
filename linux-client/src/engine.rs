@@ -31,6 +31,8 @@ pub struct Participant {
     pub name: String,
     /// They are capturing the call.
     pub capturing: bool,
+    /// Their microphone is muted, or they have none in the call.
+    pub muted: bool,
 }
 
 /// How the capture of the current call is going, for the UI and the bar.

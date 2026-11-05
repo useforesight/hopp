@@ -910,6 +910,9 @@ fn participants(room: &Room) -> Vec<Participant> {
                 capturing: attributes
                     .get(CAPTURE_ATTRIBUTE)
                     .is_some_and(|value| value == "1"),
+                muted: !p.track_publications().values().any(|publication| {
+                    publication.source() == TrackSource::Microphone && !publication.is_muted()
+                }),
             }
         })
         .collect();
@@ -1107,6 +1110,9 @@ async fn room_events(
                 } else {
                     publication.set_subscribed(true);
                 }
+                if publication.source() == TrackSource::Microphone {
+                    let _ = events.send(Event::Participants(participants(&room)));
+                }
             }
             RoomEvent::TrackSubscribed {
                 track,
@@ -1187,6 +1193,10 @@ async fn room_events(
                 publication,
                 participant,
             } if !is_video => {
+                // Who's muted shows on their tile.
+                if publication.source() == TrackSource::Microphone {
+                    let _ = events.send(Event::Participants(participants(&room)));
+                }
                 if publication.source() == TrackSource::Camera {
                     if let Some(task) = tasks.0.remove(&publication.sid().to_string()) {
                         task.abort();
@@ -1200,6 +1210,9 @@ async fn room_events(
                 publication,
                 participant,
             } if !is_video => {
+                if publication.source() == TrackSource::Microphone {
+                    let _ = events.send(Event::Participants(participants(&room)));
+                }
                 if canonical_identity(participant.identity().as_str())
                     == canonical_identity(room.local_participant().identity().as_str())
                 {
@@ -1235,6 +1248,9 @@ async fn room_events(
                 publication,
                 participant,
             } => {
+                if !is_video && publication.source() == TrackSource::Microphone {
+                    let _ = events.send(Event::Participants(participants(&room)));
+                }
                 let sid = publication.sid().to_string();
                 if let Some(task) = tasks.0.remove(&sid) {
                     task.abort();

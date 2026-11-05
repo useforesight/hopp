@@ -60,6 +60,7 @@ impl SnapshotSender {
                         has_camera: info.camera_active(),
                         is_screensharing: info.is_screensharing(),
                         capturing: info.capturing(),
+                        is_speaking: info.is_speaking(),
                     },
                 );
                 continue;
@@ -81,6 +82,7 @@ impl SnapshotSender {
                     has_camera: false,
                     is_screensharing: false,
                     capturing: false,
+                    is_speaking: false,
                 }
             });
 
@@ -88,6 +90,7 @@ impl SnapshotSender {
                 entry.muted = info.muted();
                 // Set on the audio connection, like mute.
                 entry.capturing = info.capturing();
+                entry.is_speaking = info.is_speaking();
             }
 
             entry.has_camera = entry.has_camera || info.camera_active();

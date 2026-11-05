@@ -206,6 +206,9 @@ pub struct CoreParticipantState {
     /// Capturing (transcribing) the call, as Hopp for Linux does.
     #[serde(default)]
     pub capturing: bool,
+    /// LiveKit hears them speaking: sound bars move beside their name.
+    #[serde(default)]
+    pub is_speaking: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

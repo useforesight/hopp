@@ -1090,6 +1090,10 @@ impl Render for ViewerView {
             Some(bands) => {
                 let panel = self.dock_panel(bands, compact, cx);
                 let faces = faces_for(self.session.read(cx));
+                // The bars beside a speaker's name move while they talk.
+                if faces.iter().any(|face| face.speaking) {
+                    window.request_animation_frame();
+                }
                 let (width, height) = view_bounds
                     .map(|view| (f32::from(view.size.width), f32::from(view.size.height)))
                     .unwrap_or_default();
