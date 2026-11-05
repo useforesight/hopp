@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { publishLauncherDirectory } from "@/lib/launcher";
+import { useAutoAwayStatus } from "@/lib/user-status";
 import useStore from "../../store/store";
 import { tauriUtils } from "@/windows/window-utils.ts";
 import { Sidebar } from "@/components/sidebar/Sidebar";
@@ -50,6 +51,7 @@ function App() {
   } = useStore();
 
   useDisableNativeContextMenu();
+  useAutoAwayStatus();
 
   const { useQuery } = useAPI();
 
@@ -58,6 +60,8 @@ function App() {
   const { error: userError } = useQuery("get", "/api/auth/user", undefined, {
     enabled: !!authToken,
     refetchInterval: 30_000,
+    // The window is usually hidden, and a status set elsewhere has to reach the call handling
+    refetchIntervalInBackground: true,
     retry: true,
     queryHash: `user-${authToken}`,
     select: (data) => {

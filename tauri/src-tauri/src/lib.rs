@@ -5,6 +5,7 @@ pub mod application_catalog;
 pub mod call_alert;
 pub mod captures;
 pub mod cards;
+pub mod idle;
 pub mod permissions;
 #[cfg(target_os = "macos")]
 pub mod sleep_prevention;

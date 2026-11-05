@@ -41,6 +41,13 @@ components:
         is_active:
           type: boolean
           description: Whether the user is currently active (connected via websocket)
+        status:
+          type: string
+          enum: [available, away, dnd]
+          description: What teammates see before ringing. Servers older than this field leave it out.
+        status_auto:
+          type: boolean
+          description: Whether the app set the status because the user stepped away
         team_id:
           type: integer
           format: uint
@@ -680,6 +687,61 @@ paths:
                 $ref: "#/components/schemas/PrivateUser"
         "400":
           description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/status:
+    put:
+      summary: Set what teammates see before ringing you
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - status
+              properties:
+                status:
+                  type: string
+                  enum: [available, away, dnd]
+                auto:
+                  type: boolean
+                  description: Set because the user stepped away or came back. Never replaces a status they chose.
+      responses:
+        "200":
+          description: The status now in place
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - status
+                  - status_auto
+                properties:
+                  status:
+                    type: string
+                    enum: [available, away, dnd]
+                  status_auto:
+                    type: boolean
+        "400":
+          description: Unknown status
           content:
             application/json:
               schema:

@@ -1105,6 +1105,50 @@ function SettingsWindow() {
                 )}
               </SettingsGroup>
 
+              <SettingsGroup title="Status">
+                <SwitchRow
+                  title="Set me to Away automatically"
+                  description="When you lock your screen or step away, teammates see you're Away, and you're Available again when you're back. Away still rings."
+                  checked={settings.auto_away_enabled}
+                  onCheckedChange={(v) => {
+                    typedInvoke("set_auto_away_enabled", { enabled: v }).then(() => refetchSettings());
+                  }}
+                />
+                {settings.auto_away_enabled && (
+                  <div className="flex min-h-[56px] items-center justify-between gap-6 px-3.5 py-2.5">
+                    <div className="flex min-w-0 flex-col">
+                      <label htmlFor="auto-away-minutes" className={settingTitleClass}>
+                        Away after
+                      </label>
+                      <span id="auto-away-minutes-description" className={settingDescriptionClass}>
+                        How long your computer sits untouched first.
+                      </span>
+                    </div>
+                    <Select
+                      value={String(settings.auto_away_minutes)}
+                      onValueChange={(value) => {
+                        typedInvoke("set_auto_away_minutes", { minutes: Number(value) }).then(() => refetchSettings());
+                      }}
+                    >
+                      <SelectTrigger
+                        id="auto-away-minutes"
+                        aria-describedby="auto-away-minutes-description"
+                        className="w-[140px] shrink-0"
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {[5, 10, 15, 30].map((minutes) => (
+                          <SelectItem key={minutes} value={String(minutes)}>
+                            {minutes} minutes
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+              </SettingsGroup>
+
               <SettingsGroup title="Server">
                 <div className="flex flex-col gap-2.5 px-3.5 py-3">
                   <label htmlFor="custom-backend-url" className="flex flex-col">

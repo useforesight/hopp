@@ -3,6 +3,7 @@ import clsx from "clsx";
 import { Button } from "./button";
 import { HiPhone, HiPhoneArrowDownLeft, HiPhoneArrowUpRight } from "react-icons/hi2";
 import { socketService } from "@/services/socket";
+import { USER_STATUS_LABELS } from "@/lib/user-status";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import { sleep } from "@/lib/utils";
@@ -267,6 +268,10 @@ export const ParticipantRow = (props: {
             toast.error(`${props.user.first_name} is already in a call`, {
               duration: 2500,
             });
+          } else if (payload.reject_reason === "do-not-disturb") {
+            toast.error(`${props.user.first_name} has Do not disturb on, but they'll see that you tried`, {
+              duration: 3500,
+            });
           } else if (payload.reject_reason === "trial-ended") {
             toast.error(`Trial has expired, contact us if you want to extend it`, {
               duration: 2500,
@@ -397,6 +402,10 @@ export const ParticipantRow = (props: {
           sounds.unavailable.play();
           if (data.payload.reject_reason === "in-call") {
             toast.error(`${props.user.first_name} is already in a call`, { duration: 2500 });
+          } else if (data.payload.reject_reason === "do-not-disturb") {
+            toast.error(`${props.user.first_name} has Do not disturb on, but they'll see that you tried`, {
+              duration: 3500,
+            });
           } else {
             toast.error(`${props.user.first_name} declined your invite`, { duration: 2500 });
           }
@@ -436,6 +445,8 @@ export const ParticipantRow = (props: {
   }, [isInviting, cancelInvite, props.user.first_name, props.user.id, setInviting]);
 
   const isOnline = props.user.is_active;
+  // What they've saved means nothing once they're offline
+  const peerStatus = isOnline ? props.user.status : undefined;
   const actionClass = "h-7 gap-1 rounded-lg px-2.5 text-xs font-semibold transition-all duration-150";
   // Stays quiet until its row is pointed at, then lights up as the thing that will happen
   const callActionClass = clsx(
@@ -469,7 +480,12 @@ export const ParticipantRow = (props: {
         src={props.user.avatar_url || undefined}
         firstName={props.user.first_name}
         lastName={props.user.last_name}
-        status={props.user.is_active ? "online" : "offline"}
+        status={
+          !isOnline ? "offline"
+          : peerStatus === "away" || peerStatus === "dnd" ?
+            peerStatus
+          : "online"
+        }
         callPeers={callPeers.map((p) => ({
           avatarUrl: p?.avatar_url || undefined,
           firstName: p?.first_name ?? "",
@@ -490,6 +506,8 @@ export const ParticipantRow = (props: {
           className={clsx(
             "truncate text-xs leading-4",
             userPresence ? "text-success"
+            : peerStatus === "away" ? "text-warning"
+            : peerStatus === "dnd" ? "text-destructive"
             : isOnline ? "text-muted-foreground"
             : "text-faint-foreground",
           )}
@@ -498,6 +516,8 @@ export const ParticipantRow = (props: {
             userPresence.roomName ?
               `In ${userPresence.roomName}`
             : "In a call"
+          : peerStatus === "away" || peerStatus === "dnd" ?
+            USER_STATUS_LABELS[peerStatus]
           : props.user.is_active ?
             "Online"
           : "Offline"}
@@ -581,7 +601,11 @@ export const ParticipantRow = (props: {
               </>
             : <>
                 <HiPhone className="size-3" />
-                Call
+                {peerStatus === "away" ?
+                  "Ring anyway"
+                : peerStatus === "dnd" ?
+                  "Let them know"
+                : "Call"}
                 {returnKeyHint}
               </>
             }

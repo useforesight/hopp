@@ -165,6 +165,53 @@ func TestManualSignIn_Success(t *testing.T) {
 	assert.NotEmpty(t, response["token"])
 }
 
+// TestUpdateStatus covers choosing a status, and automatic changes leaving a chosen one alone
+func TestUpdateStatus(t *testing.T) {
+	srv, cleanup := setupTestServerFast(t)
+	defer cleanup()
+
+	createTestUser(t, srv.DB, "status@gmail.com", "Test", "User", "password123", true)
+	token := getJWTToken(t, srv, "status@gmail.com")
+
+	put := func(status string, auto bool) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(map[string]interface{}{"status": status, "auto": auto})
+		req := httptest.NewRequest(http.MethodPut, "/api/auth/status", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		srv.Echo.ServeHTTP(rec, req)
+		return rec
+	}
+	expect := func(rec *httptest.ResponseRecorder, status string, auto bool) {
+		t.Helper()
+		require.Equal(t, http.StatusOK, rec.Code)
+		var response struct {
+			Status     string `json:"status"`
+			StatusAuto bool   `json:"status_auto"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &response))
+		assert.Equal(t, status, response.Status)
+		assert.Equal(t, auto, response.StatusAuto)
+	}
+
+	assert.Equal(t, http.StatusBadRequest, put("on-holiday", false).Code)
+
+	// Stepping away and coming back
+	expect(put(models.StatusAway, true), models.StatusAway, true)
+	expect(put(models.StatusAvailable, true), models.StatusAvailable, false)
+
+	// A status the user chose stays, whatever the app notices
+	expect(put(models.StatusDoNotDisturb, false), models.StatusDoNotDisturb, false)
+	expect(put(models.StatusAway, true), models.StatusDoNotDisturb, false)
+	expect(put(models.StatusAvailable, true), models.StatusDoNotDisturb, false)
+
+	// Choosing one over an automatic Away makes it the user's
+	expect(put(models.StatusAvailable, false), models.StatusAvailable, false)
+	expect(put(models.StatusAway, true), models.StatusAway, true)
+	expect(put(models.StatusAway, false), models.StatusAway, false)
+	expect(put(models.StatusAvailable, true), models.StatusAway, false)
+}
+
 // createTestTeam is a helper to create a team in the test database
 func createTestTeam(t *testing.T, db *gorm.DB, name string) *models.Team {
 	team := &models.Team{
