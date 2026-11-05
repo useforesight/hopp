@@ -457,8 +457,6 @@ struct ScreensharingState {
     stamp_held: bool,
     /// The call is captured, so holding a stamp down can hear you.
     capturing: bool,
-    /// You clicked a stamp with your microphone muted, so it can't hear you.
-    stamp_muted: bool,
     /// Last cursor position (percentage 0.0-1.0) inside participant area.
     last_draw_cursor: Option<(f64, f64)>,
     /// Whether the settings dropdown is open.
@@ -498,7 +496,6 @@ impl Default for ScreensharingState {
             note_press: false,
             stamp_held: false,
             capturing: false,
-            stamp_muted: false,
             last_draw_cursor: None,
             dropdown_open: false,
             draw_persist: true,
@@ -1106,12 +1103,6 @@ impl ScreensharingWindow {
     /// You've a stamp hearing you here.
     pub fn is_stamp_hearing(&self) -> bool {
         self.participants_manager.is_stamp_hearing()
-    }
-
-    /// You clicked a stamp with your microphone muted, so it can't hear you.
-    pub fn set_stamp_muted(&mut self, muted: bool) {
-        self.state.stamp_muted = muted;
-        self.window.request_redraw();
     }
 
     pub fn set_capturing(&mut self, capturing: bool) {
@@ -2253,15 +2244,13 @@ impl ScreensharingWindow {
             canvas_overlay,
             remote_control_disabled_label,
             if state.note.is_some() || state.active_tab == "stamp" {
-                drawing_helpers::StampHint {
+                drawing_helpers::stamp_hint_view(drawing_helpers::StampHint {
                     note: state.note.is_some(),
                     typing: participants.is_stamp_typing(),
                     hearing: participants.is_stamp_hearing(),
                     held: state.stamp_held,
                     capturing: state.capturing,
-                    muted: state.stamp_muted,
-                }
-                .view()
+                })
             } else if state.active_tab == "draw" {
                 state.drawing_hint.view(false)
             } else {

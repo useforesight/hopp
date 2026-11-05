@@ -131,6 +131,64 @@ pub enum StampInput {
     },
 }
 
+/// Holding a stamp down this long says its note; a shorter press is a click, which leaves it to
+/// type into. The same as the Linux client, so a stamp works the same whichever you're on.
+pub const STAMP_HOLD: Duration = Duration::from_millis(350);
+
+/// What a press of the stamp tool was, once you let go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StampPress {
+    /// Held down: what you said while holding it is its note.
+    Held,
+    /// A quick click: the note's typed.
+    Clicked,
+}
+
+impl StampPress {
+    /// A press of this long.
+    pub fn lasting(held_for: Duration) -> Self {
+        if held_for >= STAMP_HOLD {
+            Self::Held
+        } else {
+            Self::Clicked
+        }
+    }
+}
+
+/// How to use the stamp tool right now. It changes with what you do, so whatever shows it keeps
+/// it up as long as the tool's in your hand. The words are the Linux client's.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StampHint {
+    /// You're typing a note that follows the pointer, not stamped down yet.
+    pub note: bool,
+    /// You've a stamp taking words.
+    pub typing: bool,
+    /// It hears what you say.
+    pub hearing: bool,
+    /// You're holding it down.
+    pub held: bool,
+    /// The call is captured, so holding a stamp down can hear you.
+    pub capturing: bool,
+}
+
+impl StampHint {
+    pub fn text(self) -> &'static str {
+        if self.note {
+            "Click to stamp your note there  ·  Esc drops it"
+        } else if self.typing && self.hearing && self.held {
+            "Listening  ·  let go to stamp it"
+        } else if self.typing && self.hearing {
+            "Writing down what you said…"
+        } else if self.typing {
+            "Type your note  ·  Enter to finish  ·  Esc removes it"
+        } else if self.capturing {
+            "Hold on a spot and say your note, or click and type"
+        } else {
+            "Click a spot and type your note"
+        }
+    }
+}
+
 /// A pin someone dropped.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Stamp {
@@ -1071,6 +1129,85 @@ mod tests {
         assert!(apply(&mut stamps, heard(&almost, "bc"), now)[0].valid());
         let sent = apply(&mut stamps, StampInput::Finish, now);
         assert!(sent[0].valid(), "the space joining them still fits");
+    }
+
+    #[test]
+    fn a_press_held_long_enough_is_said_and_a_shorter_one_is_typed() {
+        let ms = Duration::from_millis;
+        assert_eq!(StampPress::lasting(ms(0)), StampPress::Clicked);
+        assert_eq!(StampPress::lasting(ms(349)), StampPress::Clicked);
+        assert_eq!(StampPress::lasting(ms(350)), StampPress::Held);
+        assert_eq!(StampPress::lasting(ms(5_000)), StampPress::Held);
+    }
+
+    /// What the hint says through a stamp's life, as the Linux client says it.
+    #[test]
+    fn the_hint_says_what_you_can_do_right_now() {
+        let hint = |note, typing, hearing, held, capturing| {
+            StampHint {
+                note,
+                typing,
+                hearing,
+                held,
+                capturing,
+            }
+            .text()
+        };
+        // Nothing on the go: it only offers your voice when the call is captured.
+        assert_eq!(
+            hint(false, false, false, false, true),
+            "Hold on a spot and say your note, or click and type"
+        );
+        assert_eq!(
+            hint(false, false, false, false, false),
+            "Click a spot and type your note"
+        );
+        // Held down and heard, then let go while it's written down.
+        assert_eq!(
+            hint(false, true, true, true, true),
+            "Listening  ·  let go to stamp it"
+        );
+        assert_eq!(
+            hint(false, true, true, false, true),
+            "Writing down what you said…"
+        );
+        // Clicked, or held with nothing to hear you.
+        let typing = "Type your note  ·  Enter to finish  ·  Esc removes it";
+        assert_eq!(hint(false, true, false, false, true), typing);
+        assert_eq!(hint(false, true, false, true, false), typing);
+        // A note in hand comes before all of it.
+        assert_eq!(
+            hint(true, true, true, true, true),
+            "Click to stamp your note there  ·  Esc drops it"
+        );
+    }
+
+    /// Held, then let go before the hold counted: it's for typing, and what it may have caught
+    /// already doesn't stay.
+    #[test]
+    fn a_click_leaves_the_stamp_to_type_into() {
+        let now = Instant::now();
+        let mut stamps = Stamps::default();
+        let id = place(&mut stamps, now);
+        apply(&mut stamps, StampInput::Listen, now);
+        apply(&mut stamps, heard("", "um"), now);
+        let sent = apply(&mut stamps, StampInput::StopListening, now);
+        assert_eq!(
+            sent,
+            [StampMessage::StampText {
+                id,
+                text: String::new(),
+                draft: String::new(),
+                done: false,
+            }]
+        );
+        assert!(stamps.is_typing() && !stamps.is_hearing());
+        apply(&mut stamps, StampInput::Typed("Typed".into()), now);
+        let sent = apply(&mut stamps, StampInput::Finish, now);
+        assert!(matches!(
+            &sent[..],
+            [StampMessage::StampText { text, done: true, .. }] if text == "Typed"
+        ));
     }
 
     #[test]

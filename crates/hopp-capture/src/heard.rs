@@ -1,8 +1,8 @@
 //! What you say into a stamp, from the capture's transcript as it's written.
 //!
-//! Hold a stamp down and your lines that start before you let go are the note. Click one and your
-//! lines from then on are, until you pause. It's read on a thread of its own, so a window never
-//! waits on the database.
+//! Hold a stamp down and your lines that start before you let go are the note, as on Linux. A
+//! quick click is for typing, so its listener is dropped. It's read on a thread of its own, so a
+//! window never waits on the database.
 
 use std::{
     collections::BTreeMap,
@@ -27,13 +27,6 @@ const SETTLED: Duration = Duration::from_millis(600);
 const NOTHING_SAID: Duration = Duration::from_secs(4);
 /// However far behind transcription is, finish with what's there by this long after.
 const GIVE_UP: Duration = Duration::from_secs(12);
-/// A stamp you clicked finishes once your words have been final this long: you've stopped.
-const PAUSE: Duration = Duration::from_secs(3);
-/// A stamp you clicked and said nothing to is left to type into after this long.
-const NOTHING_SAID_AFTER_CLICK: Duration = Duration::from_secs(10);
-/// However long you go on, a stamp you clicked finishes by this long after, so that a note left
-/// open doesn't take in the rest of the call.
-const LONGEST_AFTER_CLICK: Duration = Duration::from_secs(60);
 
 /// What's been heard for a stamp.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,8 +48,6 @@ struct Listening {
     /// …up to this one, once you've let go.
     until_ms: Option<i64>,
     released: Option<Instant>,
-    /// When a press turned out to be a click, which goes on hearing you.
-    clicked: Option<Instant>,
     /// By line id: (final, text).
     lines: BTreeMap<i64, (bool, String)>,
     changed: Instant,
@@ -69,7 +60,6 @@ impl Listening {
             from_ms,
             until_ms: None,
             released: None,
-            clicked: None,
             lines: BTreeMap::new(),
             changed: now,
         }
@@ -78,10 +68,6 @@ impl Listening {
     fn let_go(&mut self, until_ms: i64, now: Instant) {
         self.until_ms = Some(until_ms);
         self.released = Some(now);
-    }
-
-    fn clicked(&mut self, now: Instant) {
-        self.clicked = Some(now);
     }
 
     /// Takes in the lines written since the last look, and says if there's news.
@@ -115,16 +101,6 @@ impl Listening {
         }
         let said = self.lines.values().any(|(done, _)| *done);
         let talking = self.lines.values().any(|(done, _)| !done);
-        if let Some(clicked) = self.clicked {
-            let since_clicked = now.duration_since(clicked);
-            if (said && !talking && now.duration_since(self.changed) >= PAUSE)
-                || ((said || talking) && since_clicked >= LONGEST_AFTER_CLICK)
-            {
-                return Some(Heard::Finished);
-            }
-            return (!said && !talking && since_clicked >= NOTHING_SAID_AFTER_CLICK)
-                .then_some(Heard::NothingSaid);
-        }
         let since_released = now.duration_since(self.released?);
         if (said && !talking && now.duration_since(self.changed) >= SETTLED)
             || since_released >= GIVE_UP
@@ -149,17 +125,10 @@ impl Listening {
     }
 }
 
-/// What became of the press.
-enum Press {
-    /// Let go, at this time in Unix milliseconds.
-    LetGo(i64),
-    /// Only a click.
-    Clicked,
-}
-
 /// Hears you for a stamp, until it's finished or this is dropped.
 pub struct StampListener {
-    press: mpsc::Sender<Press>,
+    /// When you let go, in Unix milliseconds.
+    let_go: mpsc::Sender<i64>,
 }
 
 impl StampListener {
@@ -172,7 +141,7 @@ impl StampListener {
         pressed_ms: i64,
         on_heard: impl Fn(Heard) + Send + 'static,
     ) -> Result<Self> {
-        let (press, pressing) = mpsc::channel();
+        let (let_go, letting_go) = mpsc::channel();
         std::thread::Builder::new()
             .name("hopp-stamp-listener".into())
             .spawn(move || {
@@ -181,7 +150,7 @@ impl StampListener {
                     call_id,
                     me,
                     pressed_ms,
-                    pressing,
+                    letting_go,
                 };
                 if let Err(error) = hearing.run(&on_heard) {
                     log::error!("Stamp: couldn't read the transcript: {error:#}");
@@ -189,18 +158,13 @@ impl StampListener {
                 }
             })
             .context("Starting the stamp's listener")?;
-        Ok(Self { press })
+        Ok(Self { let_go })
     }
 
     /// You let go: lines starting from now on aren't for this stamp.
     pub fn let_go(&self) {
         // It's gone if it's finished already, and that's fine.
-        let _ = self.press.send(Press::LetGo(store::now_ms()));
-    }
-
-    /// It was only a click: it goes on hearing you until you pause.
-    pub fn clicked(&self) {
-        let _ = self.press.send(Press::Clicked);
+        let _ = self.let_go.send(store::now_ms());
     }
 }
 
@@ -209,7 +173,7 @@ struct Hearing {
     call_id: String,
     me: String,
     pressed_ms: i64,
-    pressing: Receiver<Press>,
+    letting_go: Receiver<i64>,
 }
 
 impl Hearing {
@@ -220,11 +184,10 @@ impl Hearing {
         let from_ms = self.pressed_ms - call.started_ms - LEAD_MS;
         let mut listening = Listening::new(self.me, from_ms, Instant::now());
         loop {
-            match self.pressing.recv_timeout(LISTEN_EVERY) {
-                Ok(Press::LetGo(let_go_ms)) => {
+            match self.letting_go.recv_timeout(LISTEN_EVERY) {
+                Ok(let_go_ms) => {
                     listening.let_go(let_go_ms - call.started_ms, Instant::now());
                 }
-                Ok(Press::Clicked) => listening.clicked(Instant::now()),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return Ok(()),
             }
@@ -385,82 +348,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_click_goes_on_hearing_you_until_you_pause() {
-        let start = Instant::now();
-        let mut listening = Listening::new(ME.into(), 0, start);
-        listening.clicked(after(start, 100));
-        assert_eq!(
-            listening.look(
-                vec![line(1, 500, Kind::Draft, ME, "this one")],
-                after(start, 1_000)
-            ),
-            words("", "this one")
-        );
-        assert_eq!(
-            listening.look(vec![], after(start, 8_000)),
-            None,
-            "still being recognised"
-        );
-        assert_eq!(
-            listening.look(
-                vec![line(1, 500, Kind::Speech, ME, "This one.")],
-                after(start, 8_100)
-            ),
-            words("This one.", "")
-        );
-        assert_eq!(
-            listening.look(vec![], after(start, 10_000)),
-            None,
-            "only taking a breath"
-        );
-        assert_eq!(
-            listening.look(
-                vec![line(2, 10_000, Kind::Draft, ME, "and that")],
-                after(start, 10_500)
-            ),
-            words("This one.", "and that"),
-            "a line long after the click still counts"
-        );
-        assert_eq!(
-            listening.look(
-                vec![line(2, 10_000, Kind::Speech, ME, "And that.")],
-                after(start, 11_000)
-            ),
-            words("This one. And that.", "")
-        );
-        assert_eq!(listening.look(vec![], after(start, 13_999)), None);
-        assert_eq!(
-            listening.look(vec![], after(start, 14_000)),
-            Some(Heard::Finished)
-        );
-    }
-
-    #[test]
-    fn a_click_with_nothing_said_is_left_to_type_into() {
-        let start = Instant::now();
-        let mut listening = Listening::new(ME.into(), 0, start);
-        listening.clicked(start);
-        assert_eq!(listening.look(vec![], after(start, 9_999)), None);
-        assert_eq!(
-            listening.look(vec![], after(start, 10_000)),
-            Some(Heard::NothingSaid)
-        );
-    }
-
-    #[test]
-    fn a_click_left_open_does_not_take_in_the_rest_of_the_call() {
-        let start = Instant::now();
-        let mut listening = Listening::new(ME.into(), 0, start);
-        listening.clicked(start);
-        listening.look(vec![line(1, 10, Kind::Draft, ME, "on")], after(start, 100));
-        assert_eq!(listening.look(vec![], after(start, 59_999)), None);
-        assert_eq!(
-            listening.look(vec![], after(start, 60_000)),
-            Some(Heard::Finished)
-        );
-    }
-
     fn fixture(started_ms: i64) -> Result<(tempfile::TempDir, PathBuf, Store)> {
         let directory = tempfile::tempdir()?;
         let database = directory.path().join("capture/index.db");
@@ -511,29 +398,6 @@ mod tests {
             heard.recv_timeout(PATIENCE).is_err(),
             "it stops, and lets go of what it was told to tell"
         );
-        Ok(())
-    }
-
-    #[test]
-    fn it_hears_you_after_a_click_until_you_pause() -> Result<()> {
-        let started_ms = store::now_ms() - 10_000;
-        let (_directory, database, store) = fixture(started_ms)?;
-        let pressed_ms = store::now_ms();
-        let (told, heard) = mpsc::channel();
-        let listener =
-            StampListener::start(database, "c".into(), ME.into(), pressed_ms, move |h| {
-                let _ = told.send(h);
-            })?;
-        std::thread::sleep(Duration::from_millis(150));
-        listener.clicked();
-
-        let line = pressed_ms - started_ms + 1_000;
-        store.add_line("c", &spoken(line, Kind::Speech, "Later on."))?;
-        assert_eq!(
-            heard.recv_timeout(PATIENCE)?,
-            words("Later on.", "").unwrap()
-        );
-        assert_eq!(heard.recv_timeout(PATIENCE)?, Heard::Finished);
         Ok(())
     }
 

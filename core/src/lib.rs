@@ -1138,19 +1138,18 @@ impl<'a> Application<'a> {
         }
     }
 
-    /// You pressed or let go of a stamp you just placed. Held down, it records what you say
-    /// while the call is captured, so you're heard: it unmutes you until you let go.
+    /// You pressed or let go of a stamp you just placed, as on Linux. Held down while the call
+    /// is captured, it records what you say, so you're heard: it unmutes you until you let go. A
+    /// quick click leaves it to type into.
     fn stamp_hold_changed(&mut self, held: bool, holder: StampHolder) {
         if !held {
-            let cannot_hear = self.stamp_voice.release(Instant::now());
+            let clicked = self.stamp_voice.release(Instant::now());
             self.give_back_microphone();
-            if cannot_hear {
-                self.set_stamp_muted(true);
+            if clicked {
                 self.input_for_held_stamp(hopp_marks::stamps::StampInput::StopListening);
             }
             return;
         }
-        self.set_stamp_muted(false);
         let press = self.stamp_voice.press(holder, Instant::now());
         let Some(room_service) = &self.room_service else {
             return;
@@ -1206,15 +1205,6 @@ impl<'a> Application<'a> {
                 self.sync_stamp_voice();
             }
             StampHolder::Sharer => self.your_stamp_input(input),
-        }
-    }
-
-    fn set_stamp_muted(&mut self, muted: bool) {
-        if let Some(window) = &mut self.screensharing_window {
-            window.set_stamp_muted(muted);
-        }
-        if let Some(window) = &mut self.drawing_window {
-            window.set_stamp_muted(muted);
         }
     }
 

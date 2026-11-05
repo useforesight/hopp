@@ -1,13 +1,11 @@
-//! Saying a stamp's note: which window's stamp it's for, whether you held it or only clicked it,
-//! and whether it unmuted you. What's heard is `hopp_capture::heard`'s.
+//! Saying a stamp's note, as on Linux: hold the stamp down and say it, or click and type it.
+//! This keeps which window's stamp it's for, whether you held it or only clicked it, and whether
+//! it unmuted you. What's heard is `hopp_capture::heard`'s; how long a hold is, `hopp_marks`'.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use hopp_capture::heard::StampListener;
-
-/// Holding the stamp down this long records what you say until you let go. A shorter click goes
-/// on hearing you until you pause, if your microphone's on.
-const HOLD: Duration = Duration::from_millis(350);
+use hopp_marks::stamps::StampPress;
 
 /// Whose stamps you're holding one of.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -47,9 +45,9 @@ impl StampVoice {
         self.unmuted = true;
     }
 
-    /// You let go. Returns whether that was a click with your microphone muted, so it can't hear
-    /// you: a click isn't to leave you unmuted for who knows how long. Otherwise the listener
-    /// goes on until your words are written down.
+    /// You let go. Returns whether it was hearing you and that was only a click, so the stamp
+    /// stops hearing you and is left to type into. Held long enough, the listener goes on until
+    /// what you said while holding it is written down.
     pub(crate) fn release(&mut self, now: Instant) -> bool {
         let Some(pressed) = self.pressed.take() else {
             return false;
@@ -57,16 +55,16 @@ impl StampVoice {
         let Some(listener) = &self.listener else {
             return false;
         };
-        if now.duration_since(pressed) >= HOLD {
-            listener.let_go();
-            return false;
+        match StampPress::lasting(now.duration_since(pressed)) {
+            StampPress::Held => {
+                listener.let_go();
+                false
+            }
+            StampPress::Clicked => {
+                self.listener = None;
+                true
+            }
         }
-        if self.unmuted {
-            self.listener = None;
-            return true;
-        }
-        listener.clicked();
-        false
     }
 
     pub(crate) fn holder(&self) -> StampHolder {
@@ -121,28 +119,42 @@ mod tests {
     }
 
     #[test]
-    fn a_click_goes_on_hearing_you_with_your_microphone_on() {
+    fn a_click_stops_hearing_you_and_leaves_typing() {
         let start = Instant::now();
         let mut voice = StampVoice::default();
         let press = voice.press(StampHolder::Sharer, start);
         voice.hear_with(listener());
         assert!(voice.is_hearing(press));
-        assert!(!voice.release(after(start, 349)));
-        assert!(voice.is_hearing(press));
-        assert!(voice.is_on());
+        assert!(voice.release(after(start, 349)));
+        assert!(!voice.is_hearing(press), "it's for typing now");
+        assert!(!voice.is_on());
     }
 
     #[test]
-    fn a_click_with_your_microphone_muted_gives_it_back_and_leaves_typing() {
+    fn a_click_that_unmuted_you_gives_the_microphone_back() {
         let start = Instant::now();
         let mut voice = StampVoice::default();
-        let press = voice.press(StampHolder::Sharer, start);
+        voice.press(StampHolder::Sharer, start);
         voice.hear_with(listener());
         voice.set_unmuted();
-        assert!(voice.release(after(start, 349)));
-        assert!(!voice.is_hearing(press), "it's for typing now");
+        assert!(voice.release(after(start, 100)));
         assert!(voice.take_unmuted());
         assert!(!voice.is_on());
+    }
+
+    #[test]
+    fn letting_go_of_a_hold_gives_the_microphone_back_while_it_goes_on_hearing() {
+        let start = Instant::now();
+        let mut voice = StampVoice::default();
+        let press = voice.press(StampHolder::Viewer, start);
+        voice.hear_with(listener());
+        voice.set_unmuted();
+        assert!(!voice.release(after(start, 2_000)));
+        assert!(voice.take_unmuted());
+        assert!(
+            voice.is_hearing(press),
+            "what you said is still being written down"
+        );
     }
 
     #[test]

@@ -12,6 +12,7 @@ use crate::components::fonts::GEIST_REGULAR;
 use crate::graphics::graphics_context::click_animation::ClickAnimationRenderer;
 use crate::graphics::graphics_context::participant::ParticipantsManager;
 use crate::utils::geometry::Position;
+pub(crate) use hopp_marks::stamps::StampHint;
 use hopp_marks::stamps::{StampInput, STAMP_TEXT_MAX};
 
 pub(crate) const LOCAL_PARTICIPANT_IDENTITY: &str = "local";
@@ -267,46 +268,12 @@ fn hint_pill<'a, Message: 'a>(
     .into()
 }
 
-/// How to use the stamp tool right now. It changes with what you do, so it stays up as long as
-/// the tool's in your hand, where the drawing controls show once and fade.
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct StampHint {
-    /// You're typing a note that follows the pointer.
-    pub(crate) note: bool,
-    /// You've a stamp taking words.
-    pub(crate) typing: bool,
-    /// It hears what you say.
-    pub(crate) hearing: bool,
-    /// You're holding it down.
-    pub(crate) held: bool,
-    /// The call is captured, so a stamp can hear you.
-    pub(crate) capturing: bool,
-    /// You clicked with your microphone muted, so this stamp can't hear you.
-    pub(crate) muted: bool,
-}
-
-impl StampHint {
-    pub(crate) fn text(self) -> &'static str {
-        if self.note {
-            "Click to stamp your note there  ·  Esc drops it"
-        } else if self.typing && self.hearing && self.held {
-            "Listening  ·  let go to stamp it"
-        } else if self.typing && self.hearing {
-            "Listening  ·  Enter or a pause finishes it  ·  Esc removes it"
-        } else if self.typing && self.muted {
-            "You're muted: type your note, or hold a spot to say it  ·  Esc removes it"
-        } else if self.typing {
-            "Type your note  ·  Enter to finish  ·  Esc removes it"
-        } else if self.capturing {
-            "Click a spot and say your note, or type it  ·  Right-click one removes it, elsewhere clears all yours"
-        } else {
-            "Click a spot and type your note  ·  Right-click one removes it, elsewhere clears all yours"
-        }
-    }
-
-    pub(crate) fn view<'a, Message: 'a>(self) -> iced::Element<'a, Message, Theme, iced::Renderer> {
-        hint_pill(self.text().to_owned(), 1.0)
-    }
+/// How to use the stamp tool right now, as a pill. It stays up as long as the tool's in your
+/// hand, where the drawing controls show once and fade. What it says is shared with Linux.
+pub(crate) fn stamp_hint_view<'a, Message: 'a>(
+    hint: StampHint,
+) -> iced::Element<'a, Message, Theme, iced::Renderer> {
+    hint_pill(hint.text().to_owned(), 1.0)
 }
 
 /// What a key press means to a stamp taking words. Shortcuts aren't words, though Option is:
@@ -641,46 +608,6 @@ mod tests {
         assert_eq!(tool_key(&s, ModifiersState::SHIFT, false), None);
         assert_eq!(tool_key(&Key::Character("x".into()), none, false), None);
         assert_eq!(tool_key(&Key::Named(NamedKey::Enter), none, true), None);
-    }
-
-    #[test]
-    fn the_stamp_hint_says_what_you_can_do_right_now() {
-        let waiting = StampHint::default();
-        assert!(!waiting.text().contains("say"));
-        assert!(waiting.text().contains("Right-click one removes it"));
-
-        // It only hears you if the call is captured.
-        let captured = StampHint {
-            capturing: true,
-            ..waiting
-        };
-        assert!(captured.text().contains("say your note"));
-        assert!(captured.text().contains("Right-click one removes it"));
-
-        let typing = StampHint {
-            typing: true,
-            ..captured
-        };
-        assert!(typing.text().starts_with("Type your note"));
-        let muted = StampHint {
-            muted: true,
-            ..typing
-        };
-        assert!(muted.text().starts_with("You're muted"));
-        let hearing = StampHint {
-            hearing: true,
-            ..typing
-        };
-        assert!(hearing.text().contains("Enter or a pause finishes it"));
-        let held = StampHint {
-            held: true,
-            ..hearing
-        };
-        assert!(held.text().starts_with("Listening"));
-
-        // A note in hand comes before all of it.
-        let note = StampHint { note: true, ..held };
-        assert!(note.text().starts_with("Click to stamp your note"));
     }
 
     fn position(x: f64, y: f64) -> Position {

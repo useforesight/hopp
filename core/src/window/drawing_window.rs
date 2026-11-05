@@ -240,8 +240,6 @@ pub struct DrawingWindow {
     stamp_held: bool,
     /// The call is captured, so holding a stamp down can hear you.
     capturing: bool,
-    /// You clicked a stamp with your microphone muted, so it can't hear you.
-    stamp_muted: bool,
     last_cursor_position: Option<(f64, f64)>,
     capture_frame: Option<Arc<Mutex<Frame>>>,
     draw_y_scale: f64,
@@ -389,7 +387,6 @@ impl DrawingWindow {
             hearing_stamp: false,
             stamp_held: false,
             capturing: false,
-            stamp_muted: false,
             last_cursor_position: None,
             capture_frame,
             draw_y_scale: 1.0,
@@ -527,12 +524,6 @@ impl DrawingWindow {
         self.window.request_redraw();
     }
 
-    /// You clicked a stamp with your microphone muted, so it can't hear you.
-    pub fn set_stamp_muted(&mut self, muted: bool) {
-        self.stamp_muted = muted;
-        self.window.request_redraw();
-    }
-
     pub fn set_capturing(&mut self, capturing: bool) {
         self.capturing = capturing;
         self.window.request_redraw();
@@ -545,7 +536,6 @@ impl DrawingWindow {
             hearing: self.hearing_stamp,
             held: self.stamp_held,
             capturing: self.capturing,
-            muted: self.stamp_muted,
         }
     }
 
@@ -920,7 +910,7 @@ impl DrawingWindow {
                         self.draw_y_scale,
                         self.draw_y_offset,
                         if self.stamping {
-                            self.stamp_hint().view()
+                            drawing_helpers::stamp_hint_view(self.stamp_hint())
                         } else {
                             self.drawing_hint.view(true)
                         },
@@ -986,7 +976,7 @@ impl DrawingWindow {
                 self.draw_y_scale,
                 self.draw_y_offset,
                 if self.stamping {
-                    self.stamp_hint().view()
+                    drawing_helpers::stamp_hint_view(self.stamp_hint())
                 } else {
                     self.drawing_hint.view(true)
                 },

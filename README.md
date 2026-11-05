@@ -61,7 +61,7 @@ These are on the Mac app. Until the next release is out, you'd have to build fro
 > [!IMPORTANT]
 > Capture is on by default, so every call is transcribed unless you turn it off in Settings > Capture. The first call downloads a 731 MB speech model. People on older versions of Hopp see no sign that you're capturing, so tell them.
 
-**Stamps.** Click a spot on the shared screen and say your note, and your words appear on the stamp as you speak. Press Enter or stop talking to finish it, or just type. Right-click a stamp to remove it, or anywhere else to clear all of yours.
+**Stamps.** Hold down on a spot on the shared screen and say your note, and your words appear on the stamp as you speak. Let go and it's stamped once they're written down. If you're muted, holding unmutes you until you let go. Or click a spot and type, then press Enter. Right-click a stamp to remove it, or anywhere else to clear all of yours.
 
 <img src="./docs/src/assets/readme/stamps.png" alt="The sharing toolbar with Draw, Stamp, Revoke and Stop buttons, above three stamps with notes" width="640" />
 
