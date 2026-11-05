@@ -431,7 +431,10 @@ const SOUND_ALIKES: &[(&str, &[&str])] = &[
     ("claude", &["claud", "clawed", "clod"]),
     // Guesses until a real call shows how it's misheard. Not "keepers" or "cheapest",
     // which are words people say.
-    ("jeepers", &["jeeper", "jepers", "geepers", "jeepas", "cheepers"]),
+    (
+        "jeepers",
+        &["jeeper", "jepers", "geepers", "jeepas", "cheepers"],
+    ),
 ];
 
 /// The phrases that wake for `phrase`: each of its `|`-separated alternatives, and the
