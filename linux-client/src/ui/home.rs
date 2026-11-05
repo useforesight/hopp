@@ -669,6 +669,108 @@ impl HomeView {
             .child(list)
     }
 
+    /// Calls and invitations nobody answered, newest first, until you call back or
+    /// dismiss them.
+    fn missed(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        let theme = cx.omarchy().clone();
+        let session = self.session.read(cx);
+        if session.missed.is_empty() {
+            return None;
+        }
+        let missed = session.missed.clone();
+        let busy = session.dialing.is_some() || session.ringing.is_some();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_millis() as i64);
+        let mut list = div().flex().flex_col().gap(px(2.)).mx(px(-6.));
+        for entry in &missed {
+            let (back, gone) = (entry.caller_id.clone(), entry.caller_id.clone());
+            list = list.child(
+                div()
+                    .id(SharedString::from(format!("missed-{}", entry.caller_id)))
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .px(px(6.))
+                    .py(px(5.))
+                    .rounded(px(8.))
+                    .hover(|style| style.bg(theme.selection))
+                    .child(style::avatar(&entry.name, 30., cx))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .text_size(px(12.5))
+                                    .text_color(theme.bright)
+                                    .text_ellipsis()
+                                    .child(entry.name.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.5))
+                                    .text_color(theme.danger)
+                                    .text_ellipsis()
+                                    .child(crate::missed::describe(entry, now)),
+                            ),
+                    )
+                    .child(
+                        style::chip(
+                            SharedString::from(format!("call-back-{}", entry.caller_id)),
+                            "Call back",
+                            Some(IconName::Phone),
+                            Tone::On,
+                            cx,
+                        )
+                        .when(!busy, |chip| {
+                            chip.on_click(cx.listener(move |view, _, _, cx| {
+                                view.session
+                                    .update(cx, |session, cx| session.call_back(&back, cx));
+                            }))
+                        }),
+                    )
+                    .child(
+                        style::chip(
+                            SharedString::from(format!("dismiss-{}", entry.caller_id)),
+                            "",
+                            Some(IconName::X),
+                            Tone::Plain,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            view.session
+                                .update(cx, |session, cx| session.dismiss_missed(Some(&gone), cx));
+                        })),
+                    ),
+            );
+        }
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .flex()
+                        .justify_between()
+                        .child(style::section_label("MISSED", cx))
+                        .child(
+                            style::section_label("Clear all", cx)
+                                .id("missed-clear")
+                                .cursor_pointer()
+                                .on_click(cx.listener(|view, _, _, cx| {
+                                    view.session
+                                        .update(cx, |session, cx| session.dismiss_missed(None, cx));
+                                })),
+                        ),
+                )
+                .child(list),
+        )
+    }
+
     fn rooms(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = cx.omarchy().clone();
         let query = self.query(cx);
@@ -948,10 +1050,12 @@ impl Render for HomeView {
             true => {
                 let ringing = self.ringing_card(cx);
                 let call = self.call_card(cx);
+                let missed = self.missed(cx);
                 let teammates = self.teammates(cx);
                 let rooms = self.rooms(window, cx);
                 body.children(ringing)
                     .children(call)
+                    .children(missed)
                     .child(
                         input("search", &self.search, window, cx)
                             .prefix(icon(IconName::Search).size(px(14.))),

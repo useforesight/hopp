@@ -179,7 +179,13 @@ fn main() {
 
     let in_call = !matches!(
         scene.as_str(),
-        "signin" | "home" | "settings" | "settings-capture" | "call"
+        "signin"
+            | "home"
+            | "settings"
+            | "settings-capture"
+            | "call"
+            | "call-missed"
+            | "home-missed"
     );
     if in_call {
         let roster = [
@@ -353,6 +359,24 @@ fn main() {
             send(Event::Ui(hopp_visual_fixture::engine::UiRequest::Card(request)));
         }
     }
+    if scene == "call-missed" || scene == "home-missed" {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        for (id, name, invite, ago) in [
+            ("jonas", "Jonas Weber", true, 26 * 3600),
+            ("mira", "Mira Chen", false, 900),
+            ("mira", "Mira Chen", false, 300),
+        ] {
+            send(Event::Missed {
+                caller_id: id.into(),
+                name: name.into(),
+                invite,
+                at_ms: now - ago * 1000,
+            });
+        }
+    }
     if scene == "call" {
         send(Event::IncomingCall {
             caller_id: "mira".into(),
@@ -500,7 +524,8 @@ fn main() {
         ..Settings::default()
     };
     let only = match scene.as_str() {
-        "signin" | "home" | "home-call" => "home",
+        "signin" | "home" | "home-call" | "home-missed" => "home",
+        "call-missed" => "call",
         "faces" | "faces-sharing" => "faces",
         // The pill alone: the pad (transparent) would cover it in the harness.
         "sharing-draw" | "sharing-stamp" => "sharing",

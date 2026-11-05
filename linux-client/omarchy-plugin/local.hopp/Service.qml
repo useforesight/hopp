@@ -14,6 +14,7 @@ Item {
     readonly property var call: online && state.call ? state.call : null
     readonly property var ringing: online && state.ringing ? state.ringing : null
     readonly property var dialing: online && state.dialing ? state.dialing : null
+    readonly property var missed: online && state.missed ? state.missed : []
     readonly property var teammates: online && state.teammates ? state.teammates : []
     readonly property var rooms: online && state.rooms ? state.rooms : []
     readonly property string elapsed: {

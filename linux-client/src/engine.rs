@@ -199,6 +199,15 @@ pub enum Event {
         caller_id: String,
         name: String,
     },
+    /// A call or invitation that rang, or should have, and wasn't answered: the caller
+    /// gave up, it came while you were busy or offline, or another one pushed it aside.
+    Missed {
+        caller_id: String,
+        name: String,
+        invite: bool,
+        /// When they tried, in Unix milliseconds.
+        at_ms: i64,
+    },
     Calling {
         peer_id: String,
         name: String,
@@ -2536,6 +2545,22 @@ impl Worker {
             .context("Hopp connection is busy or ended")
     }
 
+    /// Report a call or invitation from `caller` that wasn't answered. `initiated_at` is
+    /// when they tried (seconds or milliseconds, as the server sends it), else now.
+    fn missed(&self, caller: &str, invite: bool, initiated_at: Option<i64>) {
+        let at_ms = match initiated_at {
+            Some(at) if at > 100_000_000_000 => at,
+            Some(at) => at * 1000,
+            None => crate::capture::store::now_ms(),
+        };
+        self.emit(Event::Missed {
+            caller_id: caller.to_owned(),
+            name: self.peer_name(caller),
+            invite,
+            at_ms,
+        });
+    }
+
     fn peer_name(&self, id: &str) -> String {
         self.teammates
             .iter()
@@ -2569,6 +2594,8 @@ impl Worker {
                 "incoming_call" => {
                     let incoming: presence::IncomingCall = serde_json::from_value(payload)?;
                     if !presence::recent(incoming.initiated_at) {
+                        // Rang while Hopp was offline: too late to answer, not to call back.
+                        self.missed(&incoming.caller_id, false, incoming.initiated_at);
                         return Ok(());
                     }
                     if self.session.is_some()
@@ -2578,6 +2605,12 @@ impl Worker {
                     {
                         self.send_socket(presence::call_reject(&incoming.caller_id, "in-call"))
                             .await?;
+                        // Not the person you're already with, who is only reconnecting.
+                        if self.call_peer.as_deref() != Some(incoming.caller_id.as_str())
+                            && self.incoming_call.as_deref() != Some(incoming.caller_id.as_str())
+                        {
+                            self.missed(&incoming.caller_id, false, None);
+                        }
                     } else {
                         self.incoming_call = Some(incoming.caller_id.clone());
                         self.emit(Event::IncomingCall {
@@ -2607,9 +2640,13 @@ impl Worker {
                 }
                 "call_end" => {
                     let peer = payload.get("participant_id").and_then(|v| v.as_str());
-                    if peer.is_some() && peer == self.incoming_call.as_deref() {
+                    if let Some(caller) =
+                        peer.filter(|peer| Some(*peer) == self.incoming_call.as_deref())
+                    {
+                        // They gave up before you answered.
+                        let caller = caller.to_owned();
                         self.incoming_call = None;
-                        self.emit(Event::Disconnected("Call canceled".into()));
+                        self.missed(&caller, false, None);
                     } else if peer.is_some() && peer == self.call_peer.as_deref() {
                         // The peer already ended its half; avoid sending an echo.
                         self.call_peer = None;
@@ -2652,16 +2689,21 @@ impl Worker {
                 }
                 "incoming_invite" => {
                     let invite: presence::IncomingInvite = serde_json::from_value(payload)?;
-                    if !presence::recent(invite.initiated_at) {
+                    if invite.invite_id.is_empty() || invite.inviter_id.is_empty() {
                         return Ok(());
                     }
-                    if invite.invite_id.is_empty() || invite.inviter_id.is_empty() {
+                    if !presence::recent(invite.initiated_at) {
+                        self.missed(&invite.inviter_id, true, invite.initiated_at);
                         return Ok(());
                     }
                     if let Some((inviter, id)) = self.incoming_invite.take() {
                         let _ = self
                             .send_socket(presence::invite_reject(&inviter, &id, "rejected"))
                             .await;
+                        // A newer invitation pushed theirs aside.
+                        if inviter != invite.inviter_id {
+                            self.missed(&inviter, true, None);
+                        }
                     }
                     self.incoming_invite =
                         Some((invite.inviter_id.clone(), invite.invite_id.clone()));
@@ -2699,10 +2741,10 @@ impl Worker {
                                 && Some(pending_id.as_str()) == id
                         })
                     {
-                        self.incoming_invite = None;
-                        self.emit(Event::InviteResolved {
-                            message: "Invitation canceled".into(),
-                        });
+                        // They gave up before you answered.
+                        if let Some((inviter, _)) = self.incoming_invite.take() {
+                            self.missed(&inviter, true, None);
+                        }
                     }
                 }
                 "error" => {

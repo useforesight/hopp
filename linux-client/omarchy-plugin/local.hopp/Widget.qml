@@ -69,6 +69,7 @@ Ui.Panel {
         property var call: null
         property var ringing: null
         property var dialing: null
+        property var missed: []
         property var teammates: []
         property var rooms: []
         property string message: ""
@@ -102,10 +103,11 @@ Ui.Panel {
         Ui.BarIconButton {
             id: button
             bar: app.bar
-            tooltipText: app.service.stopped ? "Hopp · not running" : !app.service.online ? "Hopp · starting" : app.service.ringing ? app.service.ringing.name + " is calling" : app.inCall ? "Hopp · " + app.call.room : "Hopp"
+            tooltipText: app.service.stopped ? "Hopp · not running" : !app.service.online ? "Hopp · starting" : app.service.ringing ? app.service.ringing.name + " is calling" : app.inCall ? "Hopp · " + app.call.room : (app.service.missed || []).length > 0 ? "Hopp · missed call from " + app.service.missed[0].name : "Hopp"
             iconComponent: HoppMark {
                 foreground: button.foreground
                 alert: app.service.ringing !== null && app.service.ringing !== undefined
+                missed: (app.service.missed || []).length > 0
             }
             onPressed: app.toggle()
         }
@@ -314,6 +316,62 @@ Ui.Panel {
                             text: "Accept"
                             primary: true
                             onClicked: app.send("accept")
+                        }
+                    }
+                }
+
+                // Calls nobody answered, until you call back or dismiss them.
+                Repeater {
+                    model: app.service.missed || []
+                    delegate: Ui.BorderSurface {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        implicitHeight: missedRow.implicitHeight + Style.spacing.xxl * 2
+                        radius: Style.cornerRadius
+                        color: Util.alpha(Color.urgent, 0.08)
+                        borderSpec: Border.controlSpec("selected", Color.popups.text, Color.urgent)
+                        RowLayout {
+                            id: missedRow
+                            anchors.fill: parent
+                            anchors.margins: Style.spacing.xxl
+                            spacing: Style.spacing.rowGap
+                            Avatar {
+                                name: modelData.name
+                                size: Style.space(32)
+                            }
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 0
+                                Text {
+                                    Layout.fillWidth: true
+                                    textFormat: Text.PlainText
+                                    text: modelData.name
+                                    elide: Text.ElideRight
+                                    color: Color.popups.text
+                                    font.family: Style.font.family
+                                    font.pixelSize: Style.font.body
+                                    font.weight: Font.DemiBold
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    textFormat: Text.PlainText
+                                    text: modelData.label
+                                    elide: Text.ElideRight
+                                    color: Color.urgent
+                                    font.family: Style.font.family
+                                    font.pixelSize: Style.font.body
+                                }
+                            }
+                            HoppButton {
+                                text: "Dismiss"
+                                onClicked: app.send("dismiss_missed", modelData.id)
+                            }
+                            HoppButton {
+                                text: "Call back"
+                                primary: true
+                                enabled: !app.service.ringing && !app.service.dialing
+                                onClicked: app.send("call", modelData.id)
+                            }
                         }
                     }
                 }

@@ -298,7 +298,9 @@ impl Shell {
             (
                 state.in_call(),
                 state.remote_identity.is_some(),
-                state.ringing.is_some() || (state.dialing.is_some() && !state.in_call()),
+                state.ringing.is_some()
+                    || (state.dialing.is_some() && !state.in_call())
+                    || state.missed_shown().is_some(),
                 state.sharing,
             )
         };

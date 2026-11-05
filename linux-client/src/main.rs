@@ -19,6 +19,7 @@ mod lock;
 mod logger;
 mod mcp;
 mod media;
+mod missed;
 mod native_input;
 mod paths;
 mod pipewire_audio;

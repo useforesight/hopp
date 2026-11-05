@@ -33,6 +33,7 @@ SIMPLE = {
     "viewer": "show_viewer",
     "accept": "accept",
     "decline": "decline",
+    "clear_missed": "clear_missed",
     "leave": "leave",
     "microphone": "microphone",
     "camera": "camera",
@@ -42,7 +43,7 @@ SIMPLE = {
     "draw": "draw",
     "quit": "quit",
 }
-WITH_ID = {"call": "call", "join": "join_room"}
+WITH_ID = {"call": "call", "join": "join_room", "dismiss_missed": "dismiss_missed"}
 
 output_lock = threading.Lock()
 

@@ -10,6 +10,8 @@ pub mod ink;
 pub mod ink_raster;
 #[path = "../../../src/logger.rs"]
 pub mod logger;
+#[path = "../../../src/missed.rs"]
+pub mod missed;
 #[path = "../../../src/paths.rs"]
 pub mod paths;
 #[path = "../../../src/protocol.rs"]
@@ -198,6 +200,12 @@ pub mod engine {
         IncomingCall {
             caller_id: String,
             name: String,
+        },
+        Missed {
+            caller_id: String,
+            name: String,
+            invite: bool,
+            at_ms: i64,
         },
         Calling {
             peer_id: String,

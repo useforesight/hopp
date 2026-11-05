@@ -367,6 +367,10 @@ pub enum UiRequest {
     JoinRoom(String),
     Accept,
     Decline,
+    /// Forget one person's missed calls (`Call` with their id calls them back).
+    DismissMissed(String),
+    /// Forget every missed call.
+    ClearMissed,
     Leave,
     Microphone,
     Camera,

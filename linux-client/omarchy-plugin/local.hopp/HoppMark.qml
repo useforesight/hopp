@@ -6,6 +6,8 @@ Item {
     id: root
     property color foreground: Color.foreground
     property bool alert: false
+    // Someone tried to call: a steady dot until you call back or dismiss it.
+    property bool missed: false
     implicitWidth: Style.font.display
     implicitHeight: implicitWidth
     Rectangle {
@@ -25,6 +27,15 @@ Item {
             font.pixelSize: parent.height * 0.66
             font.weight: Font.Bold
         }
+    }
+    Rectangle {
+        visible: root.missed && !root.alert
+        width: parent.width * 0.3
+        height: width
+        radius: width / 2
+        anchors.right: parent.right
+        anchors.top: parent.top
+        color: Color.urgent
     }
     Rectangle {
         visible: root.alert

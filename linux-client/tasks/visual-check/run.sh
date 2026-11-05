@@ -22,6 +22,8 @@ tar -xf "$visual_tmp/weston.pkg" -C "$visual_tmp/root"
 visual_backend=("$visual_tmp"/root/usr/lib/libweston-*/headless-backend.so)
 visual_shell="$visual_tmp/root/usr/lib/weston/kiosk-shell.so"
 export XDG_RUNTIME_DIR="$visual_tmp/runtime"
+# Its own data directory: scenes save missed calls, which must not reach yours.
+export XDG_DATA_HOME="$visual_tmp/data"
 export LD_LIBRARY_PATH="$visual_tmp/root/usr/lib:$visual_tmp/root/usr/lib/weston${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 cargo build --manifest-path "$visual_root/Cargo.toml" --target-dir "$visual_target"
 start_compositor() {
@@ -90,6 +92,9 @@ shot sharing-draw  720  40  --scene sharing-draw --people 2
 shot sharing-stamp 720  40  --scene sharing-stamp --people 2
 # Incoming call card.
 shot call          360  92  --scene call
+# Calls nobody answered: on the call card and in the Hopp window.
+shot call-missed   360  92  --scene call-missed
+shot home-missed   420 680 --scene home-missed
 # Drawing on your own shared screen: the pad itself, which shows nothing.
 shot drawpad       1280 720 --scene drawpad
 # Agent cards: a question on top, two notices, one waiting behind "+1 more".

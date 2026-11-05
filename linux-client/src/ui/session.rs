@@ -194,6 +194,13 @@ pub struct Session {
     pub participants: Vec<Participant>,
     pub teammates: Vec<Teammate>,
     pub ringing: Option<Ringing>,
+    /// Counts rings, so a ring-out timer knows whether it's still the same one ringing.
+    ring_serial: u64,
+    /// Calls and invitations nobody answered, newest first (see `missed`).
+    pub missed: Vec<crate::missed::Missed>,
+    /// Show the newest missed call on the call card. Set by a new miss, cleared by a call
+    /// starting (it comes back after) and by dealing with them.
+    missed_card: bool,
     /// Outgoing call or invitation: (peer id, name, invite id).
     pub dialing: Option<(String, String, Option<String>)>,
     pub connected: bool,
@@ -303,6 +310,9 @@ impl Session {
             participants: Vec::new(),
             teammates: Vec::new(),
             ringing: None,
+            ring_serial: 0,
+            missed: crate::missed::load(),
+            missed_card: true,
             dialing: None,
             connected: false,
             joined_at: None,
@@ -597,6 +607,8 @@ impl Session {
     pub fn call(&mut self, teammate: &Teammate, cx: &mut Context<Self>) {
         let name = full_name(&teammate.first_name, &teammate.last_name);
         let user_id = teammate.id.clone();
+        // Calling them back deals with their missed calls.
+        self.forget_missed(&user_id, cx);
         self.send(if self.room.is_some() {
             Command::InvitePeer { user_id, name }
         } else {
@@ -616,6 +628,107 @@ impl Session {
             self.send(Command::JoinRoom(room));
             self.status = "Joining room…".into();
             cx.notify();
+        }
+    }
+
+    /// Let a ring that nobody answers go after [`crate::missed::RING_TIMEOUT`]: it's
+    /// declined and kept as missed, so the card doesn't ring on for ever if the caller's
+    /// cancel never arrives.
+    fn ring_out_later(&mut self, cx: &mut Context<Self>) {
+        self.ring_serial += 1;
+        let serial = self.ring_serial;
+        cx.spawn(async move |session, cx| {
+            cx.background_executor()
+                .timer(crate::missed::RING_TIMEOUT)
+                .await;
+            let _ = session.update(cx, |session, cx| {
+                if session.ring_serial != serial {
+                    return;
+                }
+                let (caller, name, invite) = match &session.ringing {
+                    Some(Ringing::Call { caller_id, name }) => {
+                        (caller_id.clone(), name.clone(), false)
+                    }
+                    Some(Ringing::Invite {
+                        inviter_id, name, ..
+                    }) => (inviter_id.clone(), name.clone(), true),
+                    None => return,
+                };
+                session.decline_ringing(cx);
+                session.record_missed(&caller, &name, invite, unix_ms(), cx);
+            });
+        })
+        .detach();
+    }
+
+    fn record_missed(
+        &mut self,
+        caller_id: &str,
+        name: &str,
+        invite: bool,
+        at_ms: i64,
+        cx: &mut Context<Self>,
+    ) {
+        let name = sanitize(name);
+        crate::missed::add(&mut self.missed, caller_id, &name, invite, at_ms);
+        self.save_missed();
+        self.missed_card = true;
+        self.status = if invite {
+            format!("Missed an invitation from {name}")
+        } else {
+            format!("Missed a call from {name}")
+        };
+        cx.emit(SessionEvent::RingingChanged);
+        cx.notify();
+    }
+
+    fn save_missed(&self) {
+        if let Err(problem) = crate::missed::save(&self.missed) {
+            log(&format!("saving missed calls: {problem:#}"));
+        }
+    }
+
+    /// Their missed calls are dealt with: you called them back or are in a call with them.
+    fn forget_missed(&mut self, caller_id: &str, cx: &mut Context<Self>) {
+        if crate::missed::remove(&mut self.missed, caller_id) {
+            self.save_missed();
+            cx.emit(SessionEvent::RingingChanged);
+            cx.notify();
+        }
+    }
+
+    /// The missed call to show on the call card: the newest, unless a call is ringing or
+    /// being placed, or a call started since it came in.
+    pub fn missed_shown(&self) -> Option<&crate::missed::Missed> {
+        (self.missed_card && self.ringing.is_none() && self.dialing.is_none())
+            .then(|| self.missed.first())
+            .flatten()
+    }
+
+    /// Call back whoever missed you, or just forget them if they're no longer a teammate.
+    pub fn call_back(&mut self, caller_id: &str, cx: &mut Context<Self>) {
+        match self
+            .teammates
+            .iter()
+            .find(|teammate| teammate.id == caller_id)
+            .cloned()
+        {
+            Some(teammate) => self.call(&teammate, cx),
+            None => self.forget_missed(caller_id, cx),
+        }
+    }
+
+    /// Forget one person's missed calls, or with `None` everyone's.
+    pub fn dismiss_missed(&mut self, caller_id: Option<&str>, cx: &mut Context<Self>) {
+        match caller_id {
+            Some(caller_id) => self.forget_missed(caller_id, cx),
+            None if !self.missed.is_empty() => {
+                self.missed.clear();
+                self.save_missed();
+                cx.emit(SessionEvent::RingingChanged);
+                cx.notify();
+            }
+            None => {}
         }
     }
 
@@ -1901,6 +2014,8 @@ impl Session {
                 self.room_presence.clear();
                 self.teammates.clear();
                 self.ringing = None;
+                self.missed.clear();
+                self.save_missed();
                 self.errors.clear();
                 self.status = "Signed out".into();
                 cx.emit(SessionEvent::CallEnded);
@@ -1912,7 +2027,25 @@ impl Session {
                     caller_id,
                     name: sanitize(&name),
                 });
+                self.ring_out_later(cx);
                 cx.emit(SessionEvent::RingingChanged);
+            }
+            Event::Missed {
+                caller_id,
+                name,
+                invite,
+                at_ms,
+            } => {
+                // The caller gave up on the ring that's showing: stop it.
+                let ringing_them = self.ringing.as_ref().is_some_and(|ringing| match ringing {
+                    Ringing::Call { caller_id: id, .. } => *id == caller_id,
+                    Ringing::Invite { inviter_id, .. } => *inviter_id == caller_id,
+                });
+                if ringing_them {
+                    self.ringing = None;
+                    self.sync_ring();
+                }
+                self.record_missed(&caller_id, &name, invite, at_ms, cx);
             }
             Event::Calling { peer_id, name } => {
                 self.dialing = Some((peer_id, sanitize(&name), None));
@@ -1927,6 +2060,7 @@ impl Session {
                     invite_id,
                     name: sanitize(&name),
                 });
+                self.ring_out_later(cx);
                 cx.emit(SessionEvent::RingingChanged);
             }
             Event::Inviting {
@@ -1969,6 +2103,11 @@ impl Session {
                 if self.ringing.take().is_some() {
                     cx.emit(SessionEvent::RingingChanged);
                 }
+                // The card makes way for the call and comes back after it.
+                if self.missed_card {
+                    self.missed_card = false;
+                    cx.emit(SessionEvent::RingingChanged);
+                }
                 self.room = Some(room);
                 self.joined_at = Some(Instant::now());
                 self.status = "Connecting audio and video…".into();
@@ -1994,6 +2133,10 @@ impl Session {
                 self.release_input();
                 self.end_call();
                 self.status = reason;
+                if !self.missed.is_empty() {
+                    self.missed_card = true;
+                    cx.emit(SessionEvent::RingingChanged);
+                }
                 if had_share {
                     cx.emit(SessionEvent::RemoteShareEnded);
                 }
@@ -2003,6 +2146,22 @@ impl Session {
                 // Say when someone else starts or stops capturing; badges show it too.
                 let before = self.capturing_others();
                 self.participants = participants;
+                // In a call with someone who missed you is as good as calling them back.
+                let here: Vec<String> = self
+                    .missed
+                    .iter()
+                    .filter(|missed| {
+                        self.participants.iter().any(|participant| {
+                            let id = canonical_identity(&participant.identity);
+                            id == missed.caller_id
+                                || id.ends_with(&format!(":{}", missed.caller_id))
+                        })
+                    })
+                    .map(|missed| missed.caller_id.clone())
+                    .collect();
+                for caller_id in here {
+                    self.forget_missed(&caller_id, cx);
+                }
                 // Someone who left can't take their stamps away any more.
                 let here: HashSet<&str> = self
                     .participants
@@ -2383,6 +2542,8 @@ impl Session {
                 }
             }
             UiRequest::Accept => self.accept_ringing(cx),
+            UiRequest::DismissMissed(id) => self.dismiss_missed(Some(id.as_str()), cx),
+            UiRequest::ClearMissed => self.dismiss_missed(None, cx),
             UiRequest::Decline => {
                 if self.ringing.is_some() {
                     self.decline_ringing(cx);
@@ -2483,6 +2644,14 @@ impl Session {
                 "kind": match ringing { Ringing::Call { .. } => "call", Ringing::Invite { .. } => "invite" },
             })),
             "dialing": self.dialing.as_ref().map(|(_, name, _)| json!({ "name": name })),
+            "missed": self.missed.iter().map(|missed| json!({
+                "id": missed.caller_id,
+                "name": missed.name,
+                "kind": if missed.invite { "invite" } else { "call" },
+                "at": missed.at_ms / 1000,
+                "count": missed.count,
+                "label": crate::missed::describe(missed, unix_ms()),
+            })).collect::<Vec<_>>(),
             "errors": self.errors,
             // Where each card has got to: how `hopp ask` hears the answer.
             "cards": self.cards.iter().map(|card| json!({

@@ -1,4 +1,5 @@
-//! Incoming and outgoing call card, shown where Omarchy notifications appear.
+//! Incoming and outgoing call card, shown where Omarchy notifications appear. With no
+//! call ringing, it shows the newest missed call until you call back or dismiss it.
 //!
 //! It is a layer-shell surface so it floats above tiles without taking one, and it only
 //! takes keyboard focus when clicked, so a call never steals what you're typing.
@@ -40,6 +41,14 @@ impl Render for ToastView {
         let session = self.session.read(cx);
         let ringing = session.ringing.clone();
         let dialing = session.dialing.clone();
+        let missed = session.missed_shown().cloned();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_millis() as i64);
+        let missed_label = missed
+            .as_ref()
+            .map(|missed| crate::missed::describe(missed, now))
+            .unwrap_or_default();
         let (name, title, detail) = match (&ringing, &dialing) {
             (Some(Ringing::Call { name, .. }), _) => (
                 name.clone(),
@@ -60,9 +69,24 @@ impl Render for ToastView {
                     "Waiting for them to pick up"
                 },
             ),
-            (None, None) => (String::new(), String::new(), ""),
+            (None, None) => match &missed {
+                Some(missed) => (
+                    missed.name.clone(),
+                    if missed.invite {
+                        format!("{} invited you", missed.name)
+                    } else {
+                        format!("{} tried to call", missed.name)
+                    },
+                    missed_label.as_str(),
+                ),
+                None => (String::new(), String::new(), ""),
+            },
         };
         let incoming = ringing.is_some();
+        let missed_id = missed
+            .as_ref()
+            .filter(|_| !incoming && dialing.is_none())
+            .map(|missed| missed.caller_id.clone());
 
         let actions = if incoming {
             div()
@@ -81,6 +105,32 @@ impl Render for ToastView {
                         |view, _, _, cx| {
                             view.session
                                 .update(cx, |session, cx| session.decline_ringing(cx))
+                        },
+                    )),
+                )
+        } else if let Some(id) = missed_id.clone() {
+            let back = id.clone();
+            div()
+                .flex()
+                .gap(px(6.))
+                .child(
+                    style::chip(
+                        "call-back",
+                        "Call back",
+                        Some(IconName::Phone),
+                        Tone::On,
+                        cx,
+                    )
+                    .on_click(cx.listener(move |view, _, _, cx| {
+                        view.session
+                            .update(cx, |session, cx| session.call_back(&back, cx))
+                    })),
+                )
+                .child(
+                    style::chip("dismiss", "Dismiss", None, Tone::Plain, cx).on_click(cx.listener(
+                        move |view, _, _, cx| {
+                            view.session
+                                .update(cx, |session, cx| session.dismiss_missed(Some(&id), cx))
                         },
                     )),
                 )
@@ -103,24 +153,34 @@ impl Render for ToastView {
             .rounded(px(style::RADIUS))
             .bg(theme.background)
             .border_1()
-            .border_color(theme.accent)
+            .border_color(if missed_id.is_some() {
+                theme.danger
+            } else {
+                theme.accent
+            })
             .text_color(theme.foreground)
             .font_family(theme.font.clone())
-            .on_key_down(cx.listener(|view, event: &gpui_kit::KeyDownEvent, _, cx| {
-                match event.keystroke.key.as_str() {
-                    "enter" => view
-                        .session
-                        .update(cx, |session, cx| session.accept_ringing(cx)),
-                    "escape" => view.session.update(cx, |session, cx| {
-                        if session.ringing.is_some() {
-                            session.decline_ringing(cx)
-                        } else {
-                            session.leave(cx)
-                        }
-                    }),
-                    _ => {}
-                }
-            }))
+            .on_key_down(
+                cx.listener(move |view, event: &gpui_kit::KeyDownEvent, _, cx| {
+                    let missed = missed_id.clone();
+                    match event.keystroke.key.as_str() {
+                        "enter" => view.session.update(cx, |session, cx| match &missed {
+                            Some(id) => session.call_back(id, cx),
+                            None => session.accept_ringing(cx),
+                        }),
+                        "escape" => view.session.update(cx, |session, cx| {
+                            if session.ringing.is_some() {
+                                session.decline_ringing(cx)
+                            } else if let Some(id) = &missed {
+                                session.dismiss_missed(Some(id), cx)
+                            } else {
+                                session.leave(cx)
+                            }
+                        }),
+                        _ => {}
+                    }
+                }),
+            )
             .child(
                 div()
                     .relative()

@@ -80,6 +80,8 @@ pub enum Command {
     Accept,
     /// Decline the incoming call.
     Decline,
+    /// Forget your missed calls (`hopp call NAME` calls someone back).
+    ClearMissed,
     /// Leave the call.
     Leave,
     /// Mute or unmute your microphone.
@@ -291,6 +293,7 @@ pub fn run(command: Command, instance_name: &str) -> Result<bool> {
         }
         Command::Accept => Plan::Request(UiRequest::Accept, Missing::Error),
         Command::Decline => Plan::Request(UiRequest::Decline, Missing::Error),
+        Command::ClearMissed => Plan::Request(UiRequest::ClearMissed, Missing::Error),
         Command::Leave => Plan::Request(UiRequest::Leave, Missing::Error),
         Command::Mute => Plan::Request(UiRequest::Microphone, Missing::Error),
         Command::Camera => Plan::Request(UiRequest::Camera, Missing::Error),
@@ -444,6 +447,20 @@ pub fn describe(state: &Value) -> String {
         }
         out.push_str(&parts.join(" · "));
         out.push('\n');
+    }
+    if let Some(missed) = state["missed"]
+        .as_array()
+        .filter(|missed| !missed.is_empty())
+    {
+        out.push_str("\nMissed\n");
+        for entry in missed {
+            out.push_str(&format!(
+                "  {} · {} · hopp call {}\n",
+                entry["name"].as_str().unwrap_or("?"),
+                entry["label"].as_str().unwrap_or("Missed call"),
+                entry["id"].as_str().unwrap_or("?"),
+            ));
+        }
     }
     if let Some(teammates) = state["teammates"].as_array()
         && !teammates.is_empty()
