@@ -82,6 +82,9 @@ pub enum Command {
     Decline,
     /// Forget your missed calls (`hopp call NAME` calls someone back).
     ClearMissed,
+    /// Set what teammates see before ringing you: available, away or dnd (Do not
+    /// disturb, which turns calls away and lists them as missed).
+    SetStatus { status: String },
     /// Leave the call.
     Leave,
     /// Mute or unmute your microphone.
@@ -294,6 +297,11 @@ pub fn run(command: Command, instance_name: &str) -> Result<bool> {
         Command::Accept => Plan::Request(UiRequest::Accept, Missing::Error),
         Command::Decline => Plan::Request(UiRequest::Decline, Missing::Error),
         Command::ClearMissed => Plan::Request(UiRequest::ClearMissed, Missing::Error),
+        Command::SetStatus { status } => {
+            let status = serde_json::from_value(Value::String(status.trim().to_lowercase()))
+                .map_err(|_| anyhow::anyhow!("Status must be available, away or dnd"))?;
+            Plan::Request(UiRequest::SetStatus(status), Missing::Error)
+        }
         Command::Leave => Plan::Request(UiRequest::Leave, Missing::Error),
         Command::Mute => Plan::Request(UiRequest::Microphone, Missing::Error),
         Command::Camera => Plan::Request(UiRequest::Camera, Missing::Error),
@@ -397,6 +405,11 @@ pub fn describe(state: &Value) -> String {
         "Signed in as {}",
         state["user"]["name"].as_str().unwrap_or("?")
     ));
+    match state["user"]["status"].as_str() {
+        Some("away") => out.push_str(" (Away)"),
+        Some("dnd") => out.push_str(" (Do not disturb)"),
+        _ => {}
+    }
     if let Some(status) = state["status"].as_str().filter(|status| !status.is_empty()) {
         out.push_str(&format!(" · {status}"));
     }
@@ -473,12 +486,20 @@ pub fn describe(state: &Value) -> String {
                 "○"
             };
             let name = teammate["name"].as_str().unwrap_or("?");
-            match (teammate["room"].as_str(), teammate["with"].as_str()) {
-                (Some(room), _) => out.push_str(&format!("  {mark} {name} · in {room}\n")),
-                (None, Some(with)) => {
+            let status = match teammate["status"].as_str() {
+                Some("away") => Some("away"),
+                Some("dnd") => Some("do not disturb"),
+                _ => None,
+            };
+            match (teammate["room"].as_str(), teammate["with"].as_str(), status) {
+                (Some(room), ..) => out.push_str(&format!("  {mark} {name} · in {room}\n")),
+                (None, Some(with), _) => {
                     out.push_str(&format!("  {mark} {name} · in a call with {with}\n"))
                 }
-                (None, None) => out.push_str(&format!("  {mark} {name}\n")),
+                (None, None, Some(status)) => {
+                    out.push_str(&format!("  {mark} {name} · {status}\n"))
+                }
+                (None, None, None) => out.push_str(&format!("  {mark} {name}\n")),
             }
         }
     }
@@ -539,6 +560,12 @@ mod tests {
             parse(&["status", "--json", "--instance", "viewer"])?,
             Some(Command::Status { json: true })
         );
+        assert_eq!(
+            parse(&["set-status", "dnd"])?,
+            Some(Command::SetStatus {
+                status: "dnd".into()
+            })
+        );
         assert!(parse(&["nonsense"]).is_err());
         Ok(())
     }
@@ -567,15 +594,17 @@ mod tests {
     fn describes_a_call() {
         let text = describe(&json!({
             "signed_in": true,
-            "user": {"name": "Alex"},
+            "user": {"name": "Alex", "status": "dnd"},
             "status": "",
-            "teammates": [{"name": "Mira", "online": true, "room": "Core"}],
+            "teammates": [{"name": "Mira", "online": true, "room": "Core"},
+                          {"name": "Jo", "online": true, "status": "away"}],
             "rooms": [{"name": "Core", "members": ["Mira"]}],
             "call": {"room": "Core", "participants": [{"name": "Mira"}],
                      "microphone": true, "camera": false, "sharing": true},
             "ringing": null, "dialing": null, "errors": [],
         }));
-        assert!(text.contains("Signed in as Alex"));
+        assert!(text.contains("Signed in as Alex (Do not disturb)"));
+        assert!(text.contains("● Jo · away"));
         assert!(text.contains("In a call with Mira · mic on · sharing"));
         assert!(text.contains("● Mira · in Core"));
     }

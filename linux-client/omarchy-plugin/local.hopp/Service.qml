@@ -11,6 +11,8 @@ Item {
     property string message: ""
     property real now: Date.now() / 1000
     readonly property bool signedIn: online && state.signed_in === true
+    // available, away or dnd; empty on servers without statuses.
+    readonly property string status: signedIn && state.user && state.user.status ? state.user.status : ""
     readonly property var call: online && state.call ? state.call : null
     readonly property var ringing: online && state.ringing ? state.ringing : null
     readonly property var dialing: online && state.dialing ? state.dialing : null

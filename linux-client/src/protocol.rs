@@ -305,7 +305,16 @@ mod tests {
                 continue;
             };
             let request = request.trim().trim_matches('"');
-            let payload = serde_json::json!({ request: "c_20261103-230152-9e5e" });
+            if request.is_empty() {
+                continue;
+            }
+            // The panel sends a status where Hopp expects one, and an id everywhere else.
+            let value = if request == "set_status" {
+                "dnd"
+            } else {
+                "c_20261103-230152-9e5e"
+            };
+            let payload = serde_json::json!({ request: value });
             assert!(
                 serde_json::from_value::<UiRequest>(payload.clone()).is_ok(),
                 "the bar sends {payload}, which Hopp doesn't accept"
@@ -371,6 +380,8 @@ pub enum UiRequest {
     DismissMissed(String),
     /// Forget every missed call.
     ClearMissed,
+    /// Set what teammates see before ringing you.
+    SetStatus(crate::api::UserStatus),
     Leave,
     Microphone,
     Camera,

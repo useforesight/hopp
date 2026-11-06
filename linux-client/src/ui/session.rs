@@ -715,10 +715,14 @@ impl Session {
 
     /// The missed call to show on the call card: the newest, unless a call is ringing or
     /// being placed, or a call started since it came in.
+    /// Do not disturb keeps them listed, and the card waits until it's turned off.
     pub fn missed_shown(&self) -> Option<&crate::missed::Missed> {
-        (self.missed_card && self.ringing.is_none() && self.dialing.is_none())
-            .then(|| self.missed.first())
-            .flatten()
+        (self.missed_card
+            && self.ringing.is_none()
+            && self.dialing.is_none()
+            && !self.do_not_disturb())
+        .then(|| self.missed.first())
+        .flatten()
     }
 
     /// A card saying who else is transcribing this call, as on the Mac: the call
@@ -861,6 +865,29 @@ impl Session {
 
     pub fn sign_out(&mut self, cx: &mut Context<Self>) {
         self.send(Command::SignOut);
+        cx.notify();
+    }
+
+    /// Your status, or `None` before sign-in and on servers without statuses.
+    pub fn own_status(&self) -> Option<crate::api::UserStatus> {
+        self.user.as_ref().and_then(|user| user.status)
+    }
+
+    pub fn do_not_disturb(&self) -> bool {
+        self.own_status() == Some(crate::api::UserStatus::Dnd)
+    }
+
+    pub fn set_status(&mut self, status: crate::api::UserStatus, cx: &mut Context<Self>) {
+        if self.own_status().is_some() {
+            self.send(Command::SetStatus(status));
+            cx.notify();
+        }
+    }
+
+    pub fn set_auto_away(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.settings.auto_away = enabled;
+        let _ = crate::settings::save(&self.settings);
+        self.send(Command::AutoAway(enabled));
         cx.notify();
     }
 
@@ -2125,6 +2152,19 @@ impl Session {
                 cx.emit(SessionEvent::SignedOut);
             }
             Event::Teammates(teammates) => self.teammates = teammates,
+            Event::OwnStatus(status) => {
+                let was_dnd = self.do_not_disturb();
+                if let Some(user) = self.user.as_mut() {
+                    user.status = status;
+                }
+                if was_dnd != self.do_not_disturb() {
+                    // Turning it off brings back the card for whoever tried meanwhile.
+                    if was_dnd && !self.missed.is_empty() && self.room.is_none() {
+                        self.missed_card = true;
+                    }
+                    cx.emit(SessionEvent::RingingChanged);
+                }
+            }
             Event::IncomingCall { caller_id, name } => {
                 self.ringing = Some(Ringing::Call {
                     caller_id,
@@ -2707,6 +2747,7 @@ impl Session {
             UiRequest::Accept => self.accept_ringing(cx),
             UiRequest::DismissMissed(id) => self.dismiss_missed(Some(id.as_str()), cx),
             UiRequest::ClearMissed => self.dismiss_missed(None, cx),
+            UiRequest::SetStatus(status) => self.set_status(*status, cx),
             UiRequest::Decline => {
                 if self.ringing.is_some() {
                     self.decline_ringing(cx);
@@ -2764,6 +2805,8 @@ impl Session {
                 "id": user.id,
                 "name": full_name(&user.first_name, &user.last_name),
                 "email": user.email,
+                // available, away or dnd; null on servers without statuses.
+                "status": user.status,
             })),
             "status": self.status,
             "teammates": self.teammates.iter()
@@ -2772,6 +2815,8 @@ impl Session {
                     "id": teammate.id,
                     "name": full_name(&teammate.first_name, &teammate.last_name),
                     "online": teammate.is_active,
+                    // away or dnd while online, otherwise null.
+                    "status": teammate.shown_status(),
                     "room": room_of(&teammate.id),
                     "with": self.call_peers(&teammate.id),
                 }))
@@ -2871,6 +2916,7 @@ fn describe(event: &Event) -> Option<String> {
         Event::TransportReconnected => "reconnected".into(),
         Event::DesktopLocked => "desktop locked".into(),
         Event::DesktopUnlocked => "desktop unlocked".into(),
+        Event::OwnStatus(status) => format!("own status: {status:?}"),
         _ => return None,
     })
 }

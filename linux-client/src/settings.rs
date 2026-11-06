@@ -22,6 +22,13 @@ pub struct Settings {
     /// Turn the camera on as soon as a call connects.
     #[serde(default)]
     pub start_camera: bool,
+    /// Show you as Away while the desktop is locked, except during a call.
+    #[serde(default = "yes")]
+    pub auto_away: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// Tile size in the call window.
@@ -56,6 +63,7 @@ impl Default for Settings {
             face_layout: FaceLayout::default(),
             start_microphone: false,
             start_camera: false,
+            auto_away: true,
         }
     }
 }

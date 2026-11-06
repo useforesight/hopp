@@ -143,6 +143,10 @@ pub enum Command {
     StopCapture,
     /// Mark this moment in the capture, with an optional label.
     Bookmark(Option<String>),
+    /// Set what teammates see before ringing you.
+    SetStatus(crate::api::UserStatus),
+    /// Set you Away while the desktop's locked, and back after (Settings).
+    AutoAway(bool),
     #[cfg(test)]
     TestDesktopLock(bool),
 }
@@ -216,6 +220,8 @@ pub enum Event {
         cameras: Vec<(String, String)>,
     },
     Teammates(Vec<crate::api::Teammate>),
+    /// Your status changed, here or anywhere else. `None` on servers without statuses.
+    OwnStatus(Option<crate::api::UserStatus>),
     IncomingCall {
         caller_id: String,
         name: String,
@@ -390,6 +396,8 @@ struct ClipboardPacketOut {
 }
 
 struct Refreshed {
+    /// You, for your status, which the Mac app or the web can change too.
+    user: Option<UserInfo>,
     rooms: Vec<RoomInfo>,
     teammates: Vec<crate::api::Teammate>,
     presence: crate::api::RoomsPresence,
@@ -503,6 +511,10 @@ struct Worker {
     outgoing_invite: Option<PendingInvite>,
     socket_connected: bool,
     user_id: Option<String>,
+    /// Your status, and whether it was set automatically. `None` on servers without them.
+    own_status: Option<(crate::api::UserStatus, bool)>,
+    /// The desktop has told us it's locked, which is what "stepped away" means here.
+    stepped_away: bool,
     refresh_task: Option<tokio::task::JoinHandle<Result<Refreshed>>>,
     speaker: Recovery,
     microphone: Recovery,
@@ -576,6 +588,8 @@ impl Worker {
             outgoing_invite: None,
             socket_connected: false,
             user_id: None,
+            own_status: None,
+            stepped_away: false,
             refresh_task: None,
             speaker: Recovery::default(),
             microphone: Recovery::default(),
@@ -606,10 +620,14 @@ impl Worker {
                     self.desktop_locked = true;
                     self.stop_share().await;
                     self.emit(Event::DesktopLocked);
+                    self.stepped_away = true;
+                    self.sync_auto_away().await;
                 }
                 Event::DesktopUnlocked => {
                     self.desktop_locked = false;
                     self.emit(Event::DesktopUnlocked);
+                    self.stepped_away = false;
+                    self.sync_auto_away().await;
                 }
                 event => self.emit(event),
             }
@@ -773,6 +791,8 @@ impl Worker {
         self.presence_rx = presence_rx;
         self.socket_connected = false;
         self.user_id = Some(user.id.clone());
+        self.own_status = user.status.map(|status| (status, user.status_auto));
+        self.emit(Event::OwnStatus(user.status));
         let (stop, rx) = watch::channel(false);
         self.presence_stop = Some(stop);
         let (outgoing, outgoing_rx) = async_mpsc::channel(32);
@@ -808,6 +828,7 @@ impl Worker {
         self.outgoing = None;
         self.socket_connected = false;
         self.user_id = None;
+        self.own_status = None;
         self.teammates.clear();
         let (sender, receiver) = wake::channel(&self.wake);
         self.presence_tx = sender;
@@ -830,7 +851,9 @@ impl Worker {
                     tokio::try_join!(api.rooms(), api.teammates(), api.rooms_presence())?;
                 // Older servers don't have it; nothing else depends on it.
                 let calls = api.calls_presence().await.unwrap_or_default();
+                let user = api.user().await.ok();
                 Ok(Refreshed {
+                    user,
                     rooms,
                     teammates,
                     presence,
@@ -1174,6 +1197,16 @@ impl Worker {
                 }
             }
             Command::CancelInvite => self.cancel_invite().await,
+            Command::SetStatus(status) => {
+                let api = self.api.as_ref().context("Sign in first")?;
+                let reply = api.set_status(status, false).await?;
+                self.note_status(reply.status.map(|status| (status, reply.status_auto)));
+            }
+            Command::AutoAway(enabled) => {
+                // The interface saves settings; this copy only steers the engine.
+                self.settings.auto_away = enabled;
+                self.sync_auto_away().await;
+            }
             #[cfg(test)]
             Command::TestDesktopLock(locked) => {
                 self.privacy_locked.store(locked, Ordering::Release);
@@ -1515,6 +1548,11 @@ impl Worker {
         {
             match task.await {
                 Ok(Ok(refreshed)) => {
+                    if let Some(user) = refreshed.user {
+                        self.note_status(user.status.map(|status| (status, user.status_auto)));
+                    }
+                    // A call that ended while you were away, say.
+                    self.sync_auto_away().await;
                     self.teammates = refreshed.teammates.clone();
                     self.emit(Event::Rooms(refreshed.rooms));
                     self.emit(Event::Teammates(refreshed.teammates));
@@ -2641,6 +2679,61 @@ impl Worker {
             .unwrap_or_else(|| "Your teammate".into())
     }
 
+    fn first_name(&self, id: &str) -> String {
+        self.teammates
+            .iter()
+            .find(|t| t.id == id)
+            .map(|t| t.first_name.trim().to_owned())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "Your teammate".into())
+    }
+
+    /// In a call, joining one or ringing someone: being here, however still you sit.
+    fn in_any_call(&self) -> bool {
+        self.session.is_some() || self.pending_join.is_some() || self.call_peer.is_some()
+    }
+
+    fn do_not_disturb(&self) -> bool {
+        matches!(self.own_status, Some((crate::api::UserStatus::Dnd, _)))
+    }
+
+    /// Record your status as the server has it, and tell the interface if it changed.
+    fn note_status(&mut self, status: Option<(crate::api::UserStatus, bool)>) {
+        if status != self.own_status {
+            let shown_changed =
+                status.map(|(status, _)| status) != self.own_status.map(|(status, _)| status);
+            self.own_status = status;
+            if shown_changed {
+                self.emit(Event::OwnStatus(status.map(|(status, _)| status)));
+            }
+        }
+    }
+
+    /// Away while the desktop's locked, unless you're in a call, and Available again when
+    /// you're back if that's how you went Away. A status you chose stays: the server
+    /// won't let an automatic change replace it.
+    async fn sync_auto_away(&mut self) {
+        use crate::api::UserStatus;
+        let Some((status, automatic)) = self.own_status else {
+            return; // A server without statuses.
+        };
+        // Teammates see you offline anyway, and reconnecting refreshes and comes back here.
+        if !self.settings.auto_away || !self.socket_connected {
+            return;
+        }
+        let away = self.stepped_away && !self.in_any_call();
+        let change = match status {
+            UserStatus::Available if away => UserStatus::Away,
+            UserStatus::Away if !away && automatic => UserStatus::Available,
+            _ => return,
+        };
+        let Some(api) = self.api.clone() else { return };
+        match api.set_status(change, true).await {
+            Ok(reply) => self.note_status(reply.status.map(|status| (status, reply.status_auto))),
+            Err(error) => crate::logger::line(format!("Automatic status: {error:#}")),
+        }
+    }
+
     async fn presence_event(&mut self, event: PresenceEvent) -> Result<()> {
         match event {
             PresenceEvent::Connected => {
@@ -2674,6 +2767,14 @@ impl Worker {
                         {
                             self.missed(&incoming.caller_id, false, None);
                         }
+                    } else if self.do_not_disturb() {
+                        // They're told, and you see that they tried once it's off.
+                        self.send_socket(presence::call_reject(
+                            &incoming.caller_id,
+                            "do-not-disturb",
+                        ))
+                        .await?;
+                        self.missed(&incoming.caller_id, false, None);
                     } else {
                         self.incoming_call = Some(incoming.caller_id.clone());
                         self.emit(Event::IncomingCall {
@@ -2725,9 +2826,11 @@ impl Worker {
                         && self.pending_join.is_none()
                         && (id == self.user_id.as_deref() || id == self.call_peer.as_deref())
                     {
+                        let name = self.first_name(self.call_peer.as_deref().unwrap_or_default());
+                        let reason = payload.get("reject_reason").and_then(|v| v.as_str());
                         self.call_peer = None;
                         self.leave().await;
-                        self.emit(Event::Disconnected("Call declined".into()));
+                        self.emit(Event::Disconnected(declined(&name, reason, false)));
                     }
                 }
                 "callee_offline" => {
@@ -2759,6 +2862,16 @@ impl Worker {
                         self.missed(&invite.inviter_id, true, invite.initiated_at);
                         return Ok(());
                     }
+                    if self.do_not_disturb() {
+                        self.send_socket(presence::invite_reject(
+                            &invite.inviter_id,
+                            &invite.invite_id,
+                            "do-not-disturb",
+                        ))
+                        .await?;
+                        self.missed(&invite.inviter_id, true, None);
+                        return Ok(());
+                    }
                     if let Some((inviter, id)) = self.incoming_invite.take() {
                         let _ = self
                             .send_socket(presence::invite_reject(&inviter, &id, "rejected"))
@@ -2782,15 +2895,15 @@ impl Worker {
                     if self.outgoing_invite.as_ref().is_some_and(|invite| {
                         Some(invite.invite_id.as_str()) == id && Some(invite.peer.as_str()) == peer
                     }) {
+                        let reason = payload.get("reject_reason").and_then(|v| v.as_str());
+                        let message = if kind == "invite_accept" {
+                            "Teammate accepted".into()
+                        } else {
+                            let name = self.first_name(peer.unwrap_or_default());
+                            declined(&name, reason, true)
+                        };
                         self.outgoing_invite = None;
-                        self.emit(Event::InviteResolved {
-                            message: if kind == "invite_accept" {
-                                "Teammate accepted"
-                            } else {
-                                "Invitation declined"
-                            }
-                            .into(),
-                        });
+                        self.emit(Event::InviteResolved { message });
                     }
                 }
                 "invite_cancel" => {
@@ -2830,6 +2943,20 @@ impl Worker {
             },
         }
         Ok(())
+    }
+}
+
+/// What to tell you when a call or invitation is turned down.
+fn declined(name: &str, reason: Option<&str>, invite: bool) -> String {
+    match reason {
+        Some("in-call") => format!("{name} is already in a call"),
+        Some("do-not-disturb") => {
+            format!("{name} has Do not disturb on, but they'll see that you tried")
+        }
+        Some("trial-ended") => "Your Hopp trial has ended".into(),
+        Some("already-calling") => format!("Already calling {name}"),
+        _ if invite => "Invitation declined".into(),
+        _ => "Call declined".into(),
     }
 }
 

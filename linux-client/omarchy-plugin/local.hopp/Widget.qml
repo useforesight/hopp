@@ -207,7 +207,7 @@ Ui.Panel {
                 Ui.PanelHero {
                     Layout.fillWidth: true
                     title: "Hopp"
-                    meta: app.service.stopped ? "Not running" : !app.service.online ? "Starting Hopp…" : !app.service.signedIn ? "Not signed in" : app.service.ringing ? "Incoming call" : app.inCall ? (app.call.connected ? "In a call · " + app.service.elapsed : "Connecting…") : app.service.teammates.filter(p => p.online).length + " available"
+                    meta: app.service.stopped ? "Not running" : !app.service.online ? "Starting Hopp…" : !app.service.signedIn ? "Not signed in" : app.service.ringing ? "Incoming call" : app.inCall ? (app.call.connected ? "In a call · " + app.service.elapsed : "Connecting…") : app.service.teammates.filter(p => p.online && !p.status).length + " available"
                     iconComponent: HoppMark {
                         foreground: Color.popups.text
                     }
@@ -244,6 +244,24 @@ Ui.Panel {
                                 app.send("quit");
                                 app.close();
                             }
+                        }
+                    }
+                }
+
+                // What teammates see before ringing you. Hidden on servers without statuses.
+                RowLayout {
+                    visible: app.service.status !== ""
+                    Layout.fillWidth: true
+                    spacing: Style.spacing.xs
+                    Repeater {
+                        model: [["available", "Available"], ["away", "Away"], ["dnd", "Do not disturb"]]
+                        delegate: HoppButton {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            text: modelData[1]
+                            primary: app.service.status === modelData[0]
+                            hint: modelData[0] === "dnd" ? "Calls don't ring; you see who tried when you turn it off" : modelData[0] === "away" ? "Calls still ring" : "Teammates can ring you"
+                            onClicked: app.send("status", modelData[0])
                         }
                     }
                 }
@@ -579,7 +597,7 @@ Ui.Panel {
                         Layout.fillWidth: true
                     }
                     Text {
-                        text: app.people.filter(p => p.online).length + " available"
+                        text: app.people.filter(p => p.online && !p.status).length + " available"
                         color: Qt.darker(Color.popups.text, 1.4)
                         font.family: Style.font.family
                         font.pixelSize: Style.font.caption

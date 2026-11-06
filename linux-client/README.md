@@ -74,6 +74,7 @@ hopp                  # start, or bring the Hopp window forward
 hopp --background     # start without a window (what the bar plugin does)
 hopp status           # who's online and what's happening in your call (--json)
 hopp call sam       # call a teammate by name; join, accept, decline, leave
+hopp set-status dnd   # available, away or dnd (Do not disturb)
 hopp mute | camera | share
 hopp panel            # Super+Alt+H: bar panel, or the Hopp window without it
 hopp peek             # Super+H
@@ -191,6 +192,13 @@ hopp capture show "$id" |
   and Ctrl+scroll zooms.
 - Output-bound cursor and drawing layers with empty input regions.
 - Sharing and remote input stop when Hyprland’s lock notifier reports a lock.
+- Statuses, as on the Mac: pick Available, Away or Do not disturb in the bar
+  panel, the Hopp window or Settings, and teammates see theirs beside their name.
+  Do not disturb turns calls and invitations away, tells the caller, and lists
+  them as missed, with the card held back until you turn it off. Locking the
+  screen sets you Away until you unlock, except during a call (Settings → Away
+  while locked); a status you chose yourself stays. Needs a server with statuses
+  (Foresight's backend from 6 November 2026); on others all of this stays hidden.
 - Screen shares sent as H.265 (5K from a Mac) are decoded through the system
   FFmpeg, on the hardware through VA-API when there is a decoder (on Apple
   silicon, the AVD with `avd-fw` and `libva-v4l2-request`), else in software.

@@ -13,6 +13,8 @@ use gpui_kit::{
 };
 use gpui_omarchy::{ActiveTheme, IconName, icon, input};
 
+use crate::api::UserStatus;
+
 use super::{
     Shell,
     session::{Ringing, Session, full_name},
@@ -145,6 +147,45 @@ impl HomeView {
 
     // ---- sections -------------------------------------------------------------------
 
+    /// Available, Away or Do not disturb: what teammates see before they ring. Hidden on
+    /// servers without statuses.
+    fn status_picker(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        let current = self.session.read(cx).own_status()?;
+        let mut row = div().flex().items_center().gap(px(6.));
+        for status in UserStatus::ALL {
+            row = row.child(
+                style::chip(
+                    SharedString::from(format!("status-{}", status.as_str())),
+                    status.label(),
+                    None,
+                    if status == current {
+                        Tone::On
+                    } else {
+                        Tone::Plain
+                    },
+                    cx,
+                )
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    view.session
+                        .update(cx, |session, cx| session.set_status(status, cx))
+                })),
+            );
+        }
+        let note = match current {
+            UserStatus::Available => None,
+            UserStatus::Away => Some("Calls still ring."),
+            UserStatus::Dnd => Some("Calls don't ring. You'll see who tried when you turn it off."),
+        };
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(row)
+                .children(note.map(|note| style::muted_text(note, cx))),
+        )
+    }
+
     fn header(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = cx.omarchy().clone();
         let session = self.session.read(cx);
@@ -152,7 +193,11 @@ impl HomeView {
         let available = session
             .teammates
             .iter()
-            .filter(|teammate| teammate.is_active && Some(&teammate.id) != own.as_ref())
+            .filter(|teammate| {
+                teammate.is_active
+                    && teammate.shown_status().is_none()
+                    && Some(&teammate.id) != own.as_ref()
+            })
             .count();
         let meta = if session.user.is_none() {
             "Pairing for Omarchy".to_owned()
@@ -621,7 +666,7 @@ impl HomeView {
         people.sort_by(|a, b| b.0.is_active.cmp(&a.0.is_active).then(a.1.cmp(&b.1)));
         let available = people
             .iter()
-            .filter(|(teammate, ..)| teammate.is_active)
+            .filter(|(teammate, ..)| teammate.is_active && teammate.shown_status().is_none())
             .count();
 
         let mut list = div().flex().flex_col().gap(px(2.)).mx(px(-6.));
@@ -636,10 +681,23 @@ impl HomeView {
             )));
         }
         for (teammate, name, room) in people {
+            let shown = teammate.shown_status();
             let status = match (&room, teammate.is_active) {
                 (Some(room), _) => format!("In {room}"),
-                (None, true) => "Available".to_owned(),
-                (None, false) => "Away".to_owned(),
+                (None, true) => shown.map_or("Available", UserStatus::label).to_owned(),
+                (None, false) => "Offline".to_owned(),
+            };
+            let status_color = match (&room, shown) {
+                (None, Some(UserStatus::Away)) => Some(theme.warning),
+                (None, Some(UserStatus::Dnd)) => Some(theme.danger),
+                _ => None,
+            };
+            // As on the Mac: you can still ring, and Do not disturb only tells them.
+            let pair = match (in_call, shown) {
+                (true, _) => "Invite",
+                (false, Some(UserStatus::Away)) => "Ring anyway",
+                (false, Some(UserStatus::Dnd)) => "Let them know",
+                (false, _) => "Pair",
             };
             let target = teammate.clone();
             list = list.child(
@@ -657,7 +715,7 @@ impl HomeView {
                         div()
                             .relative()
                             .child(style::avatar(&name, 30., cx))
-                            .child(style::presence_dot(teammate.is_active, cx)),
+                            .child(style::presence_dot(teammate.is_active, shown, cx)),
                     )
                     .child(
                         div()
@@ -672,7 +730,11 @@ impl HomeView {
                                     .text_ellipsis()
                                     .child(name),
                             )
-                            .child(style::muted_text(status, cx).text_ellipsis()),
+                            .child(
+                                style::muted_text(status, cx)
+                                    .text_ellipsis()
+                                    .when_some(status_color, |text, color| text.text_color(color)),
+                            ),
                     )
                     .child(
                         div()
@@ -681,7 +743,7 @@ impl HomeView {
                             .child(
                                 style::chip(
                                     SharedString::from(format!("pair-{}", teammate.id)),
-                                    if in_call { "Invite" } else { "Pair" },
+                                    pair,
                                     Some(IconName::Phone),
                                     Tone::On,
                                     cx,
@@ -1158,8 +1220,10 @@ impl Render for HomeView {
                 let missed = self.missed(cx);
                 let teammates = self.teammates(cx);
                 let rooms = self.rooms(window, cx);
+                let status = self.status_picker(cx);
                 body.children(ringing)
                     .children(call)
+                    .children(status)
                     .children(missed)
                     .child(
                         input("search", &self.search, window, cx)

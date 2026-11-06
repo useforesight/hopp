@@ -21,12 +21,58 @@ pub struct RoomInfo {
     pub name: String,
 }
 
+/// What teammates see before ringing someone. Servers older than statuses leave it out,
+/// and then the client shows none of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UserStatus {
+    Available,
+    Away,
+    /// Calls and invitations are turned away and listed as missed.
+    Dnd,
+}
+
+impl UserStatus {
+    pub const ALL: [Self; 3] = [Self::Available, Self::Away, Self::Dnd];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Available => "Available",
+            Self::Away => "Away",
+            Self::Dnd => "Do not disturb",
+        }
+    }
+
+    /// The wire name: `available`, `away` or `dnd`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Available => "available",
+            Self::Away => "away",
+            Self::Dnd => "dnd",
+        }
+    }
+}
+
+/// A status this client doesn't know (a newer server's) reads as none, rather than
+/// failing the whole response.
+fn lenient_status<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<UserStatus>, D::Error> {
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| serde_json::from_value(value).ok()))
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct UserInfo {
     pub id: String,
     pub first_name: String,
     pub last_name: String,
     pub email: String,
+    #[serde(default, deserialize_with = "lenient_status")]
+    pub status: Option<UserStatus>,
+    /// The status was set because you stepped away, not by you.
+    #[serde(default)]
+    pub status_auto: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -37,6 +83,25 @@ pub struct Teammate {
     pub email: String,
     #[serde(default)]
     pub is_active: bool,
+    #[serde(default, deserialize_with = "lenient_status")]
+    pub status: Option<UserStatus>,
+}
+
+impl Teammate {
+    /// Away or Do not disturb, which only means something while they're online.
+    pub fn shown_status(&self) -> Option<UserStatus> {
+        self.status
+            .filter(|status| self.is_active && *status != UserStatus::Available)
+    }
+}
+
+/// Your status as the server saved it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub struct StatusReply {
+    #[serde(deserialize_with = "lenient_status")]
+    pub status: Option<UserStatus>,
+    #[serde(default)]
+    pub status_auto: bool,
 }
 
 pub type RoomsPresence = HashMap<String, Vec<String>>;
@@ -355,6 +420,20 @@ impl ApiClient {
         self.get("api/auth/user").await
     }
 
+    /// Set what teammates see. An automatic change (`auto`) never replaces a status you
+    /// chose: the server keeps yours, and the reply says which won.
+    pub async fn set_status(&self, status: UserStatus, auto: bool) -> Result<StatusReply> {
+        self.request(
+            Method::PUT,
+            "api/auth/status",
+            Some(serde_json::json!({ "status": status, "auto": auto })),
+        )
+        .await?
+        .json()
+        .await
+        .map_err(|_| anyhow::anyhow!("Hopp server returned an unexpected status"))
+    }
+
     pub async fn teammates(&self) -> Result<Vec<Teammate>> {
         let mut teammates: Vec<Teammate> = self.get("api/auth/teammates").await?;
         teammates.sort_by_key(|teammate| teammate.first_name.to_lowercase());
@@ -596,6 +675,25 @@ mod tests {
         let teammate: Teammate = serde_json::from_str(r#"{"id":"usr-456","first_name":"Ada","last_name":"Local","email":"ada@hopp-native.invalid","is_active":true,"team_id":7,"avatar_url":null}"#).unwrap();
         assert!(teammate.is_active);
         assert_eq!(teammate.first_name, "Ada");
+        assert_eq!(teammate.status, None);
+        let teammate: Teammate = serde_json::from_str(r#"{"id":"u","first_name":"A","last_name":"B","email":"e","is_active":true,"status":"dnd"}"#).unwrap();
+        assert_eq!(teammate.shown_status(), Some(UserStatus::Dnd));
+        let offline: Teammate = serde_json::from_str(r#"{"id":"u","first_name":"A","last_name":"B","email":"e","is_active":false,"status":"away"}"#).unwrap();
+        assert_eq!(offline.shown_status(), None);
+        let newer: Teammate = serde_json::from_str(
+            r#"{"id":"u","first_name":"A","last_name":"B","email":"e","status":"focusing"}"#,
+        )
+        .unwrap();
+        assert_eq!(newer.status, None);
+        let user: UserInfo = serde_json::from_str(r#"{"id":"u","first_name":"A","last_name":"B","email":"e","status":"away","status_auto":true}"#).unwrap();
+        assert_eq!(
+            (user.status, user.status_auto),
+            (Some(UserStatus::Away), true)
+        );
+        assert_eq!(
+            serde_json::json!({"status": UserStatus::Dnd})["status"],
+            "dnd"
+        );
         let presence: PresenceResponse =
             serde_json::from_str(r#"{"rooms":{"room-123":["usr-456"]}}"#).unwrap();
         assert_eq!(presence.rooms["room-123"], ["usr-456"]);

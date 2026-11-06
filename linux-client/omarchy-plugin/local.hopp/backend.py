@@ -43,7 +43,12 @@ SIMPLE = {
     "draw": "draw",
     "quit": "quit",
 }
-WITH_ID = {"call": "call", "join": "join_room", "dismiss_missed": "dismiss_missed"}
+WITH_ID = {
+    "call": "call",
+    "join": "join_room",
+    "dismiss_missed": "dismiss_missed",
+    "status": "set_status",
+}
 
 output_lock = threading.Lock()
 

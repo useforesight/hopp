@@ -27,6 +27,7 @@ Ui.BorderSurface {
         Avatar {
             name: root.person.name
             online: root.person.online
+            status: root.person.status || ""
             showPresence: true
         }
         ColumnLayout {
@@ -44,7 +45,7 @@ Ui.BorderSurface {
             Text {
                 Layout.fillWidth: true
                 textFormat: Text.PlainText
-                text: root.person.room ? "In " + root.person.room : root.person.with ? "In a call with " + root.person.with : root.person.online ? "Available" : "Away"
+                text: root.person.room ? "In " + root.person.room : root.person.with ? "In a call with " + root.person.with : !root.person.online ? "Offline" : root.person.status === "dnd" ? "Do not disturb" : root.person.status === "away" ? "Away" : "Available"
                 elide: Text.ElideRight
                 color: Qt.darker(Color.popups.text, 1.5)
                 font.family: Style.font.family
@@ -53,7 +54,8 @@ Ui.BorderSurface {
         }
         HoppButton {
             visible: hover.hovered || root.current
-            text: root.inCall ? "Invite" : "Pair"
+            // As on the Mac: you can still ring, and Do not disturb only tells them you tried.
+            text: root.inCall ? "Invite" : root.person.status === "away" ? "Ring anyway" : root.person.status === "dnd" ? "Let them know" : "Pair"
             primary: true
             enabled: !root.busy
             hint: (root.inCall ? "Invite " : "Pair with ") + root.person.name

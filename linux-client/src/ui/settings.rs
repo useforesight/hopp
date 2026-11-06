@@ -356,6 +356,7 @@ impl SettingsView {
         let theme = cx.omarchy().clone();
         let session = self.session.read(cx);
         let user = session.user.clone();
+        let (own_status, auto_away) = (session.own_status(), session.settings.auto_away);
         let mut page = div().flex().flex_col();
         page = page.child(Self::row(
             match &user {
@@ -394,6 +395,42 @@ impl SettingsView {
                 }),
             cx,
         ));
+        // Servers without statuses leave them out, and then so does this.
+        if let Some(current) = own_status {
+            use crate::api::UserStatus;
+            let picker = self.segmented(
+                "status",
+                &UserStatus::ALL.map(|status| (status, status.label())),
+                current,
+                |view, status, cx| {
+                    view.session
+                        .update(cx, |session, cx| session.set_status(status, cx))
+                },
+                cx,
+            );
+            page = page.child(Self::row(
+                "Status",
+                Some("What teammates see before they ring. Do not disturb turns calls away and lists them as missed."),
+                picker,
+                cx,
+            ));
+            let away = self.segmented(
+                "auto-away",
+                &[(false, "Off"), (true, "On")],
+                auto_away,
+                |view, on, cx| {
+                    view.session
+                        .update(cx, |session, cx| session.set_auto_away(on, cx))
+                },
+                cx,
+            );
+            page = page.child(Self::row(
+                "Away while locked",
+                Some("Shows you as Away while the screen is locked, except during a call. A status you chose stays."),
+                away,
+                cx,
+            ));
+        }
         page = page.child(
             div()
                 .flex()

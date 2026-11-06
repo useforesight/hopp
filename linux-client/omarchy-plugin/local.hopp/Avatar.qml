@@ -7,6 +7,8 @@ Rectangle {
     id: root
     property string name: ""
     property bool online: false
+    // "away" or "dnd" while online; anything else shows plain online or offline.
+    property string status: ""
     property bool showPresence: false
     property real size: Style.space(28)
     readonly property var offsets: [0, 0.1, 0.2, 0.62, 0.72, 0.82]
@@ -39,7 +41,7 @@ Rectangle {
         anchors.right: parent.right
         anchors.bottom: parent.bottom
         anchors.margins: -1
-        color: root.online ? Color.accent : Qt.darker(Color.popups.text, 1.8)
+        color: !root.online ? Qt.darker(Color.popups.text, 1.8) : root.status === "dnd" ? Color.urgent : root.status === "away" ? Qt.hsla(0.11, 0.65, 0.55, 1) : Color.accent
         border.width: 2
         border.color: Color.popups.background
     }

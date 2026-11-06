@@ -490,3 +490,107 @@ async fn a_stale_speaker_failure_without_a_call_is_ignored() {
         .await;
     assert!(worker.speaker.due.is_none());
 }
+
+/// A worker that is signed in and connected, its outgoing socket messages and its events.
+fn connected_worker(
+    status: crate::api::UserStatus,
+) -> (
+    Worker,
+    tokio::sync::mpsc::Receiver<serde_json::Value>,
+    std::sync::mpsc::Receiver<Event>,
+) {
+    let (events, events_rx) = crate::wake::detached();
+    let mut worker = Worker::new(Settings::default(), SharedFrames::default(), events);
+    let (outgoing, outgoing_rx) = tokio::sync::mpsc::channel(8);
+    worker.outgoing = Some(outgoing);
+    worker.socket_connected = true;
+    worker.own_status = Some((status, false));
+    (worker, outgoing_rx, events_rx)
+}
+
+fn missed_events(events: &std::sync::mpsc::Receiver<Event>) -> Vec<(String, bool)> {
+    std::iter::from_fn(|| events.try_recv().ok())
+        .filter_map(|event| match event {
+            Event::Missed {
+                caller_id, invite, ..
+            } => Some((caller_id, invite)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn do_not_disturb_turns_calls_and_invitations_away_as_missed() {
+    use crate::{api::UserStatus, presence::PresenceEvent};
+    let (mut worker, mut outgoing, events) = connected_worker(UserStatus::Dnd);
+    worker
+        .presence_event(PresenceEvent::Message {
+            kind: "incoming_call".into(),
+            payload: serde_json::json!({"caller_id": "mira"}),
+        })
+        .await
+        .unwrap();
+    let reply = outgoing.try_recv().unwrap();
+    assert_eq!(reply["type"], "call_reject");
+    assert_eq!(reply["payload"]["caller_id"], "mira");
+    assert_eq!(reply["payload"]["reject_reason"], "do-not-disturb");
+    assert!(worker.incoming_call.is_none(), "it must not ring");
+
+    worker
+        .presence_event(PresenceEvent::Message {
+            kind: "incoming_invite".into(),
+            payload: serde_json::json!({"inviter_id": "jo", "invite_id": "i1"}),
+        })
+        .await
+        .unwrap();
+    let reply = outgoing.try_recv().unwrap();
+    assert_eq!(reply["type"], "invite_reject");
+    assert_eq!(reply["payload"]["invite_id"], "i1");
+    assert_eq!(reply["payload"]["reject_reason"], "do-not-disturb");
+    assert!(worker.incoming_invite.is_none());
+    assert_eq!(
+        missed_events(&events),
+        [("mira".to_owned(), false), ("jo".to_owned(), true)]
+    );
+}
+
+#[tokio::test]
+async fn away_still_rings() {
+    use crate::{api::UserStatus, presence::PresenceEvent};
+    let (mut worker, mut outgoing, events) = connected_worker(UserStatus::Away);
+    worker
+        .presence_event(PresenceEvent::Message {
+            kind: "incoming_call".into(),
+            payload: serde_json::json!({"caller_id": "mira"}),
+        })
+        .await
+        .unwrap();
+    assert!(outgoing.try_recv().is_err());
+    assert_eq!(worker.incoming_call.as_deref(), Some("mira"));
+    assert!(missed_events(&events).is_empty());
+}
+
+#[tokio::test]
+async fn a_call_turned_away_says_why() {
+    use crate::presence::PresenceEvent;
+    let (mut worker, _outgoing, events) = connected_worker(crate::api::UserStatus::Available);
+    worker.call_peer = Some("mira".into());
+    worker
+        .presence_event(PresenceEvent::Message {
+            kind: "call_reject".into(),
+            payload: serde_json::json!({"caller_id": "mira", "reject_reason": "do-not-disturb"}),
+        })
+        .await
+        .unwrap();
+    let reasons: Vec<_> = std::iter::from_fn(|| events.try_recv().ok())
+        .filter_map(|event| match event {
+            Event::Disconnected(reason) => Some(reason),
+            _ => None,
+        })
+        .collect();
+    // Leaving says the call ended; the reason comes last and is what stays shown.
+    assert_eq!(
+        reasons.last().map(String::as_str),
+        Some("Your teammate has Do not disturb on, but they'll see that you tried")
+    );
+}

@@ -33,8 +33,8 @@ pub fn avatar(name: &str, diameter: f32, cx: &App) -> Div {
         .child(initials(name))
 }
 
-/// Presence dot overlaid on an avatar.
-pub fn presence_dot(online: bool, cx: &App) -> Div {
+/// Presence dot overlaid on an avatar: online, Away, Do not disturb or offline.
+pub fn presence_dot(online: bool, status: Option<crate::api::UserStatus>, cx: &App) -> Div {
     let theme = cx.omarchy();
     div()
         .absolute()
@@ -44,10 +44,11 @@ pub fn presence_dot(online: bool, cx: &App) -> Div {
         .rounded_full()
         .border_2()
         .border_color(theme.background)
-        .bg(if online {
-            theme.success
-        } else {
-            theme.secondary.opacity(0.45)
+        .bg(match (online, status) {
+            (false, _) => theme.secondary.opacity(0.45),
+            (true, Some(crate::api::UserStatus::Away)) => theme.warning,
+            (true, Some(crate::api::UserStatus::Dnd)) => theme.danger,
+            (true, _) => theme.success,
         })
 }
 
