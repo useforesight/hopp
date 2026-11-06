@@ -191,6 +191,10 @@ hopp capture show "$id" |
   and Ctrl+scroll zooms.
 - Output-bound cursor and drawing layers with empty input regions.
 - Sharing and remote input stop when Hyprland’s lock notifier reports a lock.
+- Screen shares sent as H.265 (5K from a Mac) are decoded through the system
+  FFmpeg, on the hardware through VA-API when there is a decoder (on Apple
+  silicon, the AVD with `avd-fw` and `libva-v4l2-request`), else in software.
+  `HOPP_H265_DECODER=0` turns it off; `HOPP_H265_HWDEC=0` keeps it in software.
 - Private single-instance IPC for launchers, browser return links and the bar
   plugin (state snapshots and call commands over a 0600 socket).
 

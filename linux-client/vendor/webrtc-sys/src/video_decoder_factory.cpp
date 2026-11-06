@@ -16,6 +16,8 @@
 
 #include "livekit/video_decoder_factory.h"
 
+#include <algorithm>
+
 #include <modules/video_coding/codecs/av1/av1_svc_config.h>
 #include "api/environment/environment.h"
 #include "api/video_codecs/av1_profile.h"
@@ -37,6 +39,10 @@
 
 #if defined(USE_NVIDIA_VIDEO_CODEC)
 #include "nvidia/nvidia_decoder_factory.h"
+#endif
+
+#if defined(HOPP_FFMPEG_H265_DECODER)
+#include "hopp/ffmpeg_h265_decoder.h"
 #endif
 
 namespace livekit_ffi {
@@ -112,6 +118,19 @@ std::vector<webrtc::SdpVideoFormat> VideoDecoderFactory::GetSupportedFormats()
     }
   }
 
+#if defined(HOPP_FFMPEG_H265_DECODER)
+  // Hopp patch: H.265 through the system FFmpeg, unless a platform factory
+  // above already offers it.
+  const bool h265_listed = std::any_of(
+      formats.begin(), formats.end(), [](const webrtc::SdpVideoFormat& f) {
+        return absl::EqualsIgnoreCase(f.name, "H265");
+      });
+  if (!h265_listed) {
+    for (const auto& format : hopp::FfmpegH265Formats())
+      formats.push_back(format);
+  }
+#endif
+
   formats.push_back(webrtc::SdpVideoFormat(
       webrtc::SdpVideoFormat::AV1Profile0(),
       webrtc::LibaomAv1EncoderSupportedScalabilityModes()));
@@ -172,6 +191,12 @@ std::unique_ptr<webrtc::VideoDecoder> VideoDecoderFactory::Create(
       internal_h264_decoder_works_)
     return webrtc::H264Decoder::Create();
 
+#if defined(HOPP_FFMPEG_H265_DECODER)
+  if ((absl::EqualsIgnoreCase(format.name, "H265") ||
+       absl::EqualsIgnoreCase(format.name, "HEVC")) &&
+      hopp::FfmpegH265DecoderAvailable())
+    return hopp::CreateFfmpegH265Decoder();
+#endif
 
 #if defined(RTC_DAV1D_IN_INTERNAL_DECODER_FACTORY)
   if (absl::EqualsIgnoreCase(format.name, webrtc::kAv1CodecName)) {

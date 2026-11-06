@@ -202,6 +202,24 @@ fn main() {
                 }
             }
 
+            // Hopp patch: H.265 decoding through the system FFmpeg, which is
+            // dlopened at run time. Only its headers are needed to build.
+            if let Ok(lib) = pkg_config::Config::new()
+                .cargo_metadata(false)
+                .probe("libavcodec")
+            {
+                for path in lib.include_paths {
+                    builder.include(path);
+                }
+                builder
+                    .file("src/hopp/ffmpeg_h265_decoder.cpp")
+                    .define("HOPP_FFMPEG_H265_DECODER", "1");
+                println!("cargo:rerun-if-changed=src/hopp/ffmpeg_h265_decoder.cpp");
+                println!("cargo:rerun-if-changed=src/hopp/ffmpeg_h265_decoder.h");
+            } else {
+                println!("cargo:warning=libavcodec headers not found; H.265 decoding disabled");
+            }
+
             add_lazy_load_so(
                 &mut builder,
                 "desktop_capturer",

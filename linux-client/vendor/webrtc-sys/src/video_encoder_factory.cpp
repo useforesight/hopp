@@ -399,12 +399,17 @@ VideoEncoderFactory::InternalFactory::GetSupportedFormats() const {
   // an encoder. Only advertise pass-through formats for codecs some real
   // encoder already supports.
   const size_t real_format_count = formats.size();
+  // Hopp patch: tests that publish pre-encoded H.265 (as a Mac would send it)
+  // set HOPP_TEST_PREENCODED_FORMATS=1 to advertise every pass-through format.
+  const char* all_preencoded = std::getenv("HOPP_TEST_PREENCODED_FORMATS");
+  const bool advertise_all_preencoded =
+      all_preencoded && std::string_view(all_preencoded) == "1";
   for (const auto& backend_factory : factories_) {
     if (backend_factory.backend != VideoEncoderBackend::PreEncoded) {
       continue;
     }
     for (const auto& format : backend_factory.factory->GetSupportedFormats()) {
-      const bool codec_available = std::any_of(
+      const bool codec_available = advertise_all_preencoded || std::any_of(
           formats.begin(), formats.begin() + real_format_count,
           [&](const webrtc::SdpVideoFormat& existing) {
             return IsSameCodecName(existing.name, format.name);
@@ -420,6 +425,10 @@ VideoEncoderFactory::InternalFactory::GetSupportedFormats() const {
 std::vector<webrtc::SdpVideoFormat>
 VideoEncoderFactory::InternalFactory::GetImplementations() const {
   std::vector<webrtc::SdpVideoFormat> formats;
+  // Hopp patch: see HOPP_TEST_PREENCODED_FORMATS in GetSupportedFormats.
+  const char* all_preencoded = std::getenv("HOPP_TEST_PREENCODED_FORMATS");
+  const bool advertise_all_preencoded =
+      all_preencoded && std::string_view(all_preencoded) == "1";
   for (const auto& backend_factory : factories_) {
     if (backend_factory.backend == VideoEncoderBackend::PreEncoded) {
       continue;
@@ -434,6 +443,15 @@ VideoEncoderFactory::InternalFactory::GetImplementations() const {
 
   for (const auto& format : Factory().GetImplementations()) {
     formats.push_back(WithBackend(format, VideoEncoderBackend::Software));
+  }
+
+  // Last, so real encoders stay preferred for codecs they implement.
+  if (advertise_all_preencoded) {
+    for (const auto& backend_factory : factories_) {
+      if (backend_factory.backend != VideoEncoderBackend::PreEncoded) continue;
+      for (const auto& format : backend_factory.factory->GetSupportedFormats())
+        formats.push_back(WithBackend(format, backend_factory.backend));
+    }
   }
 
   return formats;

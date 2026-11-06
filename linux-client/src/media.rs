@@ -2257,6 +2257,169 @@ mod tests {
         viewer: FixtureUser,
     }
 
+    /// Splits an Annex B H.265 stream into access units at each access-unit
+    /// delimiter (NAL type 35), noting which units carry an IRAP picture.
+    fn h265_access_units(stream: &[u8]) -> Vec<(Vec<u8>, bool)> {
+        let mut starts = Vec::new();
+        let mut i = 0;
+        while i + 3 < stream.len() {
+            if stream[i..i + 3] == [0, 0, 1] {
+                let start = if i > 0 && stream[i - 1] == 0 {
+                    i - 1
+                } else {
+                    i
+                };
+                starts.push((start, (stream[i + 3] >> 1) & 0x3f));
+                i += 3;
+            } else {
+                i += 1;
+            }
+        }
+        let mut units: Vec<(Vec<u8>, bool)> = Vec::new();
+        for (n, &(start, kind)) in starts.iter().enumerate() {
+            let end = starts.get(n + 1).map_or(stream.len(), |next| next.0);
+            if kind == 35 || units.is_empty() {
+                units.push((Vec::new(), false));
+            }
+            let unit = units.last_mut().unwrap();
+            unit.0.extend_from_slice(&stream[start..end]);
+            unit.1 |= (16..=21).contains(&kind);
+        }
+        units
+    }
+
+    /// A 5K H.265 screen share, published pre-encoded by a plain LiveKit
+    /// participant and received by Hopp's own session, as a Mac's share would be.
+    /// HOPP_H265_TEST_FIXTURE names JSON with livekit_url, publisher_token,
+    /// viewer_audio_token, viewer_video_token (one room, Hopp's identities), clip
+    /// (Annex B 4:2:0 H.265 with AUDs and a keyframe each second), width and height.
+    /// Needs HOPP_TEST_PREENCODED_FORMATS=1, since Linux has no H.265 encoder to
+    /// negotiate with; HOPP_H265_TEST_LOG=1 prints WebRTC's log.
+    #[tokio::test]
+    #[ignore = "requires a LiveKit server and HOPP_H265_TEST_FIXTURE"]
+    async fn h265_5k_screen_round_trip() -> Result<()> {
+        use livekit::webrtc::video_frame::{
+            EncodedFrameType, EncodedVideoCodec, EncodedVideoFrame,
+        };
+        #[derive(Deserialize)]
+        struct H265Fixture {
+            livekit_url: String,
+            publisher_token: String,
+            viewer_audio_token: String,
+            viewer_video_token: String,
+            clip: String,
+            width: u32,
+            height: u32,
+        }
+        struct StderrLog;
+        impl log::Log for StderrLog {
+            fn enabled(&self, _: &log::Metadata) -> bool {
+                true
+            }
+            fn log(&self, record: &log::Record) {
+                if std::env::var_os("HOPP_H265_TEST_LOG").is_some() {
+                    eprintln!("[{} {}] {}", record.level(), record.target(), record.args());
+                }
+            }
+            fn flush(&self) {}
+        }
+        let _ = log::set_logger(&StderrLog);
+        log::set_max_level(log::LevelFilter::Debug);
+        let fixture: H265Fixture = serde_json::from_slice(&std::fs::read(
+            std::env::var("HOPP_H265_TEST_FIXTURE").context("Set HOPP_H265_TEST_FIXTURE")?,
+        )?)?;
+        let units = h265_access_units(&std::fs::read(&fixture.clip)?);
+        anyhow::ensure!(
+            units.first().is_some_and(|u| u.1),
+            "Clip must start with a keyframe"
+        );
+
+        let (viewer_events, viewer_rx) = crate::wake::detached();
+        let remote_screen = crate::frames::slot();
+        let mut viewer = Session::connect(
+            &fixture.livekit_url,
+            &fixture.viewer_audio_token,
+            &fixture.viewer_video_token,
+            viewer_events,
+            remote_screen.clone(),
+            Arc::default(),
+            crate::capture::Tap::default(),
+        )
+        .await?;
+        viewer.playback.take();
+
+        let (publisher, _publisher_events) = Room::connect(
+            &fixture.livekit_url,
+            &fixture.publisher_token,
+            RoomOptions::default(),
+        )
+        .await?;
+        let resolution = VideoResolution {
+            width: fixture.width,
+            height: fixture.height,
+        };
+        let source = NativeVideoSource::new_encoded(resolution.clone());
+        let track = LocalVideoTrack::create_video_track(
+            "screen_share",
+            RtcVideoSource::Native(source.clone()),
+        );
+        publisher
+            .local_participant()
+            .publish_track(
+                LocalTrack::Video(track),
+                TrackPublishOptions {
+                    source: TrackSource::Screenshare,
+                    video_codec: VideoCodec::H265,
+                    video_encoding: Some(VideoEncoding {
+                        max_bitrate: SCREEN_MAX_BITRATE,
+                        max_framerate: 30.0,
+                    }),
+                    simulcast: false,
+                    video_encoder: livekit::webrtc::rtp_sender::VideoEncoderBackend::PreEncoded,
+                    // Pre-encoded frames can't be scaled; WebRTC would turn them raw.
+                    degradation_preference: Some(
+                        livekit::options::DegradationPreference::MaintainFramerateAndResolution,
+                    ),
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+        let started = std::time::Instant::now();
+        let mut received = None;
+        for n in 0..units.len() * 4 {
+            let (payload, key) = &units[n % units.len()];
+            source.capture_encoded_frame(&EncodedVideoFrame {
+                codec: EncodedVideoCodec::H265,
+                payload,
+                timestamp_us: started.elapsed().as_micros() as i64,
+                frame_type: if *key {
+                    EncodedFrameType::Key
+                } else {
+                    EncodedFrameType::Delta
+                },
+                resolution: resolution.clone(),
+                frame_metadata: None,
+            });
+            tokio::time::sleep(Duration::from_millis(33)).await;
+            if let Some(frame) = remote_screen.lock().unwrap().as_ref() {
+                received = Some((frame.width, frame.height, n));
+                break;
+            }
+        }
+        let (width, height, sent) = received.context("No H.265 screen frame was decoded")?;
+        eprintln!("H.265 round trip: {width}x{height} shown after {sent} frames");
+        assert_eq!((width, height), (fixture.width, fixture.height));
+        assert!(
+            viewer_rx
+                .try_iter()
+                .any(|event| matches!(event, Event::RemoteShare { active: true, .. })),
+            "No remote share was announced"
+        );
+        publisher.close().await?;
+        Ok(())
+    }
+
     /// Uses dedicated accounts on a running local Hopp backend. Never records
     /// the microphone or opens a camera: media inputs are synthetic patterns.
     #[tokio::test]
