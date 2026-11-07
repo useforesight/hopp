@@ -118,6 +118,37 @@ pub fn prune_in(store: &store::Store) -> Result<usize> {
     Ok(deleted)
 }
 
+/// How many of the latest calls [`write_missing_markdown`] looks at.
+const MARKDOWN_CHECKED: usize = 50;
+
+/// Write the Markdown copies of ended calls that don't have one. A call that ended while the
+/// disk was full has all its lines in the store, but its copy couldn't be written then.
+pub fn write_missing_markdown() -> Result<usize> {
+    let path = store::default_path()?;
+    if !path.exists() {
+        return Ok(0);
+    }
+    let folder = paths::data_dir()?.join("capture");
+    write_missing_markdown_in(&store::Store::open(&path)?, &folder)
+}
+
+fn write_missing_markdown_in(store: &store::Store, folder: &Path) -> Result<usize> {
+    let mut written = 0;
+    for call in store.calls(MARKDOWN_CHECKED)? {
+        let path = folder.join(format!("{}.md", call.id));
+        if call.live() || path.exists() {
+            continue;
+        }
+        write_private(&path, store.markdown(&call)?.as_bytes())?;
+        logger::line(format!(
+            "Capture {}: wrote its missing Markdown copy",
+            call.id
+        ));
+        written += 1;
+    }
+    Ok(written)
+}
+
 /// Give a call a title or summary, in the store and in the Markdown copy of a call that has
 /// ended. A live call's copy is written when it ends.
 pub fn annotate(
@@ -185,6 +216,22 @@ pub fn write_private(path: &Path, contents: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_markdown_is_written_for_ended_calls_only() -> Result<()> {
+        let (directory, store) = crate::store::tests::fixture()?;
+        let folder = directory.path().join("capture");
+        assert_eq!(write_missing_markdown_in(&store, &folder)?, 1);
+        let written = fs::read_to_string(folder.join("c_1.md"))?;
+        assert!(written.contains("The flood starts on a profile switch."));
+        // c_2 is still being captured: its copy is written when it ends.
+        assert!(!folder.join("c_2.md").exists());
+        // A copy that's there is left alone.
+        fs::write(folder.join("c_1.md"), "edited")?;
+        assert_eq!(write_missing_markdown_in(&store, &folder)?, 0);
+        assert_eq!(fs::read_to_string(folder.join("c_1.md"))?, "edited");
+        Ok(())
+    }
 
     #[test]
     fn a_folder_counts_what_is_in_its_folders() -> Result<()> {

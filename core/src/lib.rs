@@ -1907,6 +1907,12 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                     }
                 }
             }
+            UserEvent::CallDropped(reason) => {
+                log::warn!("user_event: CallDropped: {reason:?}");
+                if let Err(e) = self.socket.send(Message::CallDropped(reason)) {
+                    error!("user_event: Error sending CallDropped: {e:?}");
+                }
+            }
             UserEvent::CallEnd => {
                 log::info!("user_event: CallEnd");
                 self.stop_mic();
@@ -3768,6 +3774,8 @@ pub enum UserEvent {
     SetScreenSharePickerMode(ScreenSharePickerMode),
     SetTelemetryEnabled(bool),
     CreateRoomResult(Result<Vec<socket_lib::CoreParticipantState>, String>),
+    /// The call server cut this call off; the app decides whether to rejoin or leave.
+    CallDropped(socket_lib::CallDropReason),
     ExitRequested,
 }
 

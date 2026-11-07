@@ -154,6 +154,18 @@ pub enum CaptureByHand {
     Stopped,
 }
 
+/// Why the call server cut the app off from a call it hadn't left.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+pub enum CallDropReason {
+    /// The same person joined the call somewhere else, a browser or another computer,
+    /// which takes their place in it.
+    JoinedElsewhere,
+    /// Removed from the call, or the call was closed for everyone.
+    CallClosed,
+    /// The connection went and reconnecting didn't bring it back.
+    ConnectionLost,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SentryMetadata {
     pub user_id: String,
@@ -282,6 +294,8 @@ pub enum Message {
     RoleChange(CoreRoleEvent),
     CallEnded, // When call ends from a participant's side in Camera or Screen sharing window.
     RoomConnectionFailed(String),
+    /// The call server cut the app off from the call, which is over here.
+    CallDropped(CallDropReason),
     /// App Veil could not be initialized; protected apps may be visible while sharing.
     AppVeilFailed(String),
     ControllerDrawPersistChanged(bool),
@@ -829,10 +843,10 @@ mod tests {
 
     #[test]
     fn test_request_response_pattern() {
-        let ((server_sender, server_events), (_client_sender, _client_events)) = test_pair();
+        let ((_server_sender, server_events), (client_sender, _client_events)) = test_pair();
 
         // Client sends request
-        server_sender.send(Message::Ping).unwrap();
+        client_sender.send(Message::Ping).unwrap();
 
         // Server receives event
         let msg = server_events

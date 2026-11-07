@@ -1390,6 +1390,12 @@ fn forward_core_events(events_rx: std_mpsc::Receiver<Message>, app: tauri::AppHa
                     );
                 }
             }
+            Message::CallDropped(reason) => {
+                log::warn!("forward_core_events: call dropped: {reason:?}");
+                if let Err(e) = app.emit("core_call_dropped", &reason) {
+                    log::error!("forward_core_events: failed to emit call dropped: {e:?}");
+                }
+            }
             Message::AppVeilFailed(reason) => {
                 log::error!("forward_core_events: app veil failed: {reason}");
                 if let Err(e) = app.emit("core_app_veil_failed", &reason) {

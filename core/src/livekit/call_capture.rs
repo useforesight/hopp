@@ -629,6 +629,10 @@ impl CallCapture {
                 if let Err(error) = hopp_capture::prune() {
                     log::error!("Capture: deleting old captures: {error:#}");
                 }
+                // This call's own copy, when the disk was full, or an earlier one's.
+                if let Err(error) = hopp_capture::write_missing_markdown() {
+                    log::error!("Capture: writing missing Markdown copies: {error:#}");
+                }
             });
         match finishing {
             Ok(thread) => {
