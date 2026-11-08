@@ -39,7 +39,13 @@ Release builds connect to `pair.gethopp.app`, upstream's managed service, until 
 
 ## What's new
 
-### In the latest release (v1.3.0)
+### In the latest release (v1.3.1)
+
+- **Dropped calls are handled.** If you join a call from somewhere else, such as a browser, Hopp leaves it on your Mac and offers to rejoin there. If a call is closed, Hopp leaves it and says why. If the connection drops for good, Hopp rejoins by itself.
+- **Empty calls end.** A call with someone ends once you've been alone in it for 5 minutes, so your mic doesn't stay live. Rooms stay open.
+- **Captures recover.** A capture whose Markdown copy couldn't be saved, for example because the disk was full, gets it back once your next capture finishes.
+
+### Earlier, in v1.3.0
 
 - **Available, Away and Do not disturb.** Set your status from the account menu, and teammates see it before they call. Away still rings. Do not disturb doesn't: the caller is told, and it goes in your missed calls. Hopp sets you to Away when your screen locks or you've been idle a while, and back when you return. Your server needs this release's backend for statuses to appear.
 - **Quieter speaker indicators.** A small slot beside each name shows who's speaking or muted.
