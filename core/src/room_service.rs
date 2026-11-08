@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -256,6 +256,8 @@ struct RemoteScreenShare {
 pub(crate) struct RoomServiceInner {
     // TODO: See if we can use a sync::Mutex instead of tokio::sync::Mutex
     pub(crate) room: Mutex<Option<Room>>,
+    /// Counts the calls joined, so events from one can tell when a later one has replaced it.
+    room_generation: AtomicU64,
     pub(crate) video_room: Mutex<Option<Room>>,
     buffer_source: std::sync::Mutex<Option<NativeVideoSource>>,
     camera_buffer_source: std::sync::Mutex<Option<NativeVideoSource>>,
@@ -430,6 +432,7 @@ impl RoomService {
 
         let inner = Arc::new(RoomServiceInner {
             room: Mutex::new(None),
+            room_generation: AtomicU64::new(0),
             video_room: Mutex::new(None),
             buffer_source: std::sync::Mutex::new(None),
             camera_buffer_source: std::sync::Mutex::new(None),
@@ -1402,10 +1405,11 @@ async fn room_service_commands(
                     total_connect_start.elapsed().as_millis()
                 );
                 let local_participant = room.local_participant();
-                {
+                let room_generation = {
                     let mut inner_room = inner.room.lock().await;
                     *inner_room = Some(room);
-                }
+                    inner.room_generation.fetch_add(1, Ordering::SeqCst) + 1
+                };
                 update_camera_quality(&inner).await;
                 let snapshot = inner.snapshot_sender.build_snapshot();
                 let _ = event_loop_proxy.send_event(UserEvent::CreateRoomResult(Ok(snapshot)));
@@ -1427,6 +1431,7 @@ async fn room_service_commands(
                     audio_handle: audio_handle.clone(),
                     inner: inner.clone(),
                     service_command_tx: service_command_tx.clone(),
+                    room_generation,
                 }));
                 log::info!("room_service_commands: Spawned handle_room_events");
                 if let Some(video_rx) = video_rx_opt {
@@ -2434,6 +2439,19 @@ struct RoomEventContext {
     audio_handle: TokioHandle,
     inner: Arc<RoomServiceInner>,
     service_command_tx: mpsc::UnboundedSender<RoomServiceCommand>,
+    /// Which call joined these events' room, see `RoomServiceInner::room_generation`.
+    room_generation: u64,
+}
+
+/// What the call server's reason for cutting the app off means for the user.
+fn call_drop_reason(reason: DisconnectReason) -> socket_lib::CallDropReason {
+    match reason {
+        DisconnectReason::DuplicateIdentity => socket_lib::CallDropReason::JoinedElsewhere,
+        DisconnectReason::ParticipantRemoved
+        | DisconnectReason::RoomDeleted
+        | DisconnectReason::RoomClosed => socket_lib::CallDropReason::CallClosed,
+        _ => socket_lib::CallDropReason::ConnectionLost,
+    }
 }
 
 fn camera_quality(active: usize) -> VideoQuality {
@@ -2509,6 +2527,7 @@ async fn handle_room_events(ctx: RoomEventContext) {
         audio_handle,
         inner,
         service_command_tx,
+        room_generation,
     } = ctx;
     while let Some(msg) = receiver.recv().await {
         match msg {
@@ -3262,12 +3281,24 @@ async fn handle_room_events(ctx: RoomEventContext) {
                         .tell_the_call_again(room.local_participant());
                 }
             }
-            // Removed from the room, or reconnecting failed: the call is over here, even
-            // if the window doesn't say so yet. Leaving is `clear()`'s, and could reach here
-            // after the next call has started.
+            // Removed from the room, or reconnecting failed: the call is over here, and the
+            // app is told so it doesn't carry on as if it weren't. Leaving is `clear()`'s, and
+            // could reach here after the next call has started, which this one mustn't end.
             RoomEvent::Disconnected { reason } if reason != DisconnectReason::ClientInitiated => {
                 log::info!("handle_room_events: disconnected: {reason:?}");
+                // Under the lock that replacing the room takes, so a new call can't slip in.
+                let still_this_call = inner.room.lock().await.is_some()
+                    && inner.room_generation.load(Ordering::SeqCst) == room_generation;
+                if !still_this_call {
+                    log::info!("handle_room_events: a call that was already replaced dropped");
+                    continue;
+                }
                 inner.call_capture.stop();
+                if let Err(e) =
+                    event_loop_proxy.send_event(UserEvent::CallDropped(call_drop_reason(reason)))
+                {
+                    log::error!("handle_room_events: Failed to send CallDropped: {e:?}");
+                }
             }
             // Someone started or stopped capturing (transcribing) the call.
             RoomEvent::ParticipantAttributesChanged {
@@ -3289,6 +3320,36 @@ async fn handle_room_events(ctx: RoomEventContext) {
         }
     }
     log::info!("handle_room_events: ended")
+}
+
+#[cfg(test)]
+mod call_drop_tests {
+    use super::*;
+    use socket_lib::CallDropReason;
+
+    #[test]
+    fn says_why_the_call_server_cut_the_call_off() {
+        assert_eq!(
+            call_drop_reason(DisconnectReason::DuplicateIdentity),
+            CallDropReason::JoinedElsewhere
+        );
+        for reason in [
+            DisconnectReason::ParticipantRemoved,
+            DisconnectReason::RoomDeleted,
+            DisconnectReason::RoomClosed,
+        ] {
+            assert_eq!(call_drop_reason(reason), CallDropReason::CallClosed);
+        }
+        for reason in [
+            DisconnectReason::UnknownReason,
+            DisconnectReason::ServerShutdown,
+            DisconnectReason::SignalClose,
+            DisconnectReason::ConnectionTimeout,
+            DisconnectReason::JoinFailure,
+        ] {
+            assert_eq!(call_drop_reason(reason), CallDropReason::ConnectionLost);
+        }
+    }
 }
 
 #[cfg(test)]

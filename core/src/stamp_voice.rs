@@ -101,6 +101,7 @@ impl StampVoice {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use std::time::Duration;
 
     fn after(start: Instant, ms: u64) -> Instant {
         start + Duration::from_millis(ms)

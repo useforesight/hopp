@@ -28,6 +28,7 @@ import { pollUpdates } from "@/lib/auto-update";
 import { setupCallAlertBridge } from "@/lib/call-alert";
 import { setupCallRecoveryListeners } from "@/lib/call-recovery";
 import { setupCaptureNotice } from "@/lib/capture-notice";
+import { setupLeavingEmptyCalls } from "@/lib/empty-call";
 import { setJoinCallHandler, setupIncomingCallHandling } from "@/lib/incoming-call";
 import { restoreCustomServerUrl } from "@/constants";
 
@@ -205,11 +206,13 @@ function App() {
     const stopIncomingCallHandling = setupIncomingCallHandling();
     const stopCallRecoveryListeners = setupCallRecoveryListeners();
     const stopCaptureNotice = setupCaptureNotice();
+    const stopLeavingEmptyCalls = setupLeavingEmptyCalls();
     return () => {
       stopCallAlertBridge();
       stopIncomingCallHandling();
       stopCallRecoveryListeners();
       stopCaptureNotice();
+      stopLeavingEmptyCalls();
     };
   }, []);
 

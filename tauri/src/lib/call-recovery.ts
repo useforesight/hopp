@@ -26,13 +26,19 @@ export const abandonCall = (peerId: string | undefined, title: string, body: str
   showCallNotice({ key: "call-failed", title, body });
 };
 
-let coreRestartCount = 0;
+/** Why the call server cut this app off from a call, from `CallDropReason` in socket_lib. */
+type CallDropReason = "JoinedElsewhere" | "CallClosed" | "ConnectionLost";
 
-const rejoinAfterCoreRestart = async () => {
-  const thisRestart = ++coreRestartCount;
+type CallTokens = NonNullable<ReturnType<typeof useStore.getState>["callTokens"]>;
+
+let rejoinCount = 0;
+
+/** Joins the call in `callTokens` again, keeping the mic and camera as they were. */
+const rejoinCall = async (reconnectingBody: string) => {
+  const thisRejoin = ++rejoinCount;
   const { callTokens, updateCallTokens } = useStore.getState();
   if (!callTokens) {
-    console.log("Core process restarted outside of a call");
+    console.log("Nothing to rejoin outside of a call");
     return;
   }
 
@@ -40,7 +46,7 @@ const rejoinAfterCoreRestart = async () => {
   showCallNotice({
     key: "call-reconnecting",
     title: "Reconnecting your call",
-    body: "Hopp's audio and video process restarted. Rejoining now.",
+    body: reconnectingBody,
   });
   updateCallTokens({ isReconnecting: true, isInitialisingCall: true, participants: [], role: ParticipantRole.NONE });
 
@@ -51,9 +57,9 @@ const rejoinAfterCoreRestart = async () => {
       roomName: callTokens.room?.name,
     });
   } catch (error) {
-    console.error("Failed to rejoin call after core restart:", error);
+    console.error("Failed to rejoin call:", error);
     await new Promise((resolve) => setTimeout(resolve, NEXT_RESTART_GRACE_MS));
-    if (thisRestart !== coreRestartCount) return;
+    if (thisRejoin !== rejoinCount) return;
     if (!useStore.getState().callTokens) {
       closeCallNotice("call-reconnecting");
       return;
@@ -62,7 +68,7 @@ const rejoinAfterCoreRestart = async () => {
     return;
   }
 
-  if (thisRestart !== coreRestartCount) return;
+  if (thisRejoin !== rejoinCount) return;
 
   // The user may have hung up while this was reconnecting.
   if (!useStore.getState().callTokens) {
@@ -80,9 +86,58 @@ const rejoinAfterCoreRestart = async () => {
   });
 };
 
+const rejoinAfterCoreRestart = () => rejoinCall("Hopp's audio and video process restarted. Rejoining now.");
+
+/** Leaves a call here that goes on without this computer, without ending it for anyone else. */
+const leaveDroppedCall = () => {
+  const { callTokens, setCallTokens } = useStore.getState();
+  if (!callTokens) return null;
+  tauriUtils.endCallCleanup();
+  setCallTokens(null);
+  return callTokens;
+};
+
+const rejoinHere = (callTokens: CallTokens) => {
+  // Started or joined another call since.
+  if (useStore.getState().callTokens) return;
+  useStore.getState().setCallTokens({ ...callTokens, timeStarted: new Date() });
+  rejoinCall("Joining the call on this computer again.");
+};
+
+const handleCallDropped = (reason: CallDropReason) => {
+  console.warn("Call dropped:", reason);
+  if (!useStore.getState().callTokens) return;
+
+  if (reason === "ConnectionLost") {
+    rejoinCall("The connection to the call dropped. Rejoining now.");
+    return;
+  }
+
+  // Still in the call somewhere else, or nobody is: telling the server this person left
+  // would end it for whoever they're talking to there.
+  const callTokens = leaveDroppedCall();
+  if (!callTokens) return;
+  if (reason === "JoinedElsewhere") {
+    showCallNotice({
+      key: "call-joined-elsewhere",
+      title: "You joined this call somewhere else",
+      body: "Hopp left it on this computer, as you can only be in a call once. Rejoining here takes you out of it there.",
+      actionLabel: "Rejoin here",
+      onAction: () => rejoinHere(callTokens),
+    });
+  } else {
+    showCallNotice({
+      key: "call-closed",
+      title: "The call was closed",
+      body: "You were removed from it, or it was ended for everyone.",
+    });
+  }
+};
+
 export const setupCallRecoveryListeners = () => {
   const unlisteners = [
     listen("core_process_restarted", rejoinAfterCoreRestart),
+    listen<CallDropReason>("core_call_dropped", (event) => handleCallDropped(event.payload)),
     listen<string>("core_process_crashed", (event) => {
       console.error("Core process could not be restarted:", event.payload);
       const { callTokens, setCallTokens } = useStore.getState();
