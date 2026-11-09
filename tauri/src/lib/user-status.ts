@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { typedInvoke } from "@/core_payloads";
 import { components } from "@/openapi";
@@ -36,9 +36,24 @@ export const useSetUserStatus = () => {
 };
 
 /**
- * Away while the screen's locked or nothing's being touched, and Available again on coming back. Being on a call
- * counts as being here, however still you sit. A status you chose yourself stays until you change it.
+ * The status to change to, if any. Away while the screen's locked or nothing's being touched, and Available again on
+ * coming back. Being on a call counts as being here, however still you sit. A status you chose yourself stays until
+ * you change it, except that starting or joining a call ends an Away: you're clearly here. Do not disturb stays.
  */
+export const nextStatus = (now: {
+  status: UserStatus | undefined;
+  isAutomatic: boolean | undefined;
+  steppedAway: boolean;
+  inCall: boolean;
+  callStarted: boolean;
+}): { status: UserStatus; auto: boolean } | null => {
+  if (now.callStarted && now.status === "away" && !now.isAutomatic) return { status: "available", auto: false };
+  const shouldBeAway = now.steppedAway && !now.inCall;
+  if (shouldBeAway && now.status === "available") return { status: "away", auto: true };
+  if (!shouldBeAway && now.status === "away" && now.isAutomatic) return { status: "available", auto: true };
+  return null;
+};
+
 export const useAutoAwayStatus = () => {
   const setUserStatus = useSetUserStatus();
   // Servers older than statuses leave this out, and then none of this does anything
@@ -47,6 +62,7 @@ export const useAutoAwayStatus = () => {
   const inCall = useStore((state) => !!state.callTokens);
   const socketConnected = useStore((state) => state.socketConnected);
   const [steppedAway, setSteppedAway] = useState(false);
+  const wasInCall = useRef(inCall);
 
   useEffect(() => {
     typedInvoke("get_stepped_away").then(setSteppedAway);
@@ -60,13 +76,12 @@ export const useAutoAwayStatus = () => {
     // Teammates see you offline anyway, and coming back online tries again
     if (!socketConnected) return;
 
-    const shouldBeAway = steppedAway && !inCall;
-    const change =
-      shouldBeAway && status === "available" ? "away"
-      : !shouldBeAway && status === "away" && isAutomatic ? "available"
-      : null;
+    // Only as the call starts, so choosing Away during one sticks
+    const callStarted = inCall && !wasInCall.current;
+    wasInCall.current = inCall;
+    const change = nextStatus({ status, isAutomatic, steppedAway, inCall, callStarted });
     if (change) {
-      setUserStatus(change, true).catch((error) => console.error("Failed to update status:", error));
+      setUserStatus(change.status, change.auto).catch((error) => console.error("Failed to update status:", error));
     }
   }, [steppedAway, inCall, status, isAutomatic, socketConnected, setUserStatus]);
 };
