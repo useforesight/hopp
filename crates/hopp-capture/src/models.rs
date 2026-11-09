@@ -64,7 +64,7 @@ pub fn download_in_background(model: &'static Model) {
 
 pub struct Model {
     pub name: &'static str,
-    file: &'static str,
+    pub(crate) file: &'static str,
     /// The Hugging Face repository and the commit the file is pinned to.
     repository: &'static str,
     revision: &'static str,

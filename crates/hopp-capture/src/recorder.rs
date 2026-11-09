@@ -41,7 +41,11 @@ const DRAIN_MIN: Duration = Duration::from_secs(30);
 const DRAIN_MAX: Duration = Duration::from_secs(300);
 /// With nothing to transcribe for this long, the helper exits and gives its memory
 /// (gigabytes, for the large models) back; it reloads, in seconds, when someone speaks.
-const UNLOAD: Duration = Duration::from_secs(90);
+const UNLOAD: Duration = if cfg!(test) {
+    Duration::from_secs(1)
+} else {
+    Duration::from_secs(90)
+};
 /// The least time a request may take before the helper counts as stuck.
 const IN_FLIGHT_MIN: Duration = Duration::from_secs(60);
 /// On the CPU the helper only gets time nothing else wants, so a busy machine (a build)
@@ -389,7 +393,8 @@ struct Worker {
     retry_delay: Duration,
     /// Whether a stopping capture may still try once more after a failure.
     last_chance: bool,
-    /// Counts helper starts, so a replaced helper's last words are ignored.
+    /// Counts helpers started and let go of, so a replaced helper's last words, its
+    /// exit included, are ignored.
     generation: u64,
     /// On the CPU: chosen, or fallen back to after the GPU failed.
     cpu: bool,
@@ -448,6 +453,13 @@ impl Worker {
         }
     }
 
+    /// Let go of the helper on purpose. Its exit is expected, so it mustn't count as the
+    /// helper stopping by itself.
+    fn drop_helper(&mut self) {
+        self.generation += 1;
+        self.helper = None;
+    }
+
     fn start_helper(&mut self, path: PathBuf) {
         let input = self.input.clone();
         self.generation += 1;
@@ -474,7 +486,7 @@ impl Worker {
             self.id,
             wait.as_secs()
         ));
-        self.helper = None;
+        self.drop_helper();
         if let Some(in_flight) = self.in_flight.take() {
             self.requeue(in_flight.parts);
         }
@@ -687,7 +699,7 @@ impl Worker {
             && self.pending.is_empty()
             && self.last_work.elapsed() > UNLOAD
         {
-            self.helper = None;
+            self.drop_helper();
             self.update(|status| status.phase = Phase::Idle);
         }
     }
@@ -843,7 +855,7 @@ impl Worker {
             ));
             self.cpu = true;
             self.failures = 0;
-            self.helper = None;
+            self.drop_helper();
             self.fetch_model();
         }
     }
@@ -916,7 +928,7 @@ impl Worker {
                 if let Some(in_flight) = self.in_flight.take() {
                     self.requeue(in_flight.parts);
                 }
-                self.helper = None;
+                self.drop_helper();
                 self.failures += 1;
                 if self.failures == 1 {
                     crate::logger::line(format!(
@@ -1051,7 +1063,7 @@ impl Worker {
                     .update_line(draft.line, Kind::Retracted, "", None);
             }
         }
-        self.helper = None;
+        self.drop_helper();
         let ended_ms = store::now_ms();
         let started_ms = self.store.require(&self.id)?.started_ms;
         let end_t_ms = (ended_ms - started_ms).max(self.last_t_ms.get());
@@ -1062,5 +1074,81 @@ impl Worker {
         super::write_private(&super::markdown_path(&self.id)?, markdown.as_bytes())?;
         (self.options.changed)();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wait_for(recorder: &Recorder, done: impl Fn(&Phase) -> bool) -> Phase {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let phase = recorder.status().phase;
+            if done(&phase) || Instant::now() > deadline {
+                return phase;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// The model is let go of after a quiet spell. That's not the helper stopping by
+    /// itself, so it isn't started again until someone speaks, and quiet spells never
+    /// add up to "keeps stopping".
+    #[test]
+    fn a_quiet_spell_unloads_the_model_and_leaves_it_unloaded() {
+        let home = tempfile::tempdir().unwrap();
+        let model = models::find(models::DEFAULT).unwrap();
+        let model_file = home.path().join("models").join(model.file);
+        std::fs::create_dir_all(model_file.parent().unwrap()).unwrap();
+        // Sparse, so it's the right size without taking the space.
+        std::fs::File::create(&model_file)
+            .unwrap()
+            .set_len(model.bytes)
+            .unwrap();
+        let starts = home.path().join("starts");
+        let helper = home.path().join("fake-transcribe");
+        std::fs::write(
+            &helper,
+            format!(
+                "#!/bin/sh\necho started >> '{}'\necho '{{\"ready\":true,\"device\":\"GPU\",\"words\":true}}'\ncat > /dev/null\n",
+                starts.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&helper, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        // SAFETY: nothing else in these tests reads either variable.
+        unsafe {
+            std::env::set_var("HOPP_CAPTURE_HOME", home.path());
+            std::env::set_var("HOPP_TRANSCRIBE_HELPER", &helper);
+        }
+
+        let recorder = Recorder::start(Options {
+            room: "Quiet room".into(),
+            model,
+            backlog_ms: LIVE_BACKLOG_MS,
+            drain_all: false,
+            drafts: false,
+            gpu: true,
+            store: home.path().join("index.db"),
+            changed: Arc::new(|| {}),
+        })
+        .unwrap();
+        assert_eq!(
+            wait_for(&recorder, |phase| *phase == Phase::Ready),
+            Phase::Ready
+        );
+        assert_eq!(
+            wait_for(&recorder, |phase| *phase == Phase::Idle),
+            Phase::Idle
+        );
+        // Three more quiet spells' worth.
+        std::thread::sleep(UNLOAD * 3 + Duration::from_millis(500));
+
+        assert_eq!(recorder.status().phase, Phase::Idle);
+        let started = std::fs::read_to_string(&starts).unwrap();
+        assert_eq!(started.lines().count(), 1, "the helper was started again");
+        recorder.finish().unwrap();
     }
 }
