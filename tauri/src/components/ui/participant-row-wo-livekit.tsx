@@ -480,9 +480,10 @@ export const ParticipantRow = (props: {
         src={props.user.avatar_url || undefined}
         firstName={props.user.first_name}
         lastName={props.user.last_name}
+        // Someone on a call is there, whatever they last said
         status={
           !isOnline ? "offline"
-          : peerStatus === "away" || peerStatus === "dnd" ?
+          : peerStatus === "dnd" || (peerStatus === "away" && !userPresence) ?
             peerStatus
           : "online"
         }
