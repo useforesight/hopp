@@ -25,6 +25,11 @@ const (
 	snapshotTTL       = 30 * time.Second
 	pendingTTL        = 10 * time.Second
 	reconcileInterval = 10 * time.Second
+	// A one-to-one call with one person left in it is closed after this long. The person who
+	// stayed is usually an app that kept the call open by mistake, which keeps showing them as
+	// in a call and keeps their mic live. The app leaves after 5 minutes itself; this covers
+	// apps that don't.
+	loneCallLimit = 10 * time.Minute
 )
 
 // Tracker owns the room-centric presence snapshot in Redis and reconciles it
@@ -36,12 +41,14 @@ type Tracker struct {
 	db         *gorm.DB
 	roomClient *lksdk.RoomServiceClient
 	logger     echo.Logger
+	// loneSince is when each one-to-one call was first seen with one person in it. Guarded by mu.
+	loneSince map[string]time.Time
 }
 
 // NewTracker creates a presence tracker backed by the given Redis client.
 // Call EnableReconciliation to wire up LiveKit before starting the loop.
 func NewTracker(r *redis.Client, logger echo.Logger) *Tracker {
-	return &Tracker{redis: r, logger: logger}
+	return &Tracker{redis: r, logger: logger, loneSince: map[string]time.Time{}}
 }
 
 // EnableReconciliation wires up the LiveKit room service client and the DB used
@@ -406,13 +413,75 @@ func (t *Tracker) ReconcileOnce(ctx context.Context) {
 		t.logger.Warnf("callstate: writeSnapshot failed during reconcile: %v", err)
 		return
 	}
+	lone := t.loneCallsToClose(next, time.Now())
 	t.mu.Unlock()
+
+	for _, roomName := range lone {
+		t.closeLoneCall(ctx, roomName)
+	}
 
 	if changed {
 		for uid := range affected {
 			t.publishPresenceChanged(ctx, uid)
 		}
 	}
+}
+
+// loneCallsToClose notes which one-to-one calls have one person left in them, and returns the
+// ones that have been like that for loneCallLimit. Named rooms are places to wait for people,
+// so they're never closed. Caller must hold mu.
+func (t *Tracker) loneCallsToClose(snap Snapshot, now time.Time) []string {
+	var toClose []string
+	for roomName, room := range snap.Rooms {
+		if room.DisplayName != "" || len(room.UserIDs) != 1 {
+			delete(t.loneSince, roomName)
+			continue
+		}
+		since, seen := t.loneSince[roomName]
+		if !seen {
+			t.loneSince[roomName] = now
+			continue
+		}
+		if now.Sub(since) >= loneCallLimit {
+			toClose = append(toClose, roomName)
+		}
+	}
+	for roomName := range t.loneSince {
+		if _, ok := snap.Rooms[roomName]; !ok {
+			delete(t.loneSince, roomName)
+		}
+	}
+	return toClose
+}
+
+// isNamedRoom reports whether roomName is a saved room. It errs on the side of yes, so a
+// database error never closes one.
+func (t *Tracker) isNamedRoom(roomName string) bool {
+	if t.db == nil {
+		return true
+	}
+	var count int64
+	if err := t.db.Table("rooms").Where("id = ?", roomName).Count(&count).Error; err != nil {
+		t.logger.Warnf("callstate: checking room %s failed: %v", roomName, err)
+		return true
+	}
+	return count > 0
+}
+
+// closeLoneCall ends a one-to-one call nobody else is in any more. LiveKit disconnects whoever
+// is left, and the next reconcile drops the room from the snapshot.
+func (t *Tracker) closeLoneCall(ctx context.Context, roomName string) {
+	if t.isNamedRoom(roomName) {
+		return
+	}
+	if _, err := t.roomClient.DeleteRoom(ctx, &livekit.DeleteRoomRequest{Room: roomName}); err != nil {
+		t.logger.Warnf("callstate: closing lone call %s failed: %v", roomName, err)
+		return
+	}
+	t.logger.Infof("callstate: closed call %s, which had one person in it for %s", roomName, loneCallLimit)
+	t.mu.Lock()
+	delete(t.loneSince, roomName)
+	t.mu.Unlock()
 }
 
 // listRoomMembers returns the deduped user IDs in a LiveKit room. A not-found

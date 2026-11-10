@@ -71,7 +71,10 @@ export const ParticipantRow = (props: {
   const teammates = useStore((state) => state.teammates);
   const currentUser = useStore((state) => state.user);
 
-  const userPresence = callsPresence?.[props.user.id];
+  const presence = callsPresence?.[props.user.id];
+  // Alone in a one-to-one call isn't in a call with anyone: the other person has left, and their
+  // app has usually kept it open by mistake. Joining would only put you in it with them.
+  const userPresence = presence?.roomName || presence?.peerIds?.length ? presence : undefined;
 
   const callPeers = useMemo(() => {
     const ids = userPresence?.peerIds;
