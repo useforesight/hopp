@@ -39,7 +39,13 @@ Release builds connect to `pair.gethopp.app`, upstream's managed service, until 
 
 ## What's new
 
-### In the latest release (v1.3.1)
+### In the latest release (v1.3.2)
+
+- **Statuses stay true.** Starting or joining a call sets an Away you chose back to Available, and someone on a call no longer shows as Away. Do not disturb stays as it is.
+- **No more phantom calls.** Someone left alone in a one-to-one call no longer shows as "In a call", and your server closes such calls after 10 minutes once it runs this release's backend.
+- **Transcription stays on the GPU.** The transcription helper no longer restarts itself after going quiet.
+
+### Earlier, in v1.3.1
 
 - **Dropped calls are handled.** If you join a call from somewhere else, such as a browser, Hopp leaves it on your Mac and offers to rejoin there. If a call is closed, Hopp leaves it and says why. If the connection drops for good, Hopp rejoins by itself.
 - **Empty calls end.** A call with someone ends once you've been alone in it for 5 minutes, so your mic doesn't stay live. Rooms stay open.
