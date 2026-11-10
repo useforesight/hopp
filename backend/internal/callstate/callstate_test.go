@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/labstack/echo/v4"
@@ -592,4 +593,47 @@ func TestRoomPresenceEqual(t *testing.T) {
 		b := RoomPresence{UserIDs: []string{"a", "b"}}
 		assert.False(t, roomPresenceEqual(a, b))
 	})
+}
+
+func TestLoneCallsToClose(t *testing.T) {
+	tracker, _ := setupTracker(t)
+	start := time.Now()
+	snap := Snapshot{Rooms: map[string]RoomPresence{
+		"lone":     {UserIDs: []string{"steady"}},
+		"pair":     {UserIDs: []string{"a", "b"}},
+		"named":    {DisplayName: "Standup", UserIDs: []string{"c"}},
+		"rejoined": {UserIDs: []string{"d"}},
+	}}
+
+	require.Empty(t, tracker.loneCallsToClose(snap, start), "first sighting only starts the clock")
+	require.Empty(t, tracker.loneCallsToClose(snap, start.Add(loneCallLimit-time.Second)))
+
+	// Someone comes back to one call, and another call ends.
+	snap.Rooms["rejoined"] = RoomPresence{UserIDs: []string{"d", "e"}}
+	delete(snap.Rooms, "pair")
+	require.Equal(t, []string{"lone"}, tracker.loneCallsToClose(snap, start.Add(loneCallLimit)))
+	require.NotContains(t, tracker.loneSince, "rejoined", "a call with two people again starts over")
+	require.NotContains(t, tracker.loneSince, "named")
+
+	// Alone again, the clock starts afresh.
+	snap.Rooms["rejoined"] = RoomPresence{UserIDs: []string{"d"}}
+	require.Equal(t, []string{"lone"}, tracker.loneCallsToClose(snap, start.Add(loneCallLimit+time.Minute)))
+
+	delete(snap.Rooms, "lone")
+	tracker.loneCallsToClose(snap, start.Add(loneCallLimit+2*time.Minute))
+	require.NotContains(t, tracker.loneSince, "lone", "ended calls are forgotten")
+}
+
+func TestIsNamedRoom(t *testing.T) {
+	tracker, _ := setupTracker(t)
+	require.True(t, tracker.isNamedRoom("anything"), "without a database, assume it's a room")
+
+	db := setupDB(t)
+	require.NoError(t, db.Exec(`INSERT INTO rooms (id, name) VALUES ('saved', 'Standup')`).Error)
+	tracker.db = db
+	require.True(t, tracker.isNamedRoom("saved"))
+	require.False(t, tracker.isNamedRoom("ad-hoc"))
+
+	require.NoError(t, db.Exec(`DROP TABLE rooms`).Error)
+	require.True(t, tracker.isNamedRoom("ad-hoc"), "a database error never closes a room")
 }
