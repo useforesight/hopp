@@ -80,6 +80,10 @@ shot faces-bubbles 76  314 --scene faces --people 3 --layout bubbles
 shot faces-speaking 212 658 --scene faces-speaking --people 3
 shot faces-speaking-bubbles 76 314 --scene faces-speaking --people 3 --layout bubbles
 shot faces-silent  212 452 --scene faces-silent --people 2
+# Someone said the wake word: a light round their tile, their words under the bar.
+shot faces-heard   212 452 --scene faces-heard --people 2
+shot faces-heard-bubbles 76 314 --scene faces-heard --people 3 --layout bubbles
+shot heard         440 104 --scene heard --people 2
 # Shared screen as a tiled viewport (wide and narrow tiles) and as a fitted peek.
 shot viewer-wide   1400 820 --scene viewer --people 3
 shot viewer-narrow 640  860 --scene viewer --people 3

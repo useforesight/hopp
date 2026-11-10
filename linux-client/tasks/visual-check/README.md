@@ -27,7 +27,7 @@ cargo run --manifest-path linux-client/tasks/visual-check/Cargo.toml -- --scene 
 cargo run --manifest-path linux-client/tasks/visual-check/Cargo.toml -- --scene faces --people 4 --layout row --size small
 ```
 
-Scenes: `signin`, `home`, `home-call`, `settings`, `faces`, `faces-speaking`, `faces-silent`, `viewer`, `peek`, `captures` (reads this computer's real captures, so `run.sh` doesn't save it),
+Scenes: `signin`, `home`, `home-call`, `settings`, `faces`, `faces-speaking`, `faces-silent`, `faces-heard`, `heard`, `viewer`, `peek`, `captures` (reads this computer's real captures, so `run.sh` doesn't save it),
 `sharing`, `call`.
 
 ```sh

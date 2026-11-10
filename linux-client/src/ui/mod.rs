@@ -5,6 +5,7 @@
 //! - `viewer`: the shared screen as a tiled viewport that follows the sharer.
 //! - `viewer` in peek mode: the whole screen in `special:hopp`.
 //! - `toast`: incoming and outgoing calls as a layer-shell card.
+//! - `heard`: the light round a tile and the bubble when someone says the wake word.
 //!
 //! The `Shell` opens and closes those windows from session state, so the call itself
 //! never depends on any one window staying open.
@@ -15,6 +16,7 @@ mod demo;
 mod drawpad;
 mod faces;
 mod geometry;
+mod heard;
 mod home;
 mod hypr;
 mod keys;
@@ -63,6 +65,8 @@ pub struct Shell {
     viewer: Option<WindowHandle<viewer::ViewerView>>,
     peek: Option<WindowHandle<viewer::ViewerView>>,
     toast: Option<WindowHandle<toast::ToastView>>,
+    /// The "Heard you" bubble, while someone's ask shows.
+    heard: Option<WindowHandle<heard::HeardView>>,
     /// Cards from agents, with how many it was sized for and whether it sits below
     /// the call card.
     cards: Option<(WindowHandle<cards::CardsView>, usize, bool)>,
@@ -399,6 +403,16 @@ impl Shell {
         } else if !ringing && toast_open {
             Self::close(cx, |shell| shell.toast.take().map(|handle| handle.into()));
         }
+        let (want_heard, heard_open) = (
+            session.read(cx).heard.is_some() && Self::allowed(cx, "heard"),
+            cx.global::<Shell>().heard.is_some(),
+        );
+        if want_heard && !heard_open {
+            let handle = heard::open(session.clone(), cx);
+            cx.global_mut::<Shell>().heard = handle;
+        } else if !want_heard && heard_open {
+            Self::close(cx, |shell| shell.heard.take().map(|handle| handle.into()));
+        }
         Self::sync_cards(cx, ringing);
     }
 
@@ -495,6 +509,7 @@ impl Shell {
             | SessionEvent::SharingChanged
             | SessionEvent::CardsChanged
             | SessionEvent::DrawingChanged
+            | SessionEvent::HeardChanged
             | SessionEvent::SignedIn => {}
             // Frames change no windows; the views showing them redraw on their own.
             SessionEvent::MarksChanged => return Self::sync_marks(false, cx),
@@ -530,6 +545,9 @@ impl Shell {
         }
         if is(shell.toast.map(Into::into)) {
             shell.toast = None;
+        }
+        if is(shell.heard.map(Into::into)) {
+            shell.heard = None;
         }
         if is(shell.cards.as_ref().map(|(handle, _, _)| (*handle).into())) {
             shell.cards = None;
@@ -594,6 +612,7 @@ pub fn open(engine: Engine, settings: Settings, options: Options) {
                 viewer: None,
                 peek: None,
                 toast: None,
+                heard: None,
                 cards: None,
                 drawpad: None,
                 sharing: None,

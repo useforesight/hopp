@@ -161,6 +161,9 @@ pub enum SessionEvent {
     MarksChanged,
     /// New camera frames; only windows showing faces redraw.
     Cameras,
+    /// Someone said the wake word, or their ask is over: the "Heard you" bubble opens
+    /// or closes.
+    HeardChanged,
 }
 
 #[derive(Clone)]
@@ -283,6 +286,8 @@ pub struct Session {
     pub cards: Vec<Card>,
     /// Who is speaking, for the call tiles.
     pub speaking: super::speaking::Speaking,
+    /// Who last said the wake word and what they're asking, while it shows (see `heard`).
+    pub heard: Option<super::heard::Heard>,
     /// Your microphone level, 0–1, for the ring round your tile.
     pub microphone_level: f32,
     /// Your microphone gives no sound and reopening it didn't help: its name, or empty
@@ -380,6 +385,7 @@ impl Session {
             tones: Tones::default(),
             cards: Vec::new(),
             speaking: Default::default(),
+            heard: None,
             microphone_level: 0.,
             microphone_silent: None,
         }
@@ -2406,6 +2412,51 @@ impl Session {
                 }
             }
             Event::MicrophoneLevel(level) => self.microphone_level = level,
+            Event::WakeHeard { identity, words } => {
+                let key = match &identity {
+                    Some(identity) => canonical_identity(identity).to_owned(),
+                    None => super::speaking::YOU.to_owned(),
+                };
+                let now = Instant::now();
+                let showing = self.heard.as_ref().filter(|heard| !heard.over(now));
+                match words {
+                    Some(words) => {
+                        // More from the same person keeps the light where it is on its
+                        // way round.
+                        let since = showing
+                            .filter(|heard| heard.key == key)
+                            .map_or(now, |heard| heard.since);
+                        self.heard = Some(super::heard::Heard {
+                            name: match &identity {
+                                Some(identity) => self.name_for(identity),
+                                None => self.display_name(),
+                            },
+                            yours: identity.is_none(),
+                            key,
+                            words,
+                            since,
+                            updated: now,
+                        });
+                        cx.spawn(async move |session, cx| {
+                            cx.background_executor().timer(super::heard::HOLD).await;
+                            let _ = session.update(cx, |session, cx| {
+                                let now = Instant::now();
+                                if session.heard.as_ref().is_some_and(|heard| heard.over(now)) {
+                                    session.heard = None;
+                                    cx.emit(SessionEvent::HeardChanged);
+                                    cx.emit(SessionEvent::Cameras);
+                                }
+                            });
+                        })
+                        .detach();
+                    }
+                    // Not the word after all. Someone else's ask stays.
+                    None if showing.is_some_and(|heard| heard.key == key) => self.heard = None,
+                    None => return,
+                }
+                cx.emit(SessionEvent::HeardChanged);
+                cx.emit(SessionEvent::Cameras);
+            }
             Event::MicrophoneSilent(device) => {
                 if let Some(device) = &device {
                     let name = if device.is_empty() {
@@ -2486,6 +2537,7 @@ impl Session {
         self.microphone = false;
         self.camera = false;
         self.speaking.clear();
+        self.heard = None;
         self.microphone_level = 0.;
         self.microphone_silent = None;
         self.peer_control = false;

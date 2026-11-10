@@ -144,6 +144,8 @@ pub(super) struct Face {
     pub level: Option<f32>,
     /// Your microphone gives no sound and reopening it didn't help.
     pub silent: bool,
+    /// They said the wake word: a light runs round their tile.
+    pub heard: Option<super::heard::Glow>,
 }
 
 /// Everyone in the call: the sharer first, you last, so the person you're watching is
@@ -151,6 +153,13 @@ pub(super) struct Face {
 pub(super) fn faces_for(session: &Session) -> Vec<Face> {
     let sharer = session.remote_identity.clone();
     let now = std::time::Instant::now();
+    let heard = |key: &str| {
+        session
+            .heard
+            .as_ref()
+            .filter(|heard| heard.key == key)
+            .and_then(|heard| heard.glow(now))
+    };
     let mut others: Vec<(bool, Face)> = session
         .participants
         .iter()
@@ -174,6 +183,7 @@ pub(super) fn faces_for(session: &Session) -> Vec<Face> {
                 name: session.name_for(&participant.identity),
                 speaking: session.speaking.is_speaking(&key, now),
                 muted: participant.muted,
+                heard: heard(&key),
                 key,
                 badges,
                 level: None,
@@ -197,6 +207,7 @@ pub(super) fn faces_for(session: &Session) -> Vec<Face> {
     }
     let you = Face {
         key: super::speaking::YOU.into(),
+        heard: heard(super::speaking::YOU),
         speaking: session.microphone && session.speaking.is_speaking(super::speaking::YOU, now),
         muted: !session.microphone,
         level: session.microphone.then_some(session.microphone_level),
@@ -367,6 +378,7 @@ pub(super) fn face_tile(
         muted,
         level,
         silent,
+        heard,
     } = face;
     let theme = cx.omarchy().clone();
     let radius = if round { side / 2. } else { 9. };
@@ -479,7 +491,9 @@ pub(super) fn face_tile(
                 .child(icon(glyph).size(px(11.))),
         );
     }
-    tile.child(corner)
+    tile.child(corner).when_some(heard, |tile, glow| {
+        tile.child(super::heard::light(side, radius, glow, cx))
+    })
 }
 
 /// Before someone's name: a grey mic, green bars that move while they speak, or a red
@@ -662,7 +676,10 @@ impl Render for FacesView {
 
         let faces = faces_for(session);
         // The bars move while anyone speaks.
-        if faces.iter().any(|face| face.speaking) {
+        if faces
+            .iter()
+            .any(|face| face.speaking || face.heard.is_some())
+        {
             window.request_animation_frame();
         }
         let round = self.layout == FaceLayout::Bubbles;

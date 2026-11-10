@@ -1,6 +1,7 @@
 //! Capture: a transcript of a call (and, later, recordings of its shared screens),
 //! saved only on this computer.
 
+pub mod asking;
 pub mod batch;
 pub mod commands;
 pub mod config;

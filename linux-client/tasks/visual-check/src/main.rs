@@ -127,6 +127,7 @@ fn person(id: &str, first: &str, last: &str, active: bool) -> Teammate {
         last_name: last.into(),
         email: format!("{}@example.test", first.to_lowercase()),
         is_active: active,
+        status: None,
     }
 }
 
@@ -152,6 +153,8 @@ fn main() {
             first_name: "Alex".into(),
             last_name: "Morgan".into(),
             email: "alex@example.test".into(),
+            status: None,
+            status_auto: false,
         }));
         send(Event::Rooms(vec![
             RoomInfo {
@@ -244,6 +247,17 @@ fn main() {
         });
         send(Event::MicrophoneLevel(0.8));
     }
+    if matches!(scene.as_str(), "faces-heard" | "heard") {
+        // You said the wake word: a light round your tile, your words in the bubble.
+        let words = "So, Jeepers, why's the build failing on main since this morning?"
+            .split_whitespace()
+            .map(|word| (word.to_owned(), word.starts_with("Jeepers")))
+            .collect();
+        send(Event::WakeHeard {
+            identity: None,
+            words: Some(words),
+        });
+    }
     if scene == "faces-silent" {
         send(Event::MicrophoneSilent(Some("USB Microphone".into())));
     }
@@ -282,7 +296,14 @@ fn main() {
         // A stamp Mira finished, and one Jonas is still speaking over.
         use hopp_visual_fixture::protocol::StampMessage;
         for (sender, message) in [
-            ("mira:audio", StampMessage::StampPlace { id: 1, x: 0.80, y: 0.30 }),
+            (
+                "mira:audio",
+                StampMessage::StampPlace {
+                    id: 1,
+                    x: 0.80,
+                    y: 0.30,
+                },
+            ),
             (
                 "mira:audio",
                 StampMessage::StampText {
@@ -292,7 +313,14 @@ fn main() {
                     done: true,
                 },
             ),
-            ("jonas:audio", StampMessage::StampPlace { id: 7, x: 0.22, y: 0.70 }),
+            (
+                "jonas:audio",
+                StampMessage::StampPlace {
+                    id: 7,
+                    x: 0.22,
+                    y: 0.70,
+                },
+            ),
             (
                 "jonas:audio",
                 StampMessage::StampText {
@@ -356,9 +384,11 @@ fn main() {
             card(
                 "card_3",
                 "Lunch order closes at 12:30",
-                Some("A notice with a body long enough to need clamping to three lines, so \
+                Some(
+                    "A notice with a body long enough to need clamping to three lines, so \
                       this sentence runs on well past the end of the third line of the card \
-                      to show the clamp."),
+                      to show the clamp.",
+                ),
                 None,
             ),
             card(
@@ -368,7 +398,9 @@ fn main() {
                 Some(("Deploy", "Not yet")),
             ),
         ] {
-            send(Event::Ui(hopp_visual_fixture::engine::UiRequest::Card(request)));
+            send(Event::Ui(hopp_visual_fixture::engine::UiRequest::Card(
+                request,
+            )));
         }
     }
     if scene == "call-missed" || scene == "home-missed" {
@@ -408,7 +440,14 @@ fn main() {
         });
         use hopp_visual_fixture::protocol::StampMessage;
         for (sender, message) in [
-            ("mira:audio", StampMessage::StampPlace { id: 1, x: 0.70, y: 0.36 }),
+            (
+                "mira:audio",
+                StampMessage::StampPlace {
+                    id: 1,
+                    x: 0.70,
+                    y: 0.36,
+                },
+            ),
             (
                 "mira:audio",
                 StampMessage::StampText {
@@ -538,7 +577,7 @@ fn main() {
     let only = match scene.as_str() {
         "signin" | "home" | "home-call" | "home-missed" => "home",
         "call-missed" => "call",
-        "faces" | "faces-sharing" | "faces-speaking" | "faces-silent" => "faces",
+        "faces" | "faces-sharing" | "faces-speaking" | "faces-silent" | "faces-heard" => "faces",
         // The pill alone: the pad (transparent) would cover it in the harness.
         "sharing-draw" | "sharing-stamp" => "sharing",
         other => other,

@@ -31,12 +31,38 @@ pub mod api {
         pub id: String,
         pub name: String,
     }
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+    #[serde(rename_all = "lowercase")]
+    pub enum UserStatus {
+        Available,
+        Away,
+        Dnd,
+    }
+    impl UserStatus {
+        pub const ALL: [Self; 3] = [Self::Available, Self::Away, Self::Dnd];
+        pub fn label(self) -> &'static str {
+            match self {
+                Self::Available => "Available",
+                Self::Away => "Away",
+                Self::Dnd => "Do not disturb",
+            }
+        }
+        pub fn as_str(self) -> &'static str {
+            match self {
+                Self::Available => "available",
+                Self::Away => "away",
+                Self::Dnd => "dnd",
+            }
+        }
+    }
     #[derive(Clone, Debug)]
     pub struct UserInfo {
         pub id: String,
         pub first_name: String,
         pub last_name: String,
         pub email: String,
+        pub status: Option<UserStatus>,
+        pub status_auto: bool,
     }
     #[derive(Clone, Debug)]
     pub struct Teammate {
@@ -45,6 +71,13 @@ pub mod api {
         pub last_name: String,
         pub email: String,
         pub is_active: bool,
+        pub status: Option<UserStatus>,
+    }
+    impl Teammate {
+        pub fn shown_status(&self) -> Option<UserStatus> {
+            self.status
+                .filter(|status| self.is_active && *status != UserStatus::Available)
+        }
     }
 }
 pub mod screencast {
@@ -156,6 +189,8 @@ pub mod engine {
         StartCapture,
         StopCapture,
         Bookmark(Option<String>),
+        SetStatus(crate::api::UserStatus),
+        AutoAway(bool),
     }
     pub enum Event {
         LoggedIn(UserInfo),
@@ -189,6 +224,10 @@ pub mod engine {
             you: bool,
         },
         MicrophoneLevel(f32),
+        WakeHeard {
+            identity: Option<String>,
+            words: Option<Vec<(String, bool)>>,
+        },
         MicrophoneSilent(Option<String>),
         Data {
             sender: String,
@@ -211,6 +250,7 @@ pub mod engine {
             cameras: Vec<(String, String)>,
         },
         Teammates(Vec<Teammate>),
+        OwnStatus(Option<crate::api::UserStatus>),
         IncomingCall {
             caller_id: String,
             name: String,

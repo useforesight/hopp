@@ -186,6 +186,13 @@ pub enum Event {
     },
     /// Your microphone's level, 0–1, at most every 40 ms while you're unmuted.
     MicrophoneLevel(f32),
+    /// The capture heard someone say the wake word: who, by identity (`None` for you),
+    /// and their words so far, each marked if it is the wake word. No words: the final
+    /// text didn't have the word after all.
+    WakeHeard {
+        identity: Option<String>,
+        words: Option<Vec<(String, bool)>>,
+    },
     /// Your microphone gives no sound and reopening it hasn't helped: its name (empty for
     /// the system default). `None` once it works again.
     MicrophoneSilent(Option<String>),
@@ -2528,6 +2535,8 @@ impl Worker {
             _ => session.room_name(),
         };
         let changed = self.internal_tx.clone();
+        let wakes = self.internal_tx.clone();
+        let own = crate::protocol::canonical_identity(&session.own_identity()).to_owned();
         let recorder = recorder::Recorder::start(recorder::Options {
             room,
             model,
@@ -2539,6 +2548,11 @@ impl Worker {
             changed: Arc::new(move || {
                 let _ = changed.send(Event::CaptureChanged);
             }),
+            heard: Some(Arc::new(move |speaker: &str, words: Option<&str>| {
+                let identity = (speaker != own).then(|| speaker.to_owned());
+                let words = words.map(crate::capture::asking::marked);
+                let _ = wakes.send(Event::WakeHeard { identity, words });
+            })),
         })?;
         // Lets other Hopp for Linux clients show that the call is being captured. Best
         // effort: the capture goes ahead either way.
