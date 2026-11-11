@@ -41,7 +41,7 @@ Release builds connect to `pair.gethopp.app`, upstream's managed service, until 
 
 ### In the latest release (v1.5.0)
 
-- **Reactions.** A party popper in the call controls opens emoji, confetti, a gong, a table flip, a slow clap, fireworks, achievements, a disco, "ship it" and a soundboard. They play on everyone's screen, with sound, and you can turn the sounds off. Coming to the Linux client next.
+- **Reactions.** A party popper in the call controls opens emoji, confetti, a gong, a table flip, a slow clap, fireworks, achievements, a disco, "ship it" and a soundboard. They play on everyone's screen, with sound, and you can turn the sounds off. The Linux client has them too.
 
 ### Earlier, in v1.4.0
 
