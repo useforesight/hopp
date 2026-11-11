@@ -21,11 +21,12 @@ it shows:
 | Surface | What it is | How Hyprland treats it |
 | --- | --- | --- |
 | **Bar app** (`local.hopp` plugin) | Teammates, rooms, presence, call controls; a live pill (faces, timer, mic, sharing dot, capture waveform) during calls. `Super+Alt+H`. | Omarchy shell panel |
-| **Call window** (`hopp.faces`) | Square, centre-cropped camera tiles (S/M/L, column/row/bubbles) and call controls (mic, camera, share, capture, leave) on a frosted, see-through background. Grows by one tile per person; never stretches. Steps aside while a docked viewer is on screen and comes back on other workspaces. | Floating, pinned to every workspace, no initial focus, hidden from your own screen share, anchored to its nearest corner as it grows |
+| **Call window** (`hopp.faces`) | Square, centre-cropped camera tiles (S/M/L, column/row/bubbles) and call controls (mic, camera, share, capture, reactions, leave) on a frosted, see-through background. Grows by one tile per person; never stretches. Steps aside while a docked viewer is on screen and comes back on other workspaces. | Floating, pinned to every workspace, no initial focus, hidden from your own screen share, anchored to its nearest corner as it grows |
 | **Shared screen** (`hopp.viewer`) | A *viewport* onto the remote screen: readable scale, cropped to whatever shape the tile has, following the sharer’s cursor, with minimap, Follow / 1:1 / Fit and a fading control pill. In **Fit**, the whole window behind the screen is the screen itself stretched to the window's shape and heavily blurred (TV-style, see-through onto the frosted desktop). Whose screen and the view controls sit in one band; the call card (faces sized to fill the band, plus the call controls) in the other. Left and right on wide tiles, top and bottom on tall ones. | An ordinary tile |
 | **Peek** (`hopp.peek`) | The whole remote screen fitted, with the same blurred bands and dock. `Super+H` in and out. | `special:hopp` workspace |
 | **Call card** (`hopp-call`) | Incoming/outgoing call with Accept/Decline/Cancel. | Layer-shell overlay, top right; never takes keyboard focus unless clicked |
 | **Sharing pill** (`hopp-sharing`) | “Sharing eDP-1 · Mira has control · Revoke · Stop”. | Layer-shell overlay under the bar, excluded from screen sharing |
+| **Reactions** (`hopp-reactions`) | The tray from the call window's reactions button (emoji, effects, a soundboard on keys 1–8, a switch for their sounds), and the layer they play on for everyone in the call. | Layer-shell overlays: the tray beside the call window, the layer over the whole monitor with the call window, click-through and open only while something plays; both excluded from screen sharing |
 | **Hopp window** (`hopp`) | Sign-in and the same teammates/rooms/call view without the plugin. | Floating, centred, panel-sized |
 | **Settings** (`hopp.settings`) | Account and server, audio and video devices, call window, Capture (models, storage, agents, hooks), shortcuts. | Floating, centred |
 | **Captures** (`hopp.captures`) | The live transcript while you capture, and every captured call, searchable. Narrow, just the transcript. Right-click the capture button, or `hopp capture window`. | An ordinary tile |
@@ -183,6 +184,17 @@ still listens while off the record, in memory, so that it can hear the phrase ag
 It takes a second or two to hear it, as with "Jeepers", so say it before the thing
 you don't want kept. Everyone needs a version of Hopp that knows about it: an older
 one keeps capturing.
+
+**Reactions.** The call window's party button opens a tray of reactions that play on
+everyone's screen, with sound: eight quick emoji; confetti (tap again quickly for
+more), a gong, a flipped table, a slow clap that everyone can join, fireworks (click
+for three rockets, hold for up to ten), an achievement for someone, a disco and a
+"ship it" launch; and a soundboard, also on keys 1–8 while the tray has the
+keyboard. The tray stays open until Escape or the button again. They play on a
+click-through layer over the monitor with the call window, kept out of your screen
+share, and only over a monitor you share when the `hopp-share-clean` plugin is
+loaded (otherwise you only hear them). The tray's switch turns their sounds off on
+this computer. The Mac app sends and plays the same reactions.
 
 **Hooks.** Executables in `~/.config/hopp/hooks/capture-started` and
 `capture-complete` (or in `capture-complete.d/`) run in the background with

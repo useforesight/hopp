@@ -58,8 +58,8 @@ impl FaceLayout {
 const PAD: f32 = 6.;
 const GAP: f32 = 6.;
 const CONTROL_GAP: f32 = 4.;
-/// Mic, camera, share, capture and leave.
-pub(super) const CALL_CONTROLS: usize = 5;
+/// Mic, camera, share, capture, reactions and leave.
+pub(super) const CALL_CONTROLS: usize = 6;
 
 /// The call controls in one row.
 pub(super) fn controls_row_width() -> f32 {
@@ -258,7 +258,7 @@ pub(super) fn faces_for(session: &Session) -> Vec<Face> {
         .collect()
 }
 
-/// Mute, camera, share, capture and leave, wired straight to the session.
+/// Mute, camera, share, capture, reactions and leave, wired straight to the session.
 pub(super) fn call_controls(
     session: &Entity<Session>,
     cx: &gpui_kit::App,
@@ -273,6 +273,7 @@ pub(super) fn call_controls(
     );
     let capture_tip = capture_tooltip(state.capture.as_ref());
     let capturing = state.capture.is_some();
+    let reacting = super::Shell::reactions_tray_open(cx);
     let on = |action: fn(&mut Session, &mut Context<Session>)| {
         let session = session.clone();
         move |_: &gpui_kit::ClickEvent, _: &mut Window, cx: &mut gpui_kit::App| {
@@ -350,6 +351,16 @@ pub(super) fn call_controls(
         .on_mouse_down(MouseButton::Right, |_, _, cx| {
             cx.stop_propagation();
             super::Shell::show_captures(cx);
+        }),
+        control(
+            "reactions",
+            IconName::PartyPopper,
+            if reacting { Tone::On } else { Tone::Plain },
+            "Reactions: confetti, a gong, fireworks… for everyone",
+            cx,
+        )
+        .when(connected, |control| {
+            control.on_click(|_, _, cx| cx.defer(super::Shell::toggle_reactions_tray))
         }),
         control("leave", IconName::PhoneOff, Tone::Danger, "Leave call", cx)
             .on_click(on(|session, cx| session.leave(cx))),
@@ -871,7 +882,7 @@ mod tests {
         let three = window_size(3, FaceLayout::Column, FaceSize::Medium);
         assert_eq!(two.width, three.width, "width never changes in a column");
         assert_eq!(three.height - two.height, 200. + GAP);
-        // 200 wide fits all five controls on one row: 6 + 3×200 + 2×6 + 6 + 28 + 6.
+        // 200 wide fits all six controls on one row: 6 + 3×200 + 2×6 + 6 + 28 + 6.
         assert_eq!(three.height, 6. + 600. + 12. + 6. + CONTROL + 6.);
     }
 
@@ -881,7 +892,7 @@ mod tests {
         assert_eq!(size.width, 320. + 12.);
         assert_eq!(size.height, 12. + 2. * 320. + GAP + GAP + CONTROL);
         let small = window_size(2, FaceLayout::Column, FaceSize::Small);
-        // Five controls in two columns: three rows.
+        // Six controls in two columns: three rows.
         assert_eq!(
             small.height,
             12. + 2. * 112. + GAP + GAP + 3. * CONTROL + 8.

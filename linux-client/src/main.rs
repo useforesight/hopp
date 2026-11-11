@@ -26,6 +26,7 @@ mod paths;
 mod pipewire_audio;
 mod presence;
 mod protocol;
+mod reactions;
 mod scope;
 #[cfg(test)]
 mod scrawl_e2e;

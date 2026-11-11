@@ -166,6 +166,8 @@ pub enum SessionEvent {
     /// Someone said the wake word, or their ask is over: the "Heard you" bubble opens
     /// or closes.
     HeardChanged,
+    /// A reaction to play over the screen.
+    Reaction(Box<super::reactions::Played>),
 }
 
 #[derive(Clone)]
@@ -430,6 +432,67 @@ impl Session {
             .find(|participant| canonical_identity(&participant.identity) == wanted)
             .map(|participant| sanitize(&participant.name))
             .unwrap_or_else(|| "Teammate".into())
+    }
+
+    /// A reaction with who's in the call, each in the colour their marks have.
+    fn played(
+        &self,
+        sender: String,
+        name: String,
+        mine: bool,
+        reaction: crate::protocol::Reaction,
+    ) -> super::reactions::Played {
+        let colours = super::marks::colours_for(
+            self.user.as_ref().map(|user| user.id.clone()),
+            self.participants
+                .iter()
+                .map(|participant| participant.identity.clone()),
+        );
+        let rgb = colours(if mine { "" } else { &sender });
+        super::reactions::Played {
+            people: self
+                .participants
+                .iter()
+                .map(|participant| {
+                    (
+                        canonical_identity(&participant.identity).to_owned(),
+                        sanitize(&participant.name),
+                        colours(&participant.identity),
+                    )
+                })
+                .collect(),
+            // Your identity when it's yours; else your user id, which is in it.
+            me: (
+                if mine {
+                    canonical_identity(&sender).to_owned()
+                } else {
+                    self.user
+                        .as_ref()
+                        .map(|user| user.id.clone())
+                        .unwrap_or_default()
+                },
+                self.display_name(),
+                colours(""),
+            ),
+            sender: canonical_identity(&sender).to_owned(),
+            name: sanitize(&name),
+            rgb,
+            mine,
+            reaction,
+        }
+    }
+
+    /// Send a reaction to everyone in the call (and play it here).
+    pub fn react(&mut self, reaction: crate::protocol::Reaction) {
+        if self.connected {
+            self.send(Command::SendReaction(reaction));
+        }
+    }
+
+    pub fn set_reaction_sounds(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.settings.reaction_sounds = enabled;
+        let _ = crate::settings::save(&self.settings);
+        cx.notify();
     }
 
     /// Everything people have put on a shared screen, to paint. Over your own screen
@@ -2576,6 +2639,15 @@ impl Session {
             }
             Event::Drawing { sender, event } => self.receive_drawing(sender, event),
             Event::Stamp { sender, message } => self.receive_stamp(sender, message),
+            Event::Reaction {
+                sender,
+                name,
+                mine,
+                reaction,
+            } => {
+                let played = self.played(sender, name, mine, reaction);
+                cx.emit(SessionEvent::Reaction(Box::new(played)));
+            }
             Event::Pointer { sender, point } => {
                 self.pointers
                     .entry(sender)

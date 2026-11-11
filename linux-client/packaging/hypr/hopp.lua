@@ -42,16 +42,16 @@ o.window("^hopp\\.call$", { float = true, pin = true, no_initial_focus = true })
 o.window("^hopp\\.cards$", { float = true, pin = true, no_initial_focus = true, no_screen_share = true })
 
 -- The call card, agents' cards, the "you're sharing" pill, others' marks over your
--- shared monitor and the pad you draw on it with are for you, not for your viewers
--- (they draw their own marks; upstream's Mac and Windows apps do too, in their native
--- screen-sharing window).
-hl.layer_rule({ match = { namespace = "^hopp-(call|sharing|cards|marks|draw)$" }, no_screen_share = true })
+-- shared monitor, the pad you draw on it with and the reactions (their tray and the
+-- layer they play on) are for you, not for your viewers (they draw their own marks and
+-- play their own reactions; upstream's Mac and Windows apps do too).
+hl.layer_rule({ match = { namespace = "^hopp-(call|sharing|cards|marks|draw|reactions)$" }, no_screen_share = true })
 -- Hyprland hides those by painting black boxes over them in the share, which for the
--- full-screen marks layer and draw pad would black out the whole screen. The
--- hopp-share-clean plugin (hyprland-plugin/ in Hopp) leaves them out of the share
--- instead; without it Hopp doesn't open them. No fade-out, so a closing overlay never
--- flashes into the share.
-hl.layer_rule({ match = { namespace = "^hopp-(marks|draw)$" }, no_anim = true })
+-- full-screen marks and reactions layers and the draw pad would black out the whole
+-- screen. The hopp-share-clean plugin (hyprland-plugin/ in Hopp) leaves them out of the
+-- share instead; without it Hopp doesn't open them over the shared monitor. No
+-- fade-out, so a closing overlay never flashes into the share.
+hl.layer_rule({ match = { namespace = "^hopp-(marks|draw|reactions)$" }, no_anim = true })
 @SHARE_PLUGIN@
 
 o.bind("SUPER + ALT + H", "Hopp", hopp .. " panel")
