@@ -492,7 +492,7 @@ pub enum Message {
     /// Send this reaction to the call. Tauri → core.
     ReactionSend(Reaction),
     /// Play this reaction. Core → Tauri.
-    ReactionPlay(ReactionPlay),
+    ReactionPlay(Box<ReactionPlay>),
     /// You let others control your screen, or stopped them, from the sharing pill.
     ControllerCursorChanged(bool),
 }

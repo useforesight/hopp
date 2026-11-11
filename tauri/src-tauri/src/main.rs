@@ -1551,7 +1551,7 @@ fn forward_core_events(events_rx: std_mpsc::Receiver<Message>, app: tauri::AppHa
                     play.reaction.kind,
                     play.mine
                 );
-                hopp::reactions::play(&app, play);
+                hopp::reactions::play(&app, *play);
             }
             Message::ControllerCursorChanged(allowed) => {
                 if let Err(e) = app.emit("core_controller_cursor_changed", allowed) {

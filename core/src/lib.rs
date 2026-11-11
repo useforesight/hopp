@@ -1674,7 +1674,7 @@ impl<'a> Application<'a> {
             people,
             call_window,
         };
-        if let Err(e) = self.socket.send(Message::ReactionPlay(play)) {
+        if let Err(e) = self.socket.send(Message::ReactionPlay(Box::new(play))) {
             log::error!("play_reaction: failed to send: {e:?}");
         }
     }
