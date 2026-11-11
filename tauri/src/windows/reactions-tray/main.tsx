@@ -160,7 +160,9 @@ function ReactionsTray() {
                     className="relative flex h-[46px] flex-col items-center justify-center rounded-xl bg-white/[0.06] transition-[transform,background-color] duration-150 hover:bg-white/[0.12] active:scale-95"
                   >
                     <span className="text-[17px] leading-none">{sound.emoji}</span>
-                    <span className="mt-1 max-w-full truncate px-0.5 text-[9.5px] text-white/65">{sound.label}</span>
+                    <span className="mt-1 max-w-full truncate px-0.5 text-[9.5px] leading-tight text-white/65">
+                      {sound.label}
+                    </span>
                     {/* Not a <kbd>: App.css styles those as keycaps, over these classes. */}
                     <span className="absolute top-1 right-1.5 text-[9px] leading-none text-white/35">{i + 1}</span>
                   </button>
@@ -204,7 +206,7 @@ function Tile({ emoji, label, small, on, onClick, className, children, ...rest }
     >
       {children}
       <span className={cn("relative leading-none", small ? "text-[13px] font-bold" : "text-[22px]")}>{emoji}</span>
-      <span className="relative mt-1.5 text-[10px] text-white/70">{label}</span>
+      <span className="relative mt-1.5 text-[10px] leading-tight text-white/70">{label}</span>
     </button>
   );
 }
