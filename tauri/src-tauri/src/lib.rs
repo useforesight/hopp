@@ -7,6 +7,7 @@ pub mod captures;
 pub mod cards;
 pub mod idle;
 pub mod permissions;
+pub mod reactions;
 #[cfg(target_os = "macos")]
 pub mod sleep_prevention;
 pub mod sounds;

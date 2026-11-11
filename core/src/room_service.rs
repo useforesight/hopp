@@ -188,6 +188,7 @@ enum RoomServiceCommand {
     PublishClipboardData(ClipboardDataPayload),
     PublishClickAnimation(ClientPoint),
     PublishStamp(StampMessage),
+    PublishReaction(socket_lib::Reaction),
     CaptureBookmark(Option<String>),
     CaptureStart,
     CaptureStop,
@@ -248,6 +249,7 @@ impl std::fmt::Debug for RoomServiceCommand {
             Self::PublishClipboardData(..) => write!(f, "PublishClipboardData"),
             Self::PublishClickAnimation(..) => write!(f, "PublishClickAnimation"),
             Self::PublishStamp(..) => write!(f, "PublishStamp"),
+            Self::PublishReaction(reaction) => write!(f, "PublishReaction({})", reaction.kind),
             Self::CaptureBookmark(..) => write!(f, "CaptureBookmark"),
             Self::CaptureStart => write!(f, "CaptureStart"),
             Self::CaptureStop => write!(f, "CaptureStop"),
@@ -694,6 +696,17 @@ impl RoomService {
             .send(RoomServiceCommand::OffRecord(Ask::End));
     }
 
+    /// Everyone in the call by identity, you as "local", with their names.
+    pub fn names(&self) -> Vec<(String, String)> {
+        self.inner
+            .participants
+            .read()
+            .unwrap()
+            .iter()
+            .map(|(identity, info)| (identity.clone(), info.name().to_string()))
+            .collect()
+    }
+
     pub fn get_participants(&self) -> Vec<ParticipantData> {
         let guard = self.inner.participants.read().unwrap();
         guard
@@ -937,6 +950,16 @@ impl RoomService {
             .send(RoomServiceCommand::PublishClickAnimation(point));
         if let Err(e) = res {
             log::error!("publish_click_animation: Failed to send command: {e:?}");
+        }
+    }
+
+    /// Sends one of your reactions to the call.
+    pub fn publish_reaction(&self, reaction: socket_lib::Reaction) {
+        if let Err(e) = self
+            .service_command_tx
+            .send(RoomServiceCommand::PublishReaction(reaction))
+        {
+            log::error!("publish_reaction: Failed to send command: {e:?}");
         }
     }
 
@@ -2187,6 +2210,26 @@ async fn room_service_commands(
                     log::error!("room_service_commands: Failed to publish stamp: {e:?}");
                 }
             }
+            RoomServiceCommand::PublishReaction(reaction) => {
+                let inner_room = inner.room.lock().await;
+                let Some(room) = inner_room.as_ref() else {
+                    log::warn!("room_service_commands: Room doesn't exist for PublishReaction");
+                    continue;
+                };
+                let payload = serde_json::to_vec(&reaction).unwrap();
+                let res = room
+                    .local_participant()
+                    .publish_data(DataPacket {
+                        payload,
+                        reliable: true,
+                        topic: Some(socket_lib::REACTION_TOPIC.to_string()),
+                        ..Default::default()
+                    })
+                    .await;
+                if let Err(e) = res {
+                    log::error!("room_service_commands: Failed to publish reaction: {e:?}");
+                }
+            }
             RoomServiceCommand::PublishAppVeilSnapshot { force } => {
                 let Some(snapshot) = inner.app_veil_snapshot.lock().unwrap().clone() else {
                     continue;
@@ -2796,6 +2839,29 @@ async fn handle_room_events(ctx: RoomEventContext) {
                         event_loop_proxy.send_event(UserEvent::StampReceived(message, sender))
                     {
                         log::error!("handle_room_events: Failed to send stamp: {e:?}");
+                    }
+                    continue;
+                }
+
+                if topic.as_deref() == Some(socket_lib::REACTION_TOPIC) {
+                    let Some(participant) = participant else {
+                        log::warn!("handle_room_events: reaction sender is missing");
+                        continue;
+                    };
+                    let sender = participant.identity().as_str().to_string();
+                    if sender == user_identity {
+                        continue;
+                    }
+                    let Some(reaction) = socket_lib::Reaction::from_packet(&payload) else {
+                        log::warn!("handle_room_events: dropped a reaction from {sender}");
+                        continue;
+                    };
+                    if let Err(e) = event_loop_proxy.send_event(UserEvent::ReactionReceived {
+                        reaction,
+                        from: sender,
+                        name: participant.name().to_string(),
+                    }) {
+                        log::error!("handle_room_events: Failed to send reaction: {e:?}");
                     }
                     continue;
                 }

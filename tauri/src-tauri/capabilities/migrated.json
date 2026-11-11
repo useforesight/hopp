@@ -2,7 +2,7 @@
   "identifier": "migrated",
   "description": "permissions that were migrated from v1",
   "local": true,
-  "windows": ["main", "screenshare", "permissions", "trayNotification", "camera", "feedback", "settings", "callAlert", "captures", "cards"],
+  "windows": ["main", "screenshare", "permissions", "trayNotification", "camera", "feedback", "settings", "callAlert", "captures", "cards", "reactions", "reactionsTray"],
   "permissions": [
     "core:default",
     "fs:allow-read-file",

@@ -142,6 +142,8 @@ pub enum AppAction {
     OpenCaptures,
     ToggleDraw,
     ToggleStamp,
+    /// The reactions tray, over the button that was clicked.
+    OpenReactions,
 }
 
 /// What the user last did to this call's capture. The core can restart in a call and the
@@ -269,6 +271,138 @@ pub struct WakeHeard {
     pub words: Vec<WakeWord>,
 }
 
+/// Reactions: confetti, a gong, fireworks… that play on everyone's screen in the call. They
+/// go out on their own topic, [`REACTION_TOPIC`], so clients that don't know them ignore
+/// them, and clients that know them ignore kinds they don't.
+pub const REACTION_TOPIC: &str = "hopp_reaction";
+/// Packets bigger than this are dropped unread.
+pub const REACTION_PACKET_MAX: usize = 2 * 1024;
+/// The most characters of a reaction's words.
+pub const REACTION_TEXT_MAX: usize = 60;
+
+/// One reaction, as it's sent to the call.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct Reaction {
+    /// Which: confetti, gong, table_flip, emoji, sound, clap, fireworks, achievement,
+    /// disco, disco_end or ship_it.
+    pub kind: String,
+    /// Which emoji or sound.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choice: Option<String>,
+    /// How big: the tap streak of confetti, the rockets of fireworks.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub level: u8,
+    /// The achievement's title, or what shipped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// The identity an achievement is for. None: everyone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+}
+
+fn is_zero(level: &u8) -> bool {
+    *level == 0
+}
+
+impl Reaction {
+    /// The reaction in a packet from the call, if it's one this client knows.
+    pub fn from_packet(payload: &[u8]) -> Option<Self> {
+        if payload.len() > REACTION_PACKET_MAX {
+            return None;
+        }
+        serde_json::from_slice::<Self>(payload).ok()?.tidy()
+    }
+
+    /// Within bounds, or None for a kind or choice this client doesn't know.
+    pub fn tidy(mut self) -> Option<Self> {
+        const KINDS: [&str; 11] = [
+            "confetti",
+            "gong",
+            "table_flip",
+            "emoji",
+            "sound",
+            "clap",
+            "fireworks",
+            "achievement",
+            "disco",
+            "disco_end",
+            "ship_it",
+        ];
+        const EMOJI: [&str; 8] = [
+            "party", "fire", "applause", "lol", "rocket", "hundred", "love", "shock",
+        ];
+        const SOUNDS: [&str; 8] = [
+            "airhorn",
+            "badumtss",
+            "sad_trombone",
+            "crickets",
+            "drumroll",
+            "chaching",
+            "wooow",
+            "applause",
+        ];
+        if !KINDS.contains(&self.kind.as_str()) {
+            return None;
+        }
+        let choices: &[&str] = match self.kind.as_str() {
+            "emoji" => &EMOJI,
+            "sound" => &SOUNDS,
+            _ => &[],
+        };
+        if choices.is_empty() {
+            self.choice = None;
+        } else if !self
+            .choice
+            .as_deref()
+            .is_some_and(|choice| choices.contains(&choice))
+        {
+            return None;
+        }
+        self.level = match self.kind.as_str() {
+            "confetti" => self.level.min(4),
+            "fireworks" => self.level.clamp(1, 10),
+            _ => 0,
+        };
+        let words = matches!(self.kind.as_str(), "achievement" | "ship_it");
+        self.text = self
+            .text
+            .filter(|_| words)
+            .map(|text| {
+                text.trim()
+                    .chars()
+                    .take(REACTION_TEXT_MAX)
+                    .collect::<String>()
+            })
+            .map(|text| text.trim_end().to_string())
+            .filter(|text| !text.is_empty());
+        self.to = self
+            .to
+            .filter(|to| self.kind == "achievement" && !to.is_empty());
+        Some(self)
+    }
+}
+
+/// A reaction for the app to play, from someone in the call or from you.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct ReactionPlay {
+    pub reaction: Reaction,
+    /// Who sent it: their identity without the connection's suffix.
+    pub from: String,
+    /// Their name in the call.
+    pub name: String,
+    /// Their colour in the call, as on their cursor.
+    pub colour: [u8; 3],
+    /// You sent it.
+    pub mine: bool,
+    /// Your identity, without the connection's suffix, for an achievement that's for you.
+    pub me: String,
+    /// Everyone else in the call: identity without the connection's suffix, and name.
+    pub people: Vec<(String, String)>,
+    /// The call window on screen, in points from the top left of the main screen: x, y,
+    /// width, height. None when no call window is showing.
+    pub call_window: Option<[f64; 4]>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Message {
     GetAvailableContent,
@@ -355,6 +489,10 @@ pub enum Message {
     /// ago, or the final text didn't have the word after all.
     WakeHeard(Option<WakeHeard>),
     AppAction(AppAction),
+    /// Send this reaction to the call. Tauri → core.
+    ReactionSend(Reaction),
+    /// Play this reaction. Core → Tauri.
+    ReactionPlay(Box<ReactionPlay>),
     /// You let others control your screen, or stopped them, from the sharing pill.
     ControllerCursorChanged(bool),
 }
@@ -883,5 +1021,60 @@ mod tests {
             .recv_timeout(Duration::from_secs(5))
             .unwrap();
         assert!(matches!(msg, Message::Ping));
+    }
+
+    #[test]
+    fn reactions_from_other_clients_read_as_sent() {
+        let examples = [
+            r#"{"kind":"emoji","choice":"fire"}"#,
+            r#"{"kind":"confetti","level":2}"#,
+            r#"{"kind":"fireworks","level":7}"#,
+            r#"{"kind":"achievement","text":"Fixed the flaky test","to":"room:r:u"}"#,
+            r#"{"kind":"ship_it","text":"v1.4.0"}"#,
+            r#"{"kind":"gong"}"#,
+        ];
+        for example in examples {
+            let reaction = Reaction::from_packet(example.as_bytes()).expect(example);
+            assert_eq!(serde_json::to_string(&reaction).unwrap(), example);
+        }
+    }
+
+    #[test]
+    fn reactions_this_client_cant_play_are_dropped() {
+        for packet in [
+            r#"{"kind":"kazoo"}"#,
+            r#"{"kind":"emoji","choice":"kazoo"}"#,
+            r#"{"kind":"emoji"}"#,
+            r#"{"kind":"sound","choice":"fire"}"#,
+            r#"{"choice":"fire"}"#,
+            r#"{"kind":"gong","level":300}"#,
+            "not json",
+            "",
+        ] {
+            assert_eq!(Reaction::from_packet(packet.as_bytes()), None, "{packet}");
+        }
+        let huge = format!(
+            r#"{{"kind":"ship_it","text":"{}"}}"#,
+            "x".repeat(REACTION_PACKET_MAX)
+        );
+        assert_eq!(Reaction::from_packet(huge.as_bytes()), None);
+    }
+
+    #[test]
+    fn reactions_keep_within_bounds() {
+        let read = |packet: &str| Reaction::from_packet(packet.as_bytes()).unwrap();
+        assert_eq!(read(r#"{"kind":"confetti","level":9}"#).level, 4);
+        assert_eq!(read(r#"{"kind":"fireworks"}"#).level, 1);
+        assert_eq!(read(r#"{"kind":"fireworks","level":99}"#).level, 10);
+        assert_eq!(read(r#"{"kind":"gong","level":3}"#).level, 0);
+        let gong = read(r#"{"kind":"gong","choice":"fire","text":"hi","to":"x","later":1}"#);
+        assert_eq!((gong.choice, gong.text, gong.to), (None, None, None));
+        let long = read(&format!(
+            r#"{{"kind":"ship_it","text":"  {}  "}}"#,
+            "é".repeat(80)
+        ));
+        assert_eq!(long.text.unwrap().chars().count(), REACTION_TEXT_MAX);
+        assert_eq!(read(r#"{"kind":"ship_it","text":"   "}"#).text, None);
+        assert_eq!(read(r#"{"kind":"achievement","to":""}"#).to, None);
     }
 }
