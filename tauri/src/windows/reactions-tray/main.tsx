@@ -160,8 +160,9 @@ function ReactionsTray() {
                     className="relative flex h-[46px] flex-col items-center justify-center rounded-xl bg-white/[0.06] transition-[transform,background-color] duration-150 hover:bg-white/[0.12] active:scale-95"
                   >
                     <span className="text-[17px] leading-none">{sound.emoji}</span>
-                    <span className="mt-1 max-w-full truncate px-1 text-[9.5px] text-white/65">{sound.label}</span>
-                    <kbd className="absolute top-1 right-1.5 font-sans text-[9px] text-white/35">{i + 1}</kbd>
+                    <span className="mt-1 max-w-full truncate px-0.5 text-[9.5px] text-white/65">{sound.label}</span>
+                    {/* Not a <kbd>: App.css styles those as keycaps, over these classes. */}
+                    <span className="absolute top-1 right-1.5 text-[9px] leading-none text-white/35">{i + 1}</span>
                   </button>
                 ))}
               </div>
