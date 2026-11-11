@@ -606,6 +606,12 @@ fn call_started(
         // A core that died mid-call never reported CallEnded, so these may still be set.
         shortcuts::unregister_call_shortcuts(&app);
         shortcuts::register_call_shortcuts(&app, resolved_call_shortcuts(&data.app_state));
+        // Once the call's windows are up, so that the first reaction plays at once.
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            hopp::reactions::prepare(&app);
+        });
     }
     result
 }
@@ -1342,6 +1348,7 @@ fn forward_core_events(events_rx: std_mpsc::Receiver<Message>, app: tauri::AppHa
                     "forward_core_events: participants snapshot ({} participants)",
                     snapshot.len()
                 );
+                hopp::reactions::note_people(&app, &snapshot);
                 if let Err(e) = app.emit("core_participants_snapshot", &snapshot) {
                     log::error!("forward_core_events: failed to emit participants snapshot: {e:?}");
                 }
@@ -1388,6 +1395,7 @@ fn forward_core_events(events_rx: std_mpsc::Receiver<Message>, app: tauri::AppHa
                 #[cfg(not(target_os = "macos"))]
                 drop(data);
                 shortcuts::unregister_call_shortcuts(&app);
+                hopp::reactions::call_ended(&app);
                 if let Err(e) = app.emit("core_call_ended", &()) {
                     log::error!("forward_core_events: failed to emit call ended: {e:?}");
                 }
@@ -1532,7 +1540,18 @@ fn forward_core_events(events_rx: std_mpsc::Receiver<Message>, app: tauri::AppHa
                     AppAction::ToggleStamp => {
                         toggle_tool(&app, true);
                     }
+                    AppAction::OpenReactions => {
+                        hopp::reactions::toggle_tray(&app);
+                    }
                 }
+            }
+            Message::ReactionPlay(play) => {
+                log::info!(
+                    "forward_core_events: reaction {} (mine: {})",
+                    play.reaction.kind,
+                    play.mine
+                );
+                hopp::reactions::play(&app, play);
             }
             Message::ControllerCursorChanged(allowed) => {
                 if let Err(e) = app.emit("core_controller_cursor_changed", allowed) {
@@ -1974,6 +1993,7 @@ fn main() {
         })
         .manage(hopp::captures::Captures::default())
         .manage(hopp::cards::Cards::default())
+        .manage(hopp::reactions::Reactions::default())
         .manage(app_socket::AppSocket::default())
         .invoke_handler(tauri::generate_handler![
             create_captures_window,
@@ -1988,6 +2008,11 @@ fn main() {
             hopp::cards::cards_showing,
             hopp::cards::cards_settle,
             hopp::cards::cards_return_focus,
+            hopp::reactions::reactions_ready,
+            hopp::reactions::reactions_idle,
+            hopp::reactions::reactions_send,
+            hopp::reactions::reactions_people,
+            hopp::reactions::reactions_close_tray,
             hopp::captures::captures_list,
             hopp::captures::captures_open,
             hopp::captures::captures_poll,

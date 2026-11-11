@@ -24,6 +24,7 @@ const ICON_SCREEN_SHARE: char = '\u{F102}';
 const ICON_VIDEO: char = '\u{F101}';
 const ICON_PHONE_OFF: char = '\u{F103}';
 pub const ICON_CAPTURE: &[u8] = include_bytes!("../../resources/icons/audio-lines.svg");
+const ICON_REACTIONS: &[u8] = include_bytes!("../../resources/icons/party-popper.svg");
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CallControlsDensity {
@@ -62,12 +63,22 @@ impl CallControlsDensity {
         }
     }
 
+    /// The reactions button and the space before it.
+    const fn reactions_width(self) -> f32 {
+        match self {
+            Self::Regular => 44.0,
+            Self::Compact | Self::Icons => 34.0,
+            Self::Essentials => 0.0,
+        }
+    }
+
     const fn has_device_menus(self) -> bool {
         matches!(self, Self::Regular | Self::Compact)
     }
 
     pub const fn total_width(self) -> f32 {
         self.capture_width()
+            + self.reactions_width()
             + match self {
                 Self::Regular => 237.0,
                 Self::Compact => 189.0,
@@ -78,6 +89,7 @@ impl CallControlsDensity {
 
     const fn camera_dropdown_tail(self) -> f32 {
         self.capture_width()
+            + self.reactions_width()
             + match self {
                 Self::Regular => 111.0,
                 _ => 87.0,
@@ -86,6 +98,7 @@ impl CallControlsDensity {
 
     const fn mic_dropdown_tail(self) -> f32 {
         self.capture_width()
+            + self.reactions_width()
             + match self {
                 Self::Regular => 178.0,
                 _ => 140.0,
@@ -107,6 +120,7 @@ pub enum CallControlsMessage {
     OpenScreenSharePicker,
     ToggleCapture,
     OpenCaptures,
+    OpenReactions,
     EndCall,
 }
 
@@ -227,6 +241,7 @@ impl CallControlsState {
             if call_capture::SUPPORTED {
                 controls = controls.push(capture_control(is_capturing, density));
             }
+            controls = controls.push(reactions_control(density));
         }
         controls.push(end_call).into()
     }
@@ -384,6 +399,9 @@ impl CallControlsState {
             CallControlsMessage::OpenCaptures => {
                 send(UserEvent::AppAction(AppAction::OpenCaptures));
             }
+            CallControlsMessage::OpenReactions => {
+                send(UserEvent::AppAction(AppAction::OpenReactions));
+            }
             CallControlsMessage::EndCall => send(UserEvent::CallEnd),
         }
     }
@@ -427,6 +445,42 @@ fn capture_control<'a>(
     });
 
     // Without the menus the controls are at the bottom of the window, with no room below them.
+    let hint_position = if density.has_device_menus() {
+        tooltip::Position::Bottom
+    } else {
+        tooltip::Position::Top
+    };
+    tooltip(control, hint, hint_position)
+        .gap(4)
+        .snap_within_viewport(true)
+        .into()
+}
+
+fn reactions_control<'a>(
+    density: CallControlsDensity,
+) -> Element<'a, CallControlsMessage, Theme, iced::Renderer> {
+    let control = svg_button_sized(
+        ICON_REACTIONS,
+        ColorToken::Gray400.to_color(),
+        CallControlsMessage::OpenReactions,
+        density.button_size(),
+    );
+    let hint = container(
+        text("Reactions: confetti, a gong, fireworks… for everyone")
+            .size(12)
+            .color(Color::WHITE),
+    )
+    .padding(Padding::from([4.0, 8.0]))
+    .style(|_theme: &Theme| container::Style {
+        background: Some(Background::Color(ColorToken::Gray600.to_color())),
+        border: Border {
+            color: Color::from_rgba(1.0, 1.0, 1.0, 0.15),
+            width: 1.0,
+            radius: 6.0.into(),
+        },
+        shadow: ShadowToken::Xs.to_shadow(),
+        ..Default::default()
+    });
     let hint_position = if density.has_device_menus() {
         tooltip::Position::Bottom
     } else {

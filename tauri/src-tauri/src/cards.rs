@@ -304,6 +304,16 @@ pub fn explains_activation(app: &AppHandle) -> bool {
 #[cfg(target_os = "macos")]
 pub use focus::watch as watch_focus;
 
+#[cfg(target_os = "macos")]
+pub(crate) use focus::making_a_webview;
+
+/// Back to the app you were in, whatever brought Hopp forward.
+#[cfg(target_os = "macos")]
+pub(crate) fn hand_focus_back(app: &AppHandle) {
+    focus::CLICKED.store(true, std::sync::atomic::Ordering::Relaxed);
+    focus::hand_back(app);
+}
+
 /// Which app had the focus before a click on a card took it.
 #[cfg(target_os = "macos")]
 mod focus {

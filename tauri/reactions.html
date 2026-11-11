@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hopp reactions</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: transparent;
+        color: #fff;
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, sans-serif;
+        -webkit-user-select: none;
+        user-select: none;
+        cursor: default;
+      }
+      /* What the effects shake, dim and light up: the screen behind is out of reach. */
+      #screen {
+        position: fixed;
+        inset: 0;
+        overflow: hidden;
+      }
+      /* Where the call window is. Only what an effect puts over a tile shows. */
+      #callwin {
+        position: absolute;
+        visibility: hidden;
+      }
+      #callwin .tile {
+        position: absolute;
+        inset: 0;
+      }
+      /* The table-flipper's rage, as a badge over the call window rather than a red tile. */
+      #callwin .p3-rage {
+        visibility: visible;
+        inset: auto;
+        left: 50%;
+        top: 50%;
+        translate: -50% -50%;
+        width: max-content;
+        padding: 16px 26px;
+        border-radius: 999px;
+        box-shadow: 0 16px 44px rgba(120, 0, 20, 0.45);
+      }
+      #callwin .p3-rage .steam {
+        top: -8px;
+        right: -6px;
+      }
+      /* The slow clap's meter only shows while there's a clap going. */
+      #meter-host .p6-meter:not(.p6-live):not(.p6-fizz) {
+        opacity: 0;
+      }
+      /* The slow clap's meter, just above the call window. */
+      #meter-host {
+        position: absolute;
+        height: 32px;
+        z-index: 1050;
+      }
+      #fx-canvas,
+      #fx {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        z-index: 1000;
+      }
+      #fx > * {
+        pointer-events: none;
+      }
+      /* Who sent it */
+      .h-banner {
+        position: fixed;
+        left: 50%;
+        top: 44px;
+        z-index: 1100;
+        transform: translate(-50%, -20px) scale(0.96);
+        opacity: 0;
+        padding: 9px 16px 9px 9px;
+        border-radius: 999px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        background: rgba(15, 10, 28, 0.82);
+        backdrop-filter: blur(16px);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        font-size: 14px;
+        font-weight: 650;
+        box-shadow: 0 14px 40px rgba(0, 0, 0, 0.35);
+        transition:
+          transform 0.35s cubic-bezier(0.2, 1.4, 0.4, 1),
+          opacity 0.25s;
+      }
+      .h-banner.in {
+        transform: translate(-50%, 0) scale(1);
+        opacity: 1;
+      }
+      .h-banner .av {
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        font-size: 11px;
+        font-weight: 800;
+      }
+      .h-banner .emo {
+        font-size: 18px;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="screen">
+      <div id="callwin"><div class="tile"></div></div>
+      <div id="meter-host"></div>
+    </div>
+    <canvas id="fx-canvas"></canvas>
+    <div id="fx"></div>
+    <script type="module" src="/src/windows/reactions/main.ts"></script>
+  </body>
+</html>

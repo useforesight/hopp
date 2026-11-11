@@ -47,6 +47,12 @@ impl AppActivationObserver {
                     return;
                 }
 
+                // Opening the reactions tray brings Hopp forward, for the tray alone.
+                if crate::reactions::explains_activation(&app_handle) {
+                    log::info!("app_activation: the reactions tray is open, skipping");
+                    return;
+                }
+
                 // The same for a card from an agent.
                 if crate::cards::explains_activation(&app_handle) {
                     log::info!("app_activation: a card brought the app forward, skipping");

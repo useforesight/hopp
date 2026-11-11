@@ -304,6 +304,34 @@ export type AgentCard = {
 
 export type AgentCardAnswer = "accepted" | "rejected" | "dismissed";
 
+/** A reaction, as it's sent to the call (see `socket_lib::Reaction`). */
+export type Reaction = {
+  kind: string;
+  choice?: string;
+  level?: number;
+  text?: string;
+  /** The identity an achievement is for. None: everyone. */
+  to?: string;
+};
+
+/** A reaction for the reactions layer to play (see `socket_lib::ReactionPlay`). */
+export type ReactionPlay = {
+  seq: number;
+  play: {
+    reaction: Reaction;
+    from: string;
+    name: string;
+    colour: [number, number, number];
+    mine: boolean;
+    me: string;
+    people: [string, string][];
+  };
+  /** The call window on the layer: x, y, width, height. */
+  call_window: [number, number, number, number] | null;
+};
+
+export type ReactionPerson = { identity: string; name: string };
+
 export interface CommandMap {
   stop_sharing: { args: void; return: void };
   get_available_content: { args: void; return: void };
@@ -384,6 +412,11 @@ export interface CommandMap {
   cards_showing: { args: void; return: AgentCard[] };
   cards_settle: { args: { id: string; state: AgentCardAnswer }; return: void };
   cards_return_focus: { args: void; return: void };
+  reactions_ready: { args: void; return: ReactionPlay[] };
+  reactions_idle: { args: { seq: number }; return: void };
+  reactions_send: { args: { reaction: Reaction }; return: void };
+  reactions_people: { args: void; return: ReactionPerson[] };
+  reactions_close_tray: { args: { handBack: boolean }; return: void };
   capture_settings: { args: void; return: CaptureSettings };
   capture_settings_change: { args: { change: CaptureChange }; return: void };
   capture_model_download: { args: { name: string }; return: void };

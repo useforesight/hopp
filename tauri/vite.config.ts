@@ -49,6 +49,8 @@ export default defineConfig(async () => {
           callAlert: resolve(__dirname, "callAlert.html"),
           captures: resolve(__dirname, "captures.html"),
           cards: resolve(__dirname, "cards.html"),
+          reactions: resolve(__dirname, "reactions.html"),
+          reactionsTray: resolve(__dirname, "reactionsTray.html"),
         },
       },
     },

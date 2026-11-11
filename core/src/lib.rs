@@ -17,6 +17,7 @@ pub mod livekit {
     pub mod wake_heard;
 }
 
+mod reactions;
 pub mod room_service;
 mod snapshot_sender;
 mod stamp_voice;
@@ -436,6 +437,8 @@ pub struct Application<'a> {
     clipboard_controller: Option<ClipboardController>,
     screen_selection: Option<ScreenSelectionState>,
     pending_overlay_repair: Option<MonitorId>,
+    /// Keeps everyone's reactions within limits, yours too.
+    reaction_limit: reactions::RateLimit,
     #[cfg(target_os = "macos")]
     app_veil_host: Option<AppVeilHost>,
     #[cfg(target_os = "macos")]
@@ -531,6 +534,7 @@ impl<'a> Application<'a> {
             clipboard_controller,
             screen_selection: None,
             pending_overlay_repair: None,
+            reaction_limit: reactions::RateLimit::default(),
             #[cfg(target_os = "macos")]
             app_veil_host: None,
             #[cfg(target_os = "macos")]
@@ -1626,6 +1630,54 @@ impl<'a> Application<'a> {
             }),
         }
     }
+
+    /// Have the app play a reaction, coming from the call window that's showing.
+    fn play_reaction(&self, reaction: socket_lib::Reaction, from: &str, name: String, mine: bool) {
+        use hopp_marks::colours::canonical_identity;
+
+        let room_service = self.room_service.as_ref();
+        let me = room_service
+            .and_then(RoomService::local_identity)
+            .unwrap_or_default();
+        let mut name = name;
+        let mut people: Vec<(String, String)> = Vec::new();
+        for (identity, their_name) in room_service.map(RoomService::names).unwrap_or_default() {
+            if identity == "local" {
+                if mine {
+                    name = their_name;
+                }
+                continue;
+            }
+            let identity = canonical_identity(&identity).to_string();
+            if !people.iter().any(|(known, _)| *known == identity) {
+                people.push((identity, their_name));
+            }
+        }
+        let call_window = self
+            .screensharing_window
+            .as_ref()
+            .filter(|window| window.is_visible())
+            .and_then(ScreensharingWindow::frame)
+            .or_else(|| {
+                self.camera_window
+                    .as_ref()
+                    .filter(|window| window.is_visible())
+                    .and_then(CameraWindow::frame)
+            });
+        let play = socket_lib::ReactionPlay {
+            reaction,
+            from: canonical_identity(from).to_string(),
+            name,
+            colour: hopp_marks::colours::colour(from),
+            mine,
+            me: canonical_identity(&me).to_string(),
+            people,
+            call_window,
+        };
+        if let Err(e) = self.socket.send(Message::ReactionPlay(play)) {
+            log::error!("play_reaction: failed to send: {e:?}");
+        }
+    }
 }
 
 impl Drop for Application<'_> {
@@ -2470,6 +2522,50 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                         screensharing_window.receive_stamp(&sender, message);
                     }
                 }
+            }
+            UserEvent::ReactionSend(reaction) => {
+                let Some(reaction) = reaction.tidy() else {
+                    log::warn!("user_event: ReactionSend: not a reaction this client knows");
+                    return;
+                };
+                let Some(me) = self
+                    .room_service
+                    .as_ref()
+                    .and_then(RoomService::local_identity)
+                else {
+                    log::warn!("user_event: ReactionSend: not in a call");
+                    return;
+                };
+                if !self
+                    .reaction_limit
+                    .allow(&me, &reaction, std::time::Instant::now())
+                {
+                    log::info!("user_event: ReactionSend: too many, dropped");
+                    return;
+                }
+                log::info!("user_event: ReactionSend: {}", reaction.kind);
+                if let Some(room_service) = self.room_service.as_ref() {
+                    room_service.publish_reaction(reaction.clone());
+                }
+                self.play_reaction(reaction, &me, String::new(), true);
+            }
+            UserEvent::ReactionReceived {
+                reaction,
+                from,
+                name,
+            } => {
+                if !self
+                    .reaction_limit
+                    .allow(&from, &reaction, std::time::Instant::now())
+                {
+                    log::info!("user_event: ReactionReceived: too many from {from}, dropped");
+                    return;
+                }
+                log::info!(
+                    "user_event: ReactionReceived: {} from {from}",
+                    reaction.kind
+                );
+                self.play_reaction(reaction, &from, name, false);
             }
             UserEvent::ListAudioDevices => {
                 log::debug!("user_event: ListAudioDevices");
@@ -3735,6 +3831,14 @@ pub enum UserEvent {
     DrawClearAllPaths(String),
     ClickAnimationFromParticipant(room_service::ClientPoint, String),
     StampReceived(hopp_marks::stamps::StampMessage, String),
+    /// Send one of your reactions to the call.
+    ReactionSend(socket_lib::Reaction),
+    /// A reaction from someone in the call: their identity and name.
+    ReactionReceived {
+        reaction: socket_lib::Reaction,
+        from: String,
+        name: String,
+    },
     /// What's been heard for the stamp you pressed as this number.
     StampHeard(u64, hopp_capture::heard::Heard),
     LocalDrawingEnabled(socket_lib::DrawingEnabled),
@@ -3940,6 +4044,7 @@ impl RenderEventLoop {
                     Message::CaptureStop => UserEvent::CaptureStop,
                     Message::OffRecordMore => UserEvent::OffRecordMore,
                     Message::OffRecordEnd => UserEvent::OffRecordEnd,
+                    Message::ReactionSend(reaction) => UserEvent::ReactionSend(reaction),
                     Message::ListCameras => UserEvent::ListCameras,
                     Message::StartCamera(msg) => UserEvent::StartCamera {
                         msg,

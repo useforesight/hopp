@@ -118,7 +118,8 @@ const SMALL_WIDTH_THRESHOLD: f32 = 450.0;
 const SMALL_HEIGHT_THRESHOLD: f32 = 600.0;
 const COMPACT_WIDTH_THRESHOLD: f32 = 300.0;
 /// Narrower than this, the controls take less room to fit between the sides of the header.
-const REGULAR_CONTROLS_MIN_WIDTH: f32 = 470.0;
+const REGULAR_CONTROLS_MIN_WIDTH: f32 =
+    CallControlsDensity::Regular.total_width() + 2.0 * (HEADER_SIDE_WIDTH + CONTENT_PADDING);
 /// Keeps the native traffic lights clear, and balances them on the other side of the controls.
 const HEADER_SIDE_WIDTH: f32 = 80.0;
 /// Narrower than this, the controls don't fit in the header at all.
@@ -392,6 +393,11 @@ impl CameraWindow {
 
     pub fn is_visible(&self) -> bool {
         self.visible
+    }
+
+    /// Where the window is on screen, for reactions to come from.
+    pub fn frame(&self) -> Option<[f64; 4]> {
+        crate::reactions::window_frame(&self.window)
     }
 
     pub fn set_participants(
