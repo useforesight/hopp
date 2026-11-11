@@ -107,6 +107,52 @@ fn reserved_in(monitors: &Value, output: &str) -> Option<[f32; 4]> {
     Some([0, 1, 2, 3].map(|edge| number(reserved, edge) as f32))
 }
 
+/// Where one of this process's windows is on its monitor.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Placed {
+    /// From the monitor's top-left corner, in logical pixels.
+    pub window: Rect,
+    /// The monitor's logical size.
+    pub monitor: (f64, f64),
+    /// The monitor's output name ("DP-2").
+    pub output: String,
+}
+
+/// Where this process's window with `class` is. `None` without Hyprland or the window.
+pub fn placed(class: &str) -> Option<Placed> {
+    std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE")?;
+    placed_in(
+        &hyprctl_json("clients")?,
+        &hyprctl_json("monitors")?,
+        class,
+        std::process::id(),
+    )
+}
+
+fn placed_in(clients: &Value, monitors: &Value, class: &str, pid: u32) -> Option<Placed> {
+    let client = clients.as_array()?.iter().find(|client| {
+        client["class"] == class && client["pid"].as_u64() == Some(u64::from(pid))
+    })?;
+    let monitor = monitors
+        .as_array()?
+        .iter()
+        .find(|monitor| monitor["id"] == client["monitor"])?;
+    let scale = monitor["scale"].as_f64().filter(|scale| *scale > 0.)?;
+    Some(Placed {
+        window: Rect {
+            x: number(&client["at"], 0) - monitor["x"].as_f64()?,
+            y: number(&client["at"], 1) - monitor["y"].as_f64()?,
+            width: number(&client["size"], 0),
+            height: number(&client["size"], 1),
+        },
+        monitor: (
+            monitor["width"].as_f64()? / scale,
+            monitor["height"].as_f64()? / scale,
+        ),
+        output: monitor["name"].as_str()?.to_owned(),
+    })
+}
+
 /// Resize this process's window with `class` to `width`×`height` logical pixels.
 /// Runs in the background and retries briefly while the window is being mapped.
 pub fn fit(class: &'static str, width: f32, height: f32) {
@@ -289,6 +335,32 @@ fn dispatch(lua: &str) -> Option<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_window_is_placed_from_its_monitors_corner() {
+        let clients = serde_json::json!([
+            {"class": "hopp.faces", "pid": 7, "at": [6058, 322], "size": [332, 1018], "monitor": 2},
+            {"class": "hopp.faces", "pid": 8, "at": [0, 0], "size": [1, 1], "monitor": 1}
+        ]);
+        let monitors = serde_json::json!([
+            {"id": 1, "name": "eDP-1", "x": 0, "y": 0, "width": 3200, "height": 2000, "scale": 2.0},
+            {"id": 2, "name": "DP-2", "x": 3200, "y": 0, "width": 5120, "height": 2160, "scale": 1.6}
+        ]);
+        assert_eq!(
+            placed_in(&clients, &monitors, "hopp.faces", 7),
+            Some(Placed {
+                window: Rect {
+                    x: 2858.,
+                    y: 322.,
+                    width: 332.,
+                    height: 1018.
+                },
+                monitor: (3200., 1350.),
+                output: "DP-2".into(),
+            })
+        );
+        assert_eq!(placed_in(&clients, &monitors, "hopp.call", 7), None);
+    }
 
     #[test]
     fn reserved_space_is_read_for_the_named_monitor() {

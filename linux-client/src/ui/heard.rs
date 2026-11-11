@@ -7,8 +7,10 @@
 //!
 //! - **A light runs round their tile:** two quick laps, then slower ones while they go
 //!   on talking.
-//! - **Their words are echoed back** in a small bubble under the bar, with the wake word
-//!   lit up, so you can see the question was heard right.
+//! - **Their words are echoed back** in a small bubble beside the call window, pointing
+//!   at their tile, with the wake word lit up, so you can see the question was heard
+//!   right. With no call window on screen (faces docked round a shared screen), the
+//!   bubble sits under the bar and says who it heard.
 //!
 //! Both go [`HOLD`] after their last word. Nothing here knows when the agent answers.
 //! If the final text turns out not to have the word, both go at once.
@@ -36,9 +38,13 @@ const SLOW_LAP: f32 = 1.8;
 const LINE: f32 = 3.;
 const TAIL: f32 = 0.34;
 
-pub const WIDTH: f32 = 440.;
-pub const HEIGHT: f32 = 104.;
-/// The most words the bubble shows: about three lines. Earlier ones make way.
+/// The bubble's window: see-through, with the bubble against the edge nearest the tile.
+pub const WIDTH: f32 = 250.;
+pub const HEIGHT: f32 = 150.;
+/// Between the call window and the bubble's point, and the point's length.
+const GAP: f32 = 2.;
+const POINT: f32 = 6.;
+/// The most words the bubble shows: about six lines. Earlier ones make way.
 const WORDS: usize = 30;
 
 /// Someone said the wake word, and what they have said since.
@@ -199,14 +205,90 @@ pub fn shown(words: &[(String, bool)]) -> Vec<(String, bool)> {
     shown
 }
 
+/// Which side of the call window the bubble sits on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    Left,
+    Right,
+    Above,
+    Below,
+}
+
+/// Where the bubble's window goes: beside the call window, level with the speaker's tile.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Spot {
+    pub side: Side,
+    /// From the monitor's top-left corner.
+    pub left: f32,
+    pub top: f32,
+    /// The monitor's output name.
+    pub output: String,
+}
+
+/// The bubble's place beside a call window at `window` (from its monitor's corner) on a
+/// monitor of `monitor` size, for the tile whose middle is `tile` in the window. Beside
+/// a column of tiles, on the side with more room; above or below a row of them.
+pub fn beside(
+    window: super::hypr::Rect,
+    monitor: (f64, f64),
+    tile: (f32, f32),
+    row: bool,
+) -> (Side, f32, f32) {
+    let (x, y) = (window.x as f32, window.y as f32);
+    let (width, height) = (window.width as f32, window.height as f32);
+    let (side, left, top) = if row {
+        let left = x + tile.0 - WIDTH / 2.;
+        if y + height / 2. > monitor.1 as f32 / 2. {
+            (Side::Above, left, y - GAP - HEIGHT)
+        } else {
+            (Side::Below, left, y + height + GAP)
+        }
+    } else {
+        let top = y + tile.1 - HEIGHT / 2.;
+        if x + width / 2. > monitor.0 as f32 / 2. {
+            (Side::Left, x - GAP - WIDTH, top)
+        } else {
+            (Side::Right, x + width + GAP, top)
+        }
+    };
+    (
+        side,
+        left.clamp(0., (monitor.0 as f32 - WIDTH).max(0.)),
+        top.clamp(0., (monitor.1 as f32 - HEIGHT).max(0.)),
+    )
+}
+
 pub struct HeardView {
     session: Entity<Session>,
+    /// `None`: there is no call window on screen to sit beside, so the bubble is at the
+    /// top of the screen and says who it heard.
+    side: Option<Side>,
 }
 
 impl HeardView {
-    fn new(session: Entity<Session>, cx: &mut Context<Self>) -> Self {
+    fn new(session: Entity<Session>, side: Option<Side>, cx: &mut Context<Self>) -> Self {
         cx.observe(&session, |_, _, cx| cx.notify()).detach();
-        Self { session }
+        Self { session, side }
+    }
+}
+
+/// The little point on the bubble's edge towards the tile: a triangle of thin strips.
+fn pointer(side: Side, color: Hsla) -> gpui_kit::Div {
+    let strips = (0..POINT as usize).map(|step| {
+        // Widest against the bubble.
+        let across = 2. * (POINT - step as f32);
+        let strip = div().flex_shrink_0().bg(color);
+        match side {
+            Side::Left | Side::Right => strip.w(px(1.)).h(px(across)),
+            Side::Above | Side::Below => strip.h(px(1.)).w(px(across)),
+        }
+    });
+    let point = div().flex().flex_shrink_0().items_center();
+    match side {
+        Side::Left => point.flex_row().children(strips),
+        Side::Right => point.flex_row_reverse().children(strips),
+        Side::Above => point.flex_col().children(strips),
+        Side::Below => point.flex_col_reverse().children(strips),
     }
 }
 
@@ -216,66 +298,99 @@ impl Render for HeardView {
         let Some(heard) = self.session.read(cx).heard.clone() else {
             return div().size_full();
         };
-        let title = if heard.yours {
-            "Heard you".to_owned()
-        } else {
-            format!("Heard {}", heard.name)
-        };
+        let lit = super::palette::nth(1, cx);
         let said = shown(&heard.words).into_iter().map(|(word, wake)| {
             let word_box = div().child(word);
             if wake {
-                word_box
-                    .text_color(theme.accent)
-                    .font_weight(FontWeight::SEMIBOLD)
+                word_box.text_color(lit).font_weight(FontWeight::BOLD)
             } else {
                 word_box
             }
         });
-        // The window is a fixed size and see-through; the bubble is as tall as its words.
-        div()
+        let fill = theme.background.opacity(0.94);
+        let mut bubble = div()
+            .max_w(px(WIDTH - POINT))
+            .px(px(10.))
+            .py(px(7.))
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .rounded(px(super::style::RADIUS))
+            .bg(fill)
+            .border_1()
+            .border_color(theme.foreground.opacity(0.14));
+        if self.side.is_none() {
+            bubble = bubble.child(
+                div()
+                    .text_size(px(10.))
+                    .text_color(theme.secondary.opacity(0.75))
+                    .child(if heard.yours {
+                        "Heard you".to_owned()
+                    } else {
+                        format!("Heard {}", heard.name)
+                    }),
+            );
+        }
+        let bubble = bubble.child(
+            div()
+                .flex()
+                .flex_wrap()
+                .gap_x(px(4.))
+                .text_size(px(12.))
+                .line_height(px(17.))
+                .text_color(theme.bright)
+                .children(said),
+        );
+        // The window is a fixed size and see-through. The bubble is as big as its words,
+        // against the edge nearest the tile.
+        let root = div()
             .size_full()
             .flex()
-            .justify_center()
-            .items_start()
-            .font_family(theme.font.clone())
-            .child(
-                div()
-                    .max_w(px(WIDTH))
-                    .px(px(12.))
-                    .py(px(8.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(3.))
-                    .rounded(px(super::style::RADIUS))
-                    .bg(theme.background.opacity(0.94))
-                    .border_1()
-                    .border_color(theme.accent.opacity(0.55))
-                    .child(
-                        div()
-                            .text_size(px(10.))
-                            .text_color(theme.secondary.opacity(0.75))
-                            .child(title),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .gap_x(px(4.))
-                            .text_size(px(13.))
-                            .text_color(theme.bright)
-                            .children(said),
-                    ),
-            )
+            .items_center()
+            .font_family(theme.font.clone());
+        match self.side {
+            None => root.flex_col().justify_start().child(bubble),
+            Some(side) => {
+                let point = pointer(side, fill);
+                match side {
+                    Side::Left => root.flex_row().justify_end().child(bubble).child(point),
+                    Side::Right => root.flex_row().justify_start().child(point).child(bubble),
+                    Side::Above => root.flex_col().justify_end().child(bubble).child(point),
+                    Side::Below => root.flex_col().justify_start().child(point).child(bubble),
+                }
+            }
+        }
     }
 }
 
-/// Open the bubble: top centre, under the bar. Clicks go through it. Falls back to an
-/// ordinary small window on compositors without layer-shell (the screenshot harness).
-pub fn open(session: Entity<Session>, cx: &mut gpui_kit::App) -> Option<WindowHandle<HeardView>> {
+/// Open the bubble at `spot`, beside the call window, or with none at the top of the
+/// screen under the bar. Clicks go through it. Falls back to an ordinary small window on
+/// compositors without layer-shell (the screenshot harness), drawn as for `side`.
+pub fn open(
+    session: Entity<Session>,
+    spot: Option<Spot>,
+    side: Option<Side>,
+    cx: &mut gpui_kit::App,
+) -> Option<WindowHandle<HeardView>> {
     let bounds = Some(gpui_kit::WindowBounds::Windowed(Bounds {
         origin: Default::default(),
         size: size(px(WIDTH), px(HEIGHT)),
     }));
+    let side = spot.as_ref().map(|spot| spot.side).or(side);
+    let display_id = spot
+        .as_ref()
+        .and_then(|spot| super::overlay::display_named(&spot.output, cx));
+    // Beside the call window only on its own monitor; otherwise under the bar.
+    let spot = spot.filter(|_| display_id.is_some());
+    let (anchor, margin, exclusive_zone) = match &spot {
+        Some(spot) => (
+            Anchor::TOP | Anchor::LEFT,
+            (px(spot.top), px(0.), px(0.), px(spot.left)),
+            // Measured from the monitor's corner, not from under the bar.
+            Some(px(-1.)),
+        ),
+        None => (Anchor::TOP, (px(8.), px(0.), px(0.), px(0.)), None),
+    };
     let layer = gpui_kit::WindowOptions {
         window_bounds: bounds,
         kind: gpui_kit::WindowKind::LayerShell(LayerShellOptions {
@@ -283,20 +398,22 @@ pub fn open(session: Entity<Session>, cx: &mut gpui_kit::App) -> Option<WindowHa
             // your screen share.
             namespace: "hopp-call".into(),
             layer: Layer::Overlay,
-            anchor: Anchor::TOP,
-            exclusive_zone: None,
+            anchor,
+            exclusive_zone,
             exclusive_edge: None,
-            margin: Some((px(38.), px(0.), px(0.), px(0.))),
+            margin: Some(margin),
             keyboard_interactivity: KeyboardInteractivity::None,
         }),
+        display_id,
         app_id: Some("hopp.heard".into()),
         focus: false,
         window_background: gpui_kit::WindowBackgroundAppearance::Transparent,
         ..Default::default()
     };
     let layer_session = session.clone();
+    let layer_side = side.filter(|_| spot.is_some());
     let handle = match cx.open_window(layer, |_, cx| {
-        cx.new(|cx| HeardView::new(layer_session, cx))
+        cx.new(|cx| HeardView::new(layer_session, layer_side, cx))
     }) {
         Ok(handle) => handle,
         Err(_) => cx
@@ -307,7 +424,7 @@ pub fn open(session: Entity<Session>, cx: &mut gpui_kit::App) -> Option<WindowHa
                     focus: false,
                     ..Default::default()
                 },
-                |_, cx| cx.new(|cx| HeardView::new(session, cx)),
+                |_, cx| cx.new(|cx| HeardView::new(session, side, cx)),
             )
             .ok()?,
     };
@@ -379,6 +496,38 @@ mod tests {
             (x - 97.07).abs() < 0.1 && (y - 2.93).abs() < 0.1,
             "{x}, {y}"
         );
+    }
+
+    #[test]
+    fn the_bubble_sits_beside_the_call_window_level_with_the_tile() {
+        use crate::ui::hypr::Rect;
+        let monitor = (3200., 1350.);
+        let rect = |x, y, width, height| Rect {
+            x,
+            y,
+            width,
+            height,
+        };
+        // Bottom right, the default: to its left, its middle level with the tile's.
+        let column = rect(2858., 322., 332., 1018.);
+        assert_eq!(
+            beside(column, monitor, (166., 486.), false),
+            (Side::Left, 2858. - GAP - WIDTH, 322. + 486. - HEIGHT / 2.)
+        );
+        // Dragged to the left of the screen: to its right.
+        let (side, left, _) = beside(rect(10., 322., 332., 1018.), monitor, (166., 486.), false);
+        assert_eq!((side, left), (Side::Right, 342. + GAP));
+        // A row at the bottom: above the tile. At the top: below it.
+        let row = rect(2764., 1216., 426., 124.);
+        assert_eq!(
+            beside(row, monitor, (62., 62.), true),
+            (Side::Above, 2764. + 62. - WIDTH / 2., 1216. - GAP - HEIGHT)
+        );
+        let (side, _, top) = beside(rect(2764., 47., 426., 124.), monitor, (62., 62.), true);
+        assert_eq!((side, top), (Side::Below, 171. + GAP));
+        // Never off the screen.
+        let (_, left, top) = beside(rect(3100., 1300., 426., 124.), monitor, (400., 62.), true);
+        assert_eq!((left, top), (3200. - WIDTH, 1300. - GAP - HEIGHT));
     }
 
     #[test]

@@ -66,7 +66,8 @@ pub struct Shell {
     peek: Option<WindowHandle<viewer::ViewerView>>,
     toast: Option<WindowHandle<toast::ToastView>>,
     /// The "Heard you" bubble, while someone's ask shows.
-    heard: Option<WindowHandle<heard::HeardView>>,
+    /// And whose tile it sits beside.
+    heard: Option<(WindowHandle<heard::HeardView>, String)>,
     /// Cards from agents, with how many it was sized for and whether it sits below
     /// the call card.
     cards: Option<(WindowHandle<cards::CardsView>, usize, bool)>,
@@ -403,17 +404,59 @@ impl Shell {
         } else if !ringing && toast_open {
             Self::close(cx, |shell| shell.toast.take().map(|handle| handle.into()));
         }
-        let (want_heard, heard_open) = (
-            session.read(cx).heard.is_some() && Self::allowed(cx, "heard"),
-            cx.global::<Shell>().heard.is_some(),
-        );
-        if want_heard && !heard_open {
-            let handle = heard::open(session.clone(), cx);
-            cx.global_mut::<Shell>().heard = handle;
-        } else if !want_heard && heard_open {
-            Self::close(cx, |shell| shell.heard.take().map(|handle| handle.into()));
+        let beside = Self::allowed(cx, "heard-beside");
+        let want_heard = session
+            .read(cx)
+            .heard
+            .as_ref()
+            .filter(|_| beside || Self::allowed(cx, "heard"))
+            .map(|heard| heard.key.clone());
+        let heard_open = cx
+            .global::<Shell>()
+            .heard
+            .as_ref()
+            .map(|(_, key)| key.clone());
+        // A layer surface can't move: someone else's ask opens it again by their tile.
+        if heard_open.is_some() && heard_open != want_heard {
+            Self::close(cx, |shell| {
+                shell.heard.take().map(|(handle, _)| handle.into())
+            });
+        }
+        if let Some(key) = want_heard.filter(|key| heard_open.as_ref() != Some(key)) {
+            let spot = Self::heard_spot(&key, cx);
+            // The screenshot harness has no call window to sit beside.
+            let side = (beside && cx.global::<Shell>().only.is_some()).then_some(heard::Side::Left);
+            let handle = heard::open(session.clone(), spot, side, cx);
+            cx.global_mut::<Shell>().heard = handle.map(|handle| (handle, key));
         }
         Self::sync_cards(cx, ringing);
+    }
+
+    /// Where the "Heard you" bubble goes for the tile `key`: beside the call window. `None`
+    /// when that isn't on screen, as when the faces are docked round a shared screen.
+    fn heard_spot(key: &str, cx: &App) -> Option<heard::Spot> {
+        cx.global::<Shell>().faces?;
+        let session = Self::session(cx);
+        let session = session.read(cx);
+        let layout = session.settings.face_layout;
+        let people = faces::FacesView::people(session);
+        let index = faces::faces_for(session)
+            .iter()
+            .position(|face| face.key == key)?;
+        let placed = hypr::placed("hopp.faces")?;
+        let window = gpui_kit::Size {
+            width: placed.window.width as f32,
+            height: placed.window.height as f32,
+        };
+        let tile = faces::tile_centre(index, people, layout, window);
+        let row = layout == faces::FaceLayout::Row;
+        let (side, left, top) = heard::beside(placed.window, placed.monitor, tile, row);
+        Some(heard::Spot {
+            side,
+            left,
+            top,
+            output: placed.output,
+        })
     }
 
     /// The card stack: open while cards wait, sized to them, below the call card when
@@ -546,7 +589,7 @@ impl Shell {
         if is(shell.toast.map(Into::into)) {
             shell.toast = None;
         }
-        if is(shell.heard.map(Into::into)) {
+        if is(shell.heard.as_ref().map(|(handle, _)| (*handle).into())) {
             shell.heard = None;
         }
         if is(shell.cards.as_ref().map(|(handle, _, _)| (*handle).into())) {

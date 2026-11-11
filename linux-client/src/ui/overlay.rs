@@ -80,12 +80,7 @@ pub(super) fn shared_display(
     if displays.is_empty() {
         return Some(None);
     }
-    let wanted = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_DNS, name.as_bytes());
-    let found = displays
-        .iter()
-        .filter(|display| display.uuid().is_ok_and(|uuid| uuid == wanted))
-        .map(|display| display.id())
-        .max_by_key(|&id| u64::from(id));
+    let found = display_named(name, cx);
     if found.is_none() {
         crate::logger::line(format!(
             "Marks overlay: the shared monitor {name} isn't among {} displays",
@@ -93,6 +88,16 @@ pub(super) fn shared_display(
         ));
     }
     found.map(Some)
+}
+
+/// The display for Wayland output `name`, as [`shared_display`] finds it.
+pub(super) fn display_named(name: &str, cx: &gpui_kit::App) -> Option<gpui_kit::DisplayId> {
+    let wanted = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_DNS, name.as_bytes());
+    cx.displays()
+        .iter()
+        .filter(|display| display.uuid().is_ok_and(|uuid| uuid == wanted))
+        .map(|display| display.id())
+        .max_by_key(|&id| u64::from(id))
 }
 
 /// Open the overlay over the shared monitor.

@@ -107,6 +107,37 @@ fn fitted_side(people: usize, layout: FaceLayout, face: FaceSize, limit: Size<f3
     side
 }
 
+/// The middle of tile `index` in a call window of `window` size showing `people`: the
+/// reverse of [`sized`], for placing things beside a tile from outside the window.
+pub(super) fn tile_centre(
+    index: usize,
+    people: usize,
+    layout: FaceLayout,
+    window: Size<f32>,
+) -> (f32, f32) {
+    let count = people.max(1) as f32;
+    let grid = controls_grid();
+    let side = |strip: f32| (strip - (count - 1.) * GAP) / count;
+    let along = |side: f32| PAD + index as f32 * (side + GAP) + side / 2.;
+    match layout {
+        FaceLayout::Row => {
+            let side = side(window.width - 2. * PAD - GAP - grid.width);
+            (along(side), window.height / 2.)
+        }
+        FaceLayout::Column | FaceLayout::Bubbles => {
+            let strip = window.height - 2. * PAD - GAP;
+            // The window is as wide as a tile, unless the controls' grid is wider.
+            let controls = if controls_in_one_row(layout, window.width - 2. * PAD) {
+                CONTROL
+            } else {
+                grid.height
+            };
+            let side = side(strip - controls);
+            (window.width / 2., along(side))
+        }
+    }
+}
+
 fn sized(people: usize, layout: FaceLayout, tile: f32) -> Size<f32> {
     let people = people.max(1) as f32;
     let strip = people * tile + (people - 1.) * GAP;
@@ -810,6 +841,29 @@ pub fn open(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tiles_middle_is_found_from_the_window_size() {
+        for layout in [FaceLayout::Column, FaceLayout::Row, FaceLayout::Bubbles] {
+            for tile in [64., 112., 200., 320.] {
+                for people in 1..5 {
+                    let window = sized(people, layout, tile);
+                    let last = people - 1;
+                    let along = PAD + last as f32 * (tile + GAP) + tile / 2.;
+                    let wanted = if layout == FaceLayout::Row {
+                        (along, window.height / 2.)
+                    } else {
+                        (window.width / 2., along)
+                    };
+                    let found = tile_centre(last, people, layout, window);
+                    assert!(
+                        (found.0 - wanted.0).abs() < 0.01 && (found.1 - wanted.1).abs() < 0.01,
+                        "{layout:?} {tile} {people}: {found:?}, not {wanted:?}"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn the_window_grows_by_exactly_one_tile_per_person() {

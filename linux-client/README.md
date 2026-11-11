@@ -165,7 +165,8 @@ answering.
 
 While you capture, Hopp shows at once that it heard "Jeepers", a second or two after
 it's said and well before any agent answers: a light runs round the speaker's tile,
-and a bubble under the bar echoes their words with the word lit up. Both go a few
+and a bubble beside the call window, pointing at their tile, echoes their words with
+the word lit up (under the bar when the faces are docked round a shared screen). Both go a few
 seconds after they stop talking, or at once if the final text turns out not to have
 the word. Hopp can't tell when an agent answers, and only "Jeepers" is shown, not
 another phrase given to `--on-wake`.

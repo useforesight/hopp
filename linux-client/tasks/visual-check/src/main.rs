@@ -247,7 +247,7 @@ fn main() {
         });
         send(Event::MicrophoneLevel(0.8));
     }
-    if matches!(scene.as_str(), "faces-heard" | "heard") {
+    if matches!(scene.as_str(), "faces-heard" | "heard" | "heard-beside") {
         // You said the wake word: a light round your tile, your words in the bubble.
         let words = "So, Jeepers, why's the build failing on main since this morning?"
             .split_whitespace()
