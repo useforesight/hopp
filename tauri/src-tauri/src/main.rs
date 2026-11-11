@@ -1497,6 +1497,12 @@ fn forward_core_events(events_rx: std_mpsc::Receiver<Message>, app: tauri::AppHa
                     log::error!("forward_core_events: failed to emit core_off_record: {e:?}");
                 }
             }
+            Message::WakeHeard(heard) => {
+                // Their words stay out of the log.
+                if let Err(e) = app.emit("core_wake_heard", heard) {
+                    log::error!("forward_core_events: failed to emit core_wake_heard: {e:?}");
+                }
+            }
             Message::AppAction(action) => {
                 log::info!("forward_core_events: {action:?}");
                 match action {

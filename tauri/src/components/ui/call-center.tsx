@@ -39,6 +39,7 @@ import { CoreParticipantState, typedInvoke } from "@/core_payloads";
 import { useQuery } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import { OFF_RECORD_COUNTDOWN_S, offRecordClock, useOffRecordSeconds } from "@/lib/off-record";
+import { Heard, heardTile, useHeard } from "@/lib/heard";
 import { getAllWindows } from "@tauri-apps/api/window";
 import { sounds } from "@/constants/sounds";
 
@@ -339,6 +340,7 @@ function useCallTiles() {
       user ?
         {
           id: "local",
+          heardAs: "local",
           user,
           name: `${user.first_name} ${user.last_name}`,
           isLocal: true,
@@ -361,6 +363,7 @@ function useCallTiles() {
         const teammate = findUser(extractUserId(p.identity));
         return {
           id: p.identity,
+          heardAs: heardTile(p.identity, user?.id),
           user: teammate,
           name: teammate ? `${teammate.first_name} ${teammate.last_name}` : p.name || "Unknown user",
           isLocal: false,
@@ -529,6 +532,83 @@ function OffRecordPill() {
   );
 }
 
+/**
+ * The capture heard them say the wake word: a light runs round their tile while their ask
+ * shows. A fainter ring stays under it all the way round.
+ */
+function HeardLight({ updates }: { updates: number }) {
+  return (
+    <div
+      aria-hidden
+      className="hopp-heard-light bg-accent/30"
+      style={{ animationName: updates % 2 === 0 ? "hopp-heard-hold-a" : "hopp-heard-hold-b" }}
+    >
+      <span />
+    </div>
+  );
+}
+
+/**
+ * Their words so far, in a bubble pointing at their tile, with the wake word lit up, so
+ * you can see the question was heard right. Under a tile in the top row and over one
+ * further down, so it's never cut off by the list. A long ask shows its last lines.
+ */
+function HeardBubble({
+  heard,
+  name,
+  below,
+  align,
+}: {
+  heard: Heard;
+  name: string;
+  below: boolean;
+  align: "start" | "center" | "end";
+}) {
+  const point = (
+    <span
+      className={clsx(
+        "size-0 shrink-0 border-x-[6px] border-x-transparent",
+        below ? "border-b-[6px] border-b-accent" : "border-t-[6px] border-t-accent",
+      )}
+    />
+  );
+  return (
+    <div
+      role="status"
+      aria-label={`Heard ${name}`}
+      className={clsx(
+        "pointer-events-none absolute inset-x-0 z-10 flex flex-col items-center animate-in fade-in-0 duration-150",
+        below ? "top-[calc(100%-10px)]" : "bottom-[calc(100%-10px)]",
+      )}
+    >
+      {below && point}
+      <div
+        aria-hidden
+        className={clsx(
+          "w-max shrink-0 rounded-[12px] bg-raised px-2.5 py-[7px] shadow-card ring-1 ring-inset ring-accent",
+          // To one side it still reaches the point, which is at the tile's middle.
+          align === "center" ? "max-w-full" : "min-w-[calc(50%+18px)] max-w-[min(250px,70vw)]",
+          align === "start" && "self-start",
+          align === "end" && "self-end",
+        )}
+      >
+        {/* Three lines at most, the newest: what came before goes off the top. */}
+        <div className="flex max-h-[51px] flex-col justify-end overflow-hidden">
+          <p className="shrink-0 text-xs leading-[17px] text-foreground">
+            {heard.words.map((word, index) => (
+              <span key={index} className={word.wake ? "font-bold text-accent" : undefined}>
+                {index > 0 && " "}
+                {word.text}
+              </span>
+            ))}
+          </p>
+        </div>
+      </div>
+      {!below && point}
+    </div>
+  );
+}
+
 function CallParticipants() {
   const coreParticipantCount = useStore((state) => state.callTokens?.participants.length ?? 0);
   const isInitialising = useStore((state) => !!state.callTokens?.isInitialisingCall);
@@ -536,6 +616,7 @@ function CallParticipants() {
   const setTab = useStore((state) => state.setTab);
   const peerName = useCallPeerName();
   const tiles = useCallTiles();
+  const heard = useHeard();
   const prevCountRef = useRef(coreParticipantCount);
 
   // Play sound when a new participant connects (count increases)
@@ -548,6 +629,7 @@ function CallParticipants() {
 
   const isAlone = tiles.every((tile) => tile.isLocal);
   const tileCount = tiles.length + (isAlone ? 1 : 0);
+  const columns = tileCount <= 2 ? 1 : 2;
 
   return (
     <div
@@ -558,49 +640,66 @@ function CallParticipants() {
         : "grid-cols-2 auto-rows-[112px]",
       )}
     >
-      {tiles.map((tile) => (
-        <div
-          key={tile.id}
-          className="relative flex min-h-0 flex-col items-center justify-center gap-2 overflow-hidden rounded-2xl bg-subtle px-2 py-2 ring-1 ring-inset ring-border animate-in fade-in-0 zoom-in-95 duration-300"
-        >
-          {/* A wash of the person's own colour, so tiles are easy to tell apart at a glance */}
-          <div
-            aria-hidden
-            className="absolute inset-0 opacity-25 [mask-image:radial-gradient(90%_90%_at_50%_0%,black,transparent)]"
-            style={{ background: avatarGradient((tile.user?.first_name ?? "") + (tile.user?.last_name ?? "")) }}
-          />
-          <div className="absolute right-2 top-2 flex items-center gap-1 text-muted-foreground">
-            {tile.hasCamera && <LuVideo aria-label="Camera on" className="size-3.5 text-success" />}
-            {tile.isScreensharing && <LuScreenShare aria-label="Sharing screen" className="size-3.5 text-accent" />}
-            {tile.isCapturing && (
-              <LuAudioLines aria-label="Transcribing this call" className="size-3.5 text-destructive" />
+      {tiles.map((tile, index) => {
+        const asking = heard?.tile === tile.heardAs ? heard : null;
+        return (
+          // Around the tile, which cuts off what goes past its edge: the bubble does.
+          <div key={tile.id} className="relative flex min-h-0 flex-col">
+            <div className="relative flex min-h-0 flex-1 flex-col items-center justify-center gap-2 overflow-hidden rounded-2xl bg-subtle px-2 py-2 ring-1 ring-inset ring-border animate-in fade-in-0 zoom-in-95 duration-300">
+              {/* A wash of the person's own colour, so tiles are easy to tell apart at a glance */}
+              <div
+                aria-hidden
+                className="absolute inset-0 opacity-25 [mask-image:radial-gradient(90%_90%_at_50%_0%,black,transparent)]"
+                style={{ background: avatarGradient((tile.user?.first_name ?? "") + (tile.user?.last_name ?? "")) }}
+              />
+              <div className="absolute right-2 top-2 flex items-center gap-1 text-muted-foreground">
+                {tile.hasCamera && <LuVideo aria-label="Camera on" className="size-3.5 text-success" />}
+                {tile.isScreensharing && <LuScreenShare aria-label="Sharing screen" className="size-3.5 text-accent" />}
+                {tile.isCapturing && (
+                  <LuAudioLines aria-label="Transcribing this call" className="size-3.5 text-destructive" />
+                )}
+              </div>
+              <div className="relative">
+                {tile.user ?
+                  <HoppAvatar
+                    src={tile.user.avatar_url || undefined}
+                    firstName={tile.user.first_name}
+                    lastName={tile.user.last_name}
+                    className="size-[52px] rounded-[17px] [&_span]:text-[16px]"
+                  />
+                : <div className="flex size-[52px] items-center justify-center rounded-[17px] bg-subtle-strong text-base font-semibold text-muted-foreground">
+                    ?
+                  </div>
+                }
+              </div>
+              <span
+                aria-label={tile.isMicrophoneEnabled ? undefined : `${tile.name}, muted`}
+                className="relative flex max-w-full items-center gap-1.5 text-[13px] leading-[18px] font-medium text-foreground"
+              >
+                <VoiceSlot muted={!tile.isMicrophoneEnabled} speaking={tile.isSpeaking} />
+                <span className="truncate">
+                  {tile.name}
+                  {tile.isLocal && <span className="font-normal text-muted-foreground"> (You)</span>}
+                </span>
+              </span>
+              {asking && <HeardLight updates={asking.updates} />}
+            </div>
+            {asking && (
+              <HeardBubble
+                heard={asking}
+                name={tile.isLocal ? "you" : tile.name}
+                below={index < columns}
+                align={
+                  columns === 1 ? "center"
+                  : index % 2 === 0 ?
+                    "start"
+                  : "end"
+                }
+              />
             )}
           </div>
-          <div className="relative">
-            {tile.user ?
-              <HoppAvatar
-                src={tile.user.avatar_url || undefined}
-                firstName={tile.user.first_name}
-                lastName={tile.user.last_name}
-                className="size-[52px] rounded-[17px] [&_span]:text-[16px]"
-              />
-            : <div className="flex size-[52px] items-center justify-center rounded-[17px] bg-subtle-strong text-base font-semibold text-muted-foreground">
-                ?
-              </div>
-            }
-          </div>
-          <span
-            aria-label={tile.isMicrophoneEnabled ? undefined : `${tile.name}, muted`}
-            className="relative flex max-w-full items-center gap-1.5 text-[13px] leading-[18px] font-medium text-foreground"
-          >
-            <VoiceSlot muted={!tile.isMicrophoneEnabled} speaking={tile.isSpeaking} />
-            <span className="truncate">
-              {tile.name}
-              {tile.isLocal && <span className="font-normal text-muted-foreground"> (You)</span>}
-            </span>
-          </span>
-        </div>
-      ))}
+        );
+      })}
 
       {isAlone && (
         <div className="flex min-h-0 flex-col items-center justify-center gap-1.5 rounded-2xl border border-dashed border-border-strong px-3 py-2 text-center animate-in fade-in-0 duration-300">

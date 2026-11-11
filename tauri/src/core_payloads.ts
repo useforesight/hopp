@@ -228,6 +228,22 @@ export interface CoreParticipantState {
   is_speaking?: boolean;
 }
 
+/** One word of what someone is asking an agent. `wake`: it is the wake word. */
+export interface WakeWord {
+  text: string;
+  wake: boolean;
+}
+
+/**
+ * Someone this app's capture heard say the wake word (`core_wake_heard`; null takes it
+ * back): their identity without its connection's suffix, or "local" for you, and their
+ * words so far.
+ */
+export interface WakeHeard {
+  identity: string;
+  words: WakeWord[];
+}
+
 export type ScreenShareResolution = "P1080" | "P1440" | "P4K";
 export type ScreenSharePickerMode = "Screen" | "Window";
 

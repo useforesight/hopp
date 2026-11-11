@@ -466,6 +466,92 @@ html.dark .arrow {
   }
 }
 
+/*
+ * "Heard you" (call-center.tsx HeardLight): a light runs round the tile of whoever said
+ * the wake word, two quick laps and then slower ones, as on Hopp for Linux.
+ */
+@keyframes hopp-heard-turn {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+@keyframes hopp-heard-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* The same twice: going from one to the other starts the hold again without stopping the light. */
+@keyframes hopp-heard-hold-a {
+  0%,
+  83% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes hopp-heard-hold-b {
+  0%,
+  83% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.hopp-heard-light {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  padding: 2px;
+  border-radius: inherit;
+  pointer-events: none;
+  /* Only the tile's edge shows. */
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  /* As long as the core holds an ask after its last word (wake_heard::HOLD), dimming at the end. */
+  animation-duration: 3.5s;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
+
+/* The light: a bright head with a fading tail, turning about the tile's middle. Bigger than any tile. */
+.hopp-heard-light > span {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 200vmax;
+  height: 200vmax;
+  margin: -100vmax 0 0 -100vmax;
+  background: conic-gradient(transparent 0 66%, var(--accent));
+  animation:
+    hopp-heard-turn 0.7s linear 2,
+    hopp-heard-turn 1.8s linear 1.4s infinite,
+    hopp-heard-in 0.15s ease-out;
+}
+
+/* No travelling light: a ring that stays put while their ask shows. */
+@media (prefers-reduced-motion: reduce) {
+  .hopp-heard-light {
+    background: var(--accent);
+    animation: none !important;
+  }
+
+  .hopp-heard-light > span {
+    display: none;
+  }
+}
+
 @keyframes oscillate {
   0% {
     transform: rotate(-4deg);

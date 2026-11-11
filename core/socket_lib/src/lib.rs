@@ -251,6 +251,24 @@ pub enum StoredMode {
     },
 }
 
+/// One word of what someone is asking an agent.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct WakeWord {
+    pub text: String,
+    /// It is the wake word, to show lit up.
+    pub wake: bool,
+}
+
+/// Someone the capture heard say the wake word, and what they're asking.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct WakeHeard {
+    /// Who: their identity without the suffix of the connection it came from, or
+    /// "local" for you, as in the participants snapshot.
+    pub identity: String,
+    /// Their words from the wake word's line on. Of a long ask, the latest.
+    pub words: Vec<WakeWord>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Message {
     GetAvailableContent,
@@ -332,6 +350,10 @@ pub enum Message {
     OffRecordMore,
     /// Back on the record now, for everyone in the call.
     OffRecordEnd,
+    /// This app's capture heard someone say the wake word, or more of what they're
+    /// asking, a second or two after it's said. None: they stopped talking a few seconds
+    /// ago, or the final text didn't have the word after all.
+    WakeHeard(Option<WakeHeard>),
     AppAction(AppAction),
     /// You let others control your screen, or stopped them, from the sharing pill.
     ControllerCursorChanged(bool),

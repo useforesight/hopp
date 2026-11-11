@@ -14,6 +14,7 @@ pub mod livekit {
     pub mod participant;
     pub mod stats;
     pub mod video;
+    pub mod wake_heard;
 }
 
 pub mod room_service;
@@ -2599,6 +2600,13 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                     log::error!("Failed to send OffRecord: {e:?}");
                 }
             }
+            UserEvent::WakeHeard(heard) => {
+                // Their words stay out of the log.
+                log::debug!("user_event: WakeHeard");
+                if let Err(e) = self.socket.send(Message::WakeHeard(heard)) {
+                    log::error!("Failed to send WakeHeard: {e:?}");
+                }
+            }
             UserEvent::OffRecordMore => {
                 log::info!("user_event: OffRecordMore");
                 if let Some(room_service) = self.room_service.as_ref() {
@@ -3753,6 +3761,9 @@ pub enum UserEvent {
     OffRecord(Option<u64>),
     OffRecordMore,
     OffRecordEnd,
+    /// The capture heard someone say the wake word, or more of what they're asking.
+    /// None: that's over.
+    WakeHeard(Option<socket_lib::WakeHeard>),
     ListCameras,
     StartCamera {
         msg: CameraStartMessage,

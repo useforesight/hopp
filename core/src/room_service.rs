@@ -18,6 +18,7 @@ use crate::livekit::call_capture::CallCapture;
 use crate::livekit::off_record::{Adopted, Ask, OffRecord};
 use crate::livekit::participant::{capturing_from, ParticipantInfo, CAPTURE_ATTRIBUTE};
 use crate::livekit::video::{process_video_stream, VideoBufferManager};
+use crate::livekit::wake_heard;
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot, Mutex};
@@ -200,6 +201,14 @@ enum RoomServiceCommand {
     OffRecordReconnected,
     /// The call dropped.
     OffRecordLeave,
+    /// This client's capture heard someone say the wake word, or more of what they're
+    /// asking. No words: it wasn't the word after all.
+    WakeHeard {
+        identity: String,
+        words: Option<String>,
+    },
+    /// An ask heard a while ago may have been shown for long enough.
+    WakeHeardOver,
     PublishAppVeilSnapshot {
         force: bool,
     },
@@ -247,6 +256,9 @@ impl std::fmt::Debug for RoomServiceCommand {
             Self::OffRecordOver(seq) => write!(f, "OffRecordOver({seq})"),
             Self::OffRecordReconnected => write!(f, "OffRecordReconnected"),
             Self::OffRecordLeave => write!(f, "OffRecordLeave"),
+            // Without their words, which stay out of the log.
+            Self::WakeHeard { .. } => write!(f, "WakeHeard"),
+            Self::WakeHeardOver => write!(f, "WakeHeardOver"),
             Self::PublishAppVeilSnapshot { force } => {
                 write!(f, "PublishAppVeilSnapshot {{ force: {force} }}")
             }
@@ -493,6 +505,13 @@ impl RoomService {
         let said = service_command_tx.clone();
         inner.call_capture.on_off_record_said(move || {
             let _ = said.send(RoomServiceCommand::OffRecord(Ask::Said));
+        });
+        let heard = service_command_tx.clone();
+        inner.call_capture.on_wake_heard(move |identity, words| {
+            let _ = heard.send(RoomServiceCommand::WakeHeard {
+                identity: identity.to_string(),
+                words: words.map(str::to_string),
+            });
         });
         async_runtime.spawn(room_service_commands(
             service_command_rx,
@@ -1081,10 +1100,12 @@ async fn room_service_commands(
     let mut audio_publisher: Option<AudioPublisher> = None;
     let mut last_cursor_publish = Instant::now();
     const CURSOR_THROTTLE: Duration = Duration::from_millis(10);
-    // Who to tell that the call went off the record or back on: the app, once it has
-    // joined a call.
+    // Who to tell that the call went off the record or back on, and that the wake word
+    // was heard: the app, once it has joined a call.
     let mut off_record_ui: Option<EventLoopProxy<UserEvent>> = None;
     let off_record_teller = spawn_off_record_teller();
+    // Whose ask of an agent the app is showing, if anyone's.
+    let mut wake_shown = wake_heard::Heard::default();
 
     while let Some(command) = service_rx.recv().await {
         log::debug!("room_service_commands: Received command {command:?}");
@@ -2125,6 +2146,25 @@ async fn room_service_commands(
             RoomServiceCommand::OffRecordLeave => {
                 leave_off_record(&inner, off_record_ui.as_ref());
             }
+            RoomServiceCommand::WakeHeard { identity, words } => {
+                let told = wake_shown.hear(&identity, words.as_deref(), Instant::now());
+                let Some(told) = told else {
+                    continue;
+                };
+                if told.is_some() {
+                    let commands = service_command_tx.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(wake_heard::HOLD).await;
+                        let _ = commands.send(RoomServiceCommand::WakeHeardOver);
+                    });
+                }
+                tell_wake_heard_ui(off_record_ui.as_ref(), told);
+            }
+            RoomServiceCommand::WakeHeardOver => {
+                if wake_shown.over(Instant::now()) {
+                    tell_wake_heard_ui(off_record_ui.as_ref(), None);
+                }
+            }
             RoomServiceCommand::PublishStamp(message) => {
                 let inner_room = inner.room.lock().await;
                 let Some(room) = inner_room.as_ref() else {
@@ -2449,6 +2489,15 @@ fn tell_off_record_ui(ui: Option<&EventLoopProxy<UserEvent>>, left: Option<Durat
     let left = left.map(|left| left.as_millis() as u64);
     if let Some(ui) = ui {
         let _ = ui.send_event(UserEvent::OffRecord(left));
+    }
+}
+
+fn tell_wake_heard_ui(
+    ui: Option<&EventLoopProxy<UserEvent>>,
+    heard: Option<socket_lib::WakeHeard>,
+) {
+    if let Some(ui) = ui {
+        let _ = ui.send_event(UserEvent::WakeHeard(heard));
     }
 }
 

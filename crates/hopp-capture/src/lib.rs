@@ -5,6 +5,7 @@
 //! LiveKit or either client's windows: a client feeds [`Tap`] one track per person.
 
 pub mod app_socket;
+pub mod asking;
 pub mod batch;
 pub mod browse;
 pub mod cards;

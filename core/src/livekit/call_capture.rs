@@ -24,6 +24,7 @@ use socket_lib::CoreParticipantState;
 
 use crate::livekit::audio::LIVEKIT_SAMPLE_RATE;
 use crate::livekit::participant::CAPTURE_ATTRIBUTE;
+use crate::livekit::wake_heard;
 use crate::room_service::{ClientEvent, ClientPoint};
 
 // The recorder counts 10 ms frames at its own rate, so it must be the call's.
@@ -267,9 +268,12 @@ pub struct CallCapture {
     room: Arc<Mutex<String>>,
     /// Called when a capture hears someone ask to go off the record.
     said: Arc<Mutex<Option<Said>>>,
+    /// Called when a capture hears someone say the wake word, and as they go on.
+    wake: Arc<Mutex<Option<Wake>>>,
 }
 
 type Changed = Box<dyn Fn(Option<String>) + Send>;
+type Wake = Arc<dyn Fn(&str, Option<&str>) + Send + Sync>;
 
 impl std::fmt::Debug for CallCapture {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -287,6 +291,14 @@ impl CallCapture {
     /// recorder's thread, so it must only pass the word on.
     pub fn on_off_record_said(&self, said: impl Fn() + Send + Sync + 'static) {
         *self.said.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(said));
+    }
+
+    /// Be told when a capture hears someone say the wake word: who, as the participants
+    /// snapshot knows them ("local" for you), and their words as they grow, or none if
+    /// it wasn't the word after all. Called on the recorder's thread, so it must only
+    /// pass the word on.
+    pub fn on_wake_heard(&self, heard: impl Fn(&str, Option<&str>) + Send + Sync + 'static) {
+        *self.wake.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(heard));
     }
 
     pub fn set_room(&self, name: Option<String>) {
@@ -553,6 +565,23 @@ impl CallCapture {
         {
             log::error!("Capture: closing abandoned captures: {error:#}");
         }
+        let wake = self
+            .wake
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        // Your speaker id in the capture (see `TrackTap`).
+        let own = canonical_identity(own_identity).to_string();
+        let heard = wake.map(|tell| -> recorder::Heard {
+            Arc::new(move |speaker: &str, words: Option<&str>| {
+                let who = if speaker == own {
+                    wake_heard::YOU
+                } else {
+                    speaker
+                };
+                tell(who, words);
+            })
+        });
         let recorder = Recorder::start(recorder::Options {
             room,
             model,
@@ -567,6 +596,7 @@ impl CallCapture {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .clone(),
+            heard,
         })?;
         let id = recorder.id();
         log::info!("Capture {id}: started");

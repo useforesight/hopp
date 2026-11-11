@@ -29,6 +29,7 @@ import { setupCallAlertBridge } from "@/lib/call-alert";
 import { setupCallRecoveryListeners } from "@/lib/call-recovery";
 import { setupCaptureNotice } from "@/lib/capture-notice";
 import { setupOffRecord } from "@/lib/off-record";
+import { setupHeard } from "@/lib/heard";
 import { setupLeavingEmptyCalls } from "@/lib/empty-call";
 import { setJoinCallHandler, setupIncomingCallHandling } from "@/lib/incoming-call";
 import { restoreCustomServerUrl } from "@/constants";
@@ -208,6 +209,7 @@ function App() {
     const stopCallRecoveryListeners = setupCallRecoveryListeners();
     const stopCaptureNotice = setupCaptureNotice();
     const stopOffRecord = setupOffRecord();
+    const stopHeard = setupHeard();
     const stopLeavingEmptyCalls = setupLeavingEmptyCalls();
     return () => {
       stopCallAlertBridge();
@@ -215,6 +217,7 @@ function App() {
       stopCallRecoveryListeners();
       stopCaptureNotice();
       stopOffRecord();
+      stopHeard();
       stopLeavingEmptyCalls();
     };
   }, []);

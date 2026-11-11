@@ -21,6 +21,7 @@ use std::{
 };
 
 use super::{
+    asking::{Asks, Change},
     batch::{self, Part, Waiting},
     draft::Draft,
     helper::{Helper, Reply},
@@ -135,6 +136,9 @@ pub struct Status {
 /// Told that someone said to go off the record.
 pub type Said = Arc<dyn Fn() + Send + Sync>;
 
+/// Told a speaker's id and what they're asking the agent, as it grows.
+pub type Heard = Arc<dyn Fn(&str, Option<&str>) + Send + Sync>;
+
 pub struct Options {
     pub room: String,
     pub model: &'static Model,
@@ -150,6 +154,10 @@ pub struct Options {
     pub changed: Arc<dyn Fn() + Send + Sync>,
     /// Called when someone says to go off the record, or says it again (see `pause`).
     pub off_record: Option<Said>,
+    /// Called with someone's speaker id and their words when they say the wake word, as
+    /// soon as a draft shows it and again as they go on, so the call can show at once
+    /// that it was heard. `None` if the word wasn't said after all (see `asking`).
+    pub heard: Option<Heard>,
 }
 
 pub struct Recorder {
@@ -279,6 +287,7 @@ impl Recorder {
             stopping: None,
             reported_drops: 0,
             last_t_ms: std::cell::Cell::new(0),
+            asks: Default::default(),
             off_record: Vec::new(),
             said_on: Default::default(),
         };
@@ -432,6 +441,8 @@ struct Worker {
     reported_drops: u64,
     /// The latest time any line was written at.
     last_t_ms: std::cell::Cell<i64>,
+    /// Who is asking the agent something now (see `asking`).
+    asks: std::cell::RefCell<Asks>,
     /// When the call was off the record, in capture time. The last has no end while it
     /// still is.
     off_record: Vec<(i64, Option<i64>)>,
@@ -909,6 +920,24 @@ impl Worker {
         if let Err(error) = self.store.update_line(line, Kind::Draft, &text, None) {
             crate::logger::line(format!("Capture: could not save a draft: {error}"));
         }
+        self.heard(Some(line), speaker_id, &text);
+    }
+
+    /// A line's text as it stands, draft or final (empty if it came to nothing): if it
+    /// is part of someone asking the agent, tell the call.
+    fn heard(&self, line: Option<i64>, speaker_id: &str, text: &str) {
+        let Some(tell) = &self.options.heard else {
+            return;
+        };
+        match self
+            .asks
+            .borrow_mut()
+            .hear(speaker_id, line, text, Instant::now())
+        {
+            Some(Change::Words(words)) => tell(speaker_id, Some(&words)),
+            Some(Change::Withdrawn) => tell(speaker_id, None),
+            None => {}
+        }
     }
 
     /// Write a line's final form: the draft it replaces, or a new line.
@@ -931,6 +960,12 @@ impl Worker {
             }
             return;
         }
+        let spoken = if kind == Kind::Speech {
+            text.as_str()
+        } else {
+            ""
+        };
+        self.heard(line, &speaker.id, spoken);
         match line {
             Some(id) => {
                 self.last_t_ms
@@ -1004,6 +1039,7 @@ impl Worker {
                         }
                         // Nothing said after all: the draft goes.
                         None => {
+                            self.heard(part.line, &part.speaker.id, "");
                             if let Some(id) = part.line
                                 && let Err(error) =
                                     self.store.update_line(id, Kind::Retracted, "", None)
@@ -1235,6 +1271,7 @@ mod tests {
             store: home.path().join("index.db"),
             changed: Arc::new(|| {}),
             off_record: None,
+            heard: None,
         })
         .unwrap();
         assert_eq!(
