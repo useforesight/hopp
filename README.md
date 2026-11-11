@@ -39,7 +39,12 @@ Release builds connect to `pair.gethopp.app`, upstream's managed service, until 
 
 ## What's new
 
-### In the latest release (v1.3.2)
+### In the latest release (v1.4.0)
+
+- **Off the record.** Say "tinfoil hat" or "off the record" and every capture in the call pauses for two minutes. Everyone sees the time left, and anyone can add two minutes or resume. Beeps count down the last five seconds.
+- **Heard you.** When your capture hears someone say "Jeepers", a light runs round their tile and a bubble shows their words, well before an agent answers.
+
+### Earlier, in v1.3.2
 
 - **Statuses stay true.** Starting or joining a call sets an Away you chose back to Available, and someone on a call no longer shows as Away. Do not disturb stays as it is.
 - **No more phantom calls.** Someone left alone in a one-to-one call no longer shows as "In a call", and your server closes such calls after 10 minutes once it runs this release's backend.
