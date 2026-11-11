@@ -15,6 +15,7 @@ use tokio::runtime::Handle as TokioHandle;
 use crate::audio::mixer::SharedProcessor;
 use crate::livekit::audio::AudioPublisher;
 use crate::livekit::call_capture::CallCapture;
+use crate::livekit::off_record::{Adopted, Ask, OffRecord};
 use crate::livekit::participant::{capturing_from, ParticipantInfo, CAPTURE_ATTRIBUTE};
 use crate::livekit::video::{process_video_stream, VideoBufferManager};
 
@@ -24,7 +25,9 @@ use winit::event_loop::EventLoopProxy;
 
 use crate::snapshot_sender::SnapshotSender;
 use crate::{audio, ParticipantData, UserEvent};
+use hopp_capture::pause::{self, Pause};
 use hopp_marks::stamps::{StampMessage, STAMP_TOPIC};
+use livekit::participant::LocalParticipant;
 
 // Constants for magic values
 const TOPIC_SHARER_LOCATION: &str = "participant_location";
@@ -187,7 +190,19 @@ enum RoomServiceCommand {
     CaptureBookmark(Option<String>),
     CaptureStart,
     CaptureStop,
-    PublishAppVeilSnapshot { force: bool },
+    /// Someone here asked to go off the record, for more time, or to go back on.
+    OffRecord(Ask),
+    /// Someone's pause may have changed: take the newest in the call.
+    OffRecordFollow,
+    /// The timer of the pause with this `seq` ran out.
+    OffRecordOver(u64),
+    /// A full reconnect: the call needs telling again.
+    OffRecordReconnected,
+    /// The call dropped.
+    OffRecordLeave,
+    PublishAppVeilSnapshot {
+        force: bool,
+    },
 }
 
 impl std::fmt::Debug for RoomServiceCommand {
@@ -227,6 +242,11 @@ impl std::fmt::Debug for RoomServiceCommand {
             Self::CaptureBookmark(..) => write!(f, "CaptureBookmark"),
             Self::CaptureStart => write!(f, "CaptureStart"),
             Self::CaptureStop => write!(f, "CaptureStop"),
+            Self::OffRecord(ask) => write!(f, "OffRecord({ask:?})"),
+            Self::OffRecordFollow => write!(f, "OffRecordFollow"),
+            Self::OffRecordOver(seq) => write!(f, "OffRecordOver({seq})"),
+            Self::OffRecordReconnected => write!(f, "OffRecordReconnected"),
+            Self::OffRecordLeave => write!(f, "OffRecordLeave"),
             Self::PublishAppVeilSnapshot { force } => {
                 write!(f, "PublishAppVeilSnapshot {{ force: {force} }}")
             }
@@ -275,6 +295,8 @@ pub(crate) struct RoomServiceInner {
     /// Your identity in the room, while you're in one.
     local_identity: std::sync::Mutex<Option<String>>,
     call_capture: CallCapture,
+    /// The call's pause, if it's off the record. Only the command loop changes it.
+    off_record: std::sync::Mutex<OffRecord>,
 }
 
 // Replacing the room service, as a change of server does, must not wait for a transcript.
@@ -454,6 +476,7 @@ impl RoomService {
             published_app_veil_snapshot: std::sync::Mutex::new(None),
             local_identity: std::sync::Mutex::new(None),
             call_capture,
+            off_record: std::sync::Mutex::new(OffRecord::default()),
         });
         let audio_runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -466,6 +489,11 @@ impl RoomService {
         let audio_handle = audio_runtime.handle().clone();
 
         let (service_command_tx, service_command_rx) = mpsc::unbounded_channel();
+        // From the recorder's thread: the command loop decides what it means.
+        let said = service_command_tx.clone();
+        inner.call_capture.on_off_record_said(move || {
+            let _ = said.send(RoomServiceCommand::OffRecord(Ask::Said));
+        });
         async_runtime.spawn(room_service_commands(
             service_command_rx,
             service_command_tx.clone(),
@@ -630,6 +658,21 @@ impl RoomService {
         let _ = self
             .service_command_tx
             .send(RoomServiceCommand::CaptureStop);
+    }
+
+    /// Two more minutes off the record, for everyone in the call. Starts a pause if
+    /// there isn't one.
+    pub fn off_record_more(&self) {
+        let _ = self
+            .service_command_tx
+            .send(RoomServiceCommand::OffRecord(Ask::More));
+    }
+
+    /// Back on the record now, for everyone in the call.
+    pub fn off_record_end(&self) {
+        let _ = self
+            .service_command_tx
+            .send(RoomServiceCommand::OffRecord(Ask::End));
     }
 
     pub fn get_participants(&self) -> Vec<ParticipantData> {
@@ -1038,6 +1081,10 @@ async fn room_service_commands(
     let mut audio_publisher: Option<AudioPublisher> = None;
     let mut last_cursor_publish = Instant::now();
     const CURSOR_THROTTLE: Duration = Duration::from_millis(10);
+    // Who to tell that the call went off the record or back on: the app, once it has
+    // joined a call.
+    let mut off_record_ui: Option<EventLoopProxy<UserEvent>> = None;
+    let off_record_teller = spawn_off_record_teller();
 
     while let Some(command) = service_rx.recv().await {
         log::debug!("room_service_commands: Received command {command:?}");
@@ -1072,6 +1119,9 @@ async fn room_service_commands(
                     let _ = told.send_event(UserEvent::CaptureChanged(id));
                 });
                 inner.call_capture.set_room(room_name);
+                // The call before this one, if it never got to leave.
+                leave_off_record(&inner, off_record_ui.as_ref());
+                off_record_ui = Some(event_loop_proxy.clone());
                 let total_connect_start = Instant::now();
 
                 // Create two oneshot channels so destroy_room() can cancel both
@@ -1413,6 +1463,8 @@ async fn room_service_commands(
                 update_camera_quality(&inner).await;
                 let snapshot = inner.snapshot_sender.build_snapshot();
                 let _ = event_loop_proxy.send_event(UserEvent::CreateRoomResult(Ok(snapshot)));
+                // The call may already be off the record.
+                let _ = service_command_tx.send(RoomServiceCommand::OffRecordFollow);
                 tokio::spawn(handle_room_events(RoomEventContext {
                     receiver: rx,
                     event_loop_proxy,
@@ -1482,6 +1534,7 @@ async fn room_service_commands(
                 }
 
                 inner.clear().await;
+                leave_off_record(&inner, off_record_ui.as_ref());
             }
             RoomServiceCommand::PublishCursorPosition(x, y, _pointer) => {
                 let now = Instant::now();
@@ -2025,6 +2078,53 @@ async fn room_service_commands(
                     .map(|room| room.local_participant());
                 inner.call_capture.stop_by_hand(local);
             }
+            RoomServiceCommand::OffRecord(ask) => {
+                let Some(local) = own_participant(&inner).await else {
+                    continue;
+                };
+                let asked = inner
+                    .off_record
+                    .lock()
+                    .unwrap()
+                    .asked(ask, hopp_capture::store::now_ms());
+                let Some(pause) = asked else {
+                    continue;
+                };
+                log::info!("room_service_commands: off the record: {ask:?}");
+                adopt_pause(&inner, pause, off_record_ui.as_ref(), &service_command_tx);
+                tell_pause(&inner, local, &off_record_teller);
+            }
+            RoomServiceCommand::OffRecordFollow => {
+                let (local, theirs) = {
+                    let inner_room = inner.room.lock().await;
+                    let Some(room) = inner_room.as_ref() else {
+                        continue;
+                    };
+                    let theirs = pause::latest(room.remote_participants().values().filter_map(
+                        |participant| Pause::parse(participant.attributes().get(pause::ATTRIBUTE)?),
+                    ));
+                    (room.local_participant(), theirs)
+                };
+                if let Some(pause) = theirs {
+                    adopt_pause(&inner, pause, off_record_ui.as_ref(), &service_command_tx);
+                }
+                tell_pause(&inner, local, &off_record_teller);
+            }
+            RoomServiceCommand::OffRecordOver(seq) => {
+                let over = inner.off_record.lock().unwrap().over(seq, Instant::now());
+                if over {
+                    on_record(&inner, off_record_ui.as_ref());
+                }
+            }
+            RoomServiceCommand::OffRecordReconnected => {
+                inner.off_record.lock().unwrap().reconnected();
+                if let Some(local) = own_participant(&inner).await {
+                    tell_pause(&inner, local, &off_record_teller);
+                }
+            }
+            RoomServiceCommand::OffRecordLeave => {
+                leave_off_record(&inner, off_record_ui.as_ref());
+            }
             RoomServiceCommand::PublishStamp(message) => {
                 let inner_room = inner.room.lock().await;
                 let Some(room) = inner_room.as_ref() else {
@@ -2318,6 +2418,96 @@ fn start_remote_camera_stream(
         None,
         None,
     ));
+}
+
+async fn own_participant(inner: &RoomServiceInner) -> Option<LocalParticipant> {
+    let room = inner.room.lock().await;
+    room.as_ref().map(|room| room.local_participant())
+}
+
+const TELLING_THE_CALL_OF_A_PAUSE: Duration = Duration::from_secs(3);
+
+/// Publishes this client's word on the pause, one at a time and in order, without the
+/// call waiting for the server.
+fn spawn_off_record_teller() -> mpsc::UnboundedSender<(LocalParticipant, Pause)> {
+    let (teller, mut to_tell) = mpsc::unbounded_channel::<(LocalParticipant, Pause)>();
+    tokio::spawn(async move {
+        while let Some((local, told)) = to_tell.recv().await {
+            let attributes = HashMap::from([(pause::ATTRIBUTE.to_string(), told.encode())]);
+            let telling = local.set_attributes(attributes);
+            match tokio::time::timeout(TELLING_THE_CALL_OF_A_PAUSE, telling).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => log::error!("Off the record: telling the call: {error:?}"),
+                Err(_) => log::error!("Off the record: telling the call timed out"),
+            }
+        }
+    });
+    teller
+}
+
+fn tell_off_record_ui(ui: Option<&EventLoopProxy<UserEvent>>, left: Option<Duration>) {
+    let left = left.map(|left| left.as_millis() as u64);
+    if let Some(ui) = ui {
+        let _ = ui.send_event(UserEvent::OffRecord(left));
+    }
+}
+
+/// Take a pause from anyone in the call, this client included, if it's the newest.
+fn adopt_pause(
+    inner: &RoomServiceInner,
+    pause: Pause,
+    ui: Option<&EventLoopProxy<UserEvent>>,
+    commands: &mpsc::UnboundedSender<RoomServiceCommand>,
+) {
+    let adopted = inner.off_record.lock().unwrap().adopt(
+        pause,
+        hopp_capture::store::now_ms(),
+        Instant::now(),
+    );
+    match adopted {
+        None => {}
+        Some(Adopted::On) => on_record(inner, ui),
+        Some(Adopted::Off { seq, left, began }) => {
+            if began {
+                log::info!("Capture: off the record");
+                inner.call_capture.off_record(true);
+            }
+            tell_off_record_ui(ui, Some(left));
+            let commands = commands.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(left).await;
+                let _ = commands.send(RoomServiceCommand::OffRecordOver(seq));
+            });
+        }
+    }
+}
+
+/// Back on the record: the pause ran out here, or someone ended it.
+fn on_record(inner: &RoomServiceInner, ui: Option<&EventLoopProxy<UserEvent>>) {
+    log::info!("Capture: back on the record");
+    inner.call_capture.off_record(false);
+    tell_off_record_ui(ui, None);
+}
+
+/// Pass the pause in force on as this client's own, so that it outlives whoever
+/// started it leaving. Nothing if the call has it from here already.
+fn tell_pause(
+    inner: &RoomServiceInner,
+    local: LocalParticipant,
+    teller: &mpsc::UnboundedSender<(LocalParticipant, Pause)>,
+) {
+    let to_tell = inner.off_record.lock().unwrap().to_tell();
+    if let Some(pause) = to_tell {
+        let _ = teller.send((local, pause));
+    }
+}
+
+/// The call is over here, and so is its pause.
+fn leave_off_record(inner: &RoomServiceInner, ui: Option<&EventLoopProxy<UserEvent>>) {
+    let was_off = inner.off_record.lock().unwrap().leave();
+    if was_off {
+        on_record(inner, ui);
+    }
 }
 
 /// Someone's share ended. The flag is on their audio connection.
@@ -2751,6 +2941,8 @@ async fn handle_room_events(ctx: RoomEventContext) {
                 let name = participant.name();
 
                 log::info!("handle_room_events: Participant connected: {}", identity);
+                // They may bring a pause with them.
+                let _ = service_command_tx.send(RoomServiceCommand::OffRecordFollow);
 
                 if !insert_participant_if_absent(&participants, &identity, &participant) {
                     continue;
@@ -3275,6 +3467,7 @@ async fn handle_room_events(ctx: RoomEventContext) {
             RoomEvent::Reconnected => {
                 let _ = service_command_tx
                     .send(RoomServiceCommand::PublishAppVeilSnapshot { force: true });
+                let _ = service_command_tx.send(RoomServiceCommand::OffRecordReconnected);
                 if let Some(room) = inner.room.lock().await.as_ref() {
                     inner
                         .call_capture
@@ -3294,17 +3487,25 @@ async fn handle_room_events(ctx: RoomEventContext) {
                     continue;
                 }
                 inner.call_capture.stop();
+                let _ = service_command_tx.send(RoomServiceCommand::OffRecordLeave);
                 if let Err(e) =
                     event_loop_proxy.send_event(UserEvent::CallDropped(call_drop_reason(reason)))
                 {
                     log::error!("handle_room_events: Failed to send CallDropped: {e:?}");
                 }
             }
-            // Someone started or stopped capturing (transcribing) the call.
+            // Someone started or stopped capturing (transcribing) the call, or changed
+            // whether it's off the record.
             RoomEvent::ParticipantAttributesChanged {
                 participant,
                 changed_attributes,
-            } if changed_attributes.contains_key(CAPTURE_ATTRIBUTE) => {
+            } => {
+                if changed_attributes.contains_key(pause::ATTRIBUTE) {
+                    let _ = service_command_tx.send(RoomServiceCommand::OffRecordFollow);
+                }
+                if !changed_attributes.contains_key(CAPTURE_ATTRIBUTE) {
+                    continue;
+                }
                 let identity = participant.identity().as_str().to_string();
                 let capturing = capturing_from(&participant.attributes());
                 log::info!("handle_room_events: {identity} capturing: {capturing}");

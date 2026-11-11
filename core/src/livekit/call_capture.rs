@@ -13,7 +13,7 @@ use hopp_capture::heard::{Heard, StampListener};
 use hopp_capture::moments::{
     DrawEvent, DrawingMode, Moments, OwnWindows, PathPoint, Point, Sampler, VideoFrame, AGENT_EDGE,
 };
-use hopp_capture::recorder::{self, Recorder, Speaker};
+use hopp_capture::recorder::{self, Recorder, Said, Speaker};
 use hopp_capture::{config, hooks, liveness, models, store, Tap};
 use hopp_marks::colours::{canonical_identity, person};
 use hopp_marks::stamps::StampMessage;
@@ -239,6 +239,11 @@ struct Stills {
     screen: AtomicU64,
     /// Finds Hopp's windows on the screen you share, for a capture that starts during it.
     own_windows: Mutex<Option<OwnWindows>>,
+    /// The call is off the record: no frames of the screen and no marks are kept. Set
+    /// whether or not there's a capture, for one that starts meanwhile.
+    off_record: AtomicBool,
+    /// Held while the recorder is told that.
+    telling: Mutex<()>,
 }
 
 /// Held while a copy of the screen is being converted, however that ends.
@@ -260,6 +265,8 @@ pub struct CallCapture {
     /// What the call's capture says it's in: the room's name, or nothing for a call between
     /// two people. The server's name for a room is an id.
     room: Arc<Mutex<String>>,
+    /// Called when a capture hears someone ask to go off the record.
+    said: Arc<Mutex<Option<Said>>>,
 }
 
 type Changed = Box<dyn Fn(Option<String>) + Send>;
@@ -274,6 +281,12 @@ impl CallCapture {
     /// Be told which capture is recording, whenever that changes.
     pub fn on_change(&self, changed: impl Fn(Option<String>) + Send + 'static) {
         *self.changed.lock().unwrap_or_else(PoisonError::into_inner) = Some(Box::new(changed));
+    }
+
+    /// Be told when a capture hears "tinfoil hat" or "off the record". Called on the
+    /// recorder's thread, so it must only pass the word on.
+    pub fn on_off_record_said(&self, said: impl Fn() + Send + Sync + 'static) {
+        *self.said.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(said));
     }
 
     pub fn set_room(&self, name: Option<String>) {
@@ -309,8 +322,49 @@ impl CallCapture {
         moments.unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Whether frames and marks are being kept: not before the call has been told, and
+    /// not off the record.
     fn watching(&self) -> bool {
         self.stills.watching.load(Ordering::Relaxed)
+            && !self.stills.off_record.load(Ordering::Relaxed)
+    }
+
+    /// The call went off the record, or back on. The capture keeps listening meanwhile,
+    /// to hear the phrase said again, and writes nothing down. With no capture this is
+    /// remembered for one that starts before it's over.
+    pub fn off_record(&self, on: bool) {
+        self.set_off_record(on);
+        // Telling the recorder can wait for room in its queue, which the call mustn't.
+        let capture = self.clone();
+        tokio::task::spawn_blocking(move || capture.tell_the_recorder());
+    }
+
+    fn set_off_record(&self, on: bool) {
+        self.stills.off_record.store(on, Ordering::Relaxed);
+        // A copy of the screen on its way from before is dropped.
+        self.stills.screen.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Tell the capture, if there is one, whether the call is off the record by now. One
+    /// at a time, so that whichever comes last leaves the recorder with the right answer.
+    fn tell_the_recorder(&self) {
+        let telling = self.stills.telling.lock();
+        let _telling = telling.unwrap_or_else(PoisonError::into_inner);
+        let on = self.stills.off_record.load(Ordering::Relaxed);
+        // Not with `state` held: others need it meanwhile.
+        let Some(feed) = self.state().recorder.as_ref().map(Recorder::feed) else {
+            return;
+        };
+        feed.off_record(on);
+        if on {
+            return;
+        }
+        // Ink drawn meanwhile was never noted; frames from here start clean.
+        let own_windows = self.stills.own_windows.lock();
+        let own_windows = own_windows.unwrap_or_else(PoisonError::into_inner).clone();
+        if let Some(moments) = self.moments().as_mut() {
+            moments.screen_changed(own_windows);
+        }
     }
 
     /// A frame of the shared screen, once it's on its way to the call. Called for every
@@ -508,10 +562,20 @@ impl CallCapture {
             gpu: chosen.gpu,
             store,
             changed: Arc::new(|| {}),
+            off_record: self
+                .said
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone(),
         })?;
         let id = recorder.id();
         log::info!("Capture {id}: started");
         let feed = recorder.feed();
+        // Started while the call is off the record: nothing is written until it's over.
+        let off_record = self.stills.off_record.load(Ordering::Relaxed);
+        if off_record {
+            feed.off_record(true);
+        }
         let seen = people(snapshot);
         let mut been_here = BTreeMap::new();
         let participants = remember(&mut been_here, &seen);
@@ -538,6 +602,10 @@ impl CallCapture {
         state.own_identity = own_identity.to_string();
         state.recorder = Some(recorder);
         drop(state);
+        // It changed while this was starting, when there was no recorder to tell yet.
+        if self.stills.off_record.load(Ordering::Relaxed) != off_record {
+            self.tell_the_recorder();
+        }
         self.announce(Some(id.clone()));
         // From here, because the recorder hasn't necessarily written them down yet.
         let mut payload = hooks::payload("capture-started", &id);
@@ -910,6 +978,48 @@ mod tests {
         assert!(!wants_a_frame(&capture), "the first frame wasn't copied");
         capture.moments().take().unwrap().finish();
         let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn nothing_of_the_screen_is_kept_off_the_record() {
+        let (capture, directory) = capture_with_moments("off-record");
+        capture.stills.watching.store(true, Ordering::Relaxed);
+        capture.set_off_record(true);
+        capture.offer_screen(&slide(64, 36, RED));
+        assert!(wants_a_frame(&capture), "copied off the record");
+        capture.set_off_record(false);
+        capture.offer_screen(&slide(64, 36, RED));
+        assert!(!wants_a_frame(&capture), "not copied back on the record");
+        capture.moments().take().unwrap().finish();
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn a_mark_made_off_the_record_asks_for_no_frame() {
+        let (capture, directory) = capture_with_moments("off-record-mark");
+        capture.stills.watching.store(true, Ordering::Relaxed);
+        capture.offer_screen(&slide(64, 36, RED));
+        capture.set_off_record(true);
+        capture.mark(
+            SAM,
+            "Sam",
+            &ClientEvent::ClickAnimation(ClientPoint { x: 0.5, y: 0.5 }),
+        );
+        assert!(!wants_a_frame(&capture), "a mark was noted off the record");
+        capture.moments().take().unwrap().finish();
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn off_the_record_with_no_capture_is_remembered_for_one() {
+        let capture = CallCapture::default();
+        capture.set_off_record(true);
+        // Nothing to tell, and nothing to wait for.
+        capture.tell_the_recorder();
+        capture.stills.watching.store(true, Ordering::Relaxed);
+        assert!(!capture.watching());
+        capture.set_off_record(false);
+        assert!(capture.watching());
     }
 
     #[test]

@@ -404,6 +404,7 @@ fn transcribe(files: &[String], speaker: &str, realtime: bool) -> Result<()> {
         store: store::default_path()?,
         changed: std::sync::Arc::new(|| {}),
         heard: None,
+        off_record: None,
     })?;
     let id = recorder.id();
     // 100 ms of every track at a time, timed as if it were live.

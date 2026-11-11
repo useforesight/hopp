@@ -24,6 +24,7 @@ pub mod mcp;
 pub mod models;
 pub mod moments;
 pub mod paths;
+pub mod pause;
 pub mod recorder;
 pub mod resample;
 pub mod store;

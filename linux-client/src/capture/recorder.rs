@@ -52,6 +52,8 @@ const IN_FLIGHT_MIN_CPU: Duration = Duration::from_secs(120);
 /// capture never gives up while it runs: speech waits (up to the backlog) meanwhile.
 const RETRY_FIRST: Duration = Duration::from_secs(30);
 const RETRY_MOST: Duration = Duration::from_secs(120);
+/// Back on the record, speech from this long before still counts as new.
+const RESUME_SLACK_MS: i64 = 250;
 /// Live captures skip audio once transcription is this far behind.
 pub const LIVE_BACKLOG_MS: i64 = 10 * 60 * 1000;
 
@@ -83,6 +85,11 @@ pub enum Input {
         text: String,
     },
     Participants(Vec<String>),
+    /// The call went off the record at `t_ms`, or came back on (see `pause`).
+    OffRecord {
+        t_ms: i64,
+        on: bool,
+    },
     Downloading(u8),
     Downloaded(Result<PathBuf, String>),
     /// From helper number `.0`; replies from one already replaced are ignored.
@@ -125,6 +132,9 @@ pub struct Status {
 /// Told a speaker's id and what they're asking the agent, as it grows.
 pub type Heard = Arc<dyn Fn(&str, Option<&str>) + Send + Sync>;
 
+/// Told that someone said to go off the record.
+pub type Said = Arc<dyn Fn() + Send + Sync>;
+
 pub struct Options {
     pub room: String,
     pub model: &'static Model,
@@ -142,6 +152,8 @@ pub struct Options {
     /// soon as a draft shows it and again as they go on, so the call can show at once
     /// that it was heard. `None` if the word wasn't said after all (see `asking`).
     pub heard: Option<Heard>,
+    /// Called when someone says to go off the record, or says it again (see `pause`).
+    pub off_record: Option<Said>,
 }
 
 pub struct Recorder {
@@ -216,6 +228,15 @@ impl Feed {
     pub fn participants(&self, names: Vec<String>) {
         let _ = self.input.try_send(Input::Participants(names));
     }
+
+    /// Go off the record, or back on. Waits for room in the queue, because it must not
+    /// be lost; the queue only fills when the recorder is far behind.
+    pub fn off_record(&self, on: bool) {
+        let _ = self.input.send(Input::OffRecord {
+            t_ms: self.now_ms(),
+            on,
+        });
+    }
 }
 
 impl Recorder {
@@ -263,6 +284,8 @@ impl Recorder {
             stopping: None,
             reported_drops: 0,
             last_t_ms: std::cell::Cell::new(0),
+            off_record: Vec::new(),
+            said_on: Default::default(),
             asks: Default::default(),
         };
         let thread = std::thread::Builder::new()
@@ -414,6 +437,12 @@ struct Worker {
     reported_drops: u64,
     /// The latest time any line was written at.
     last_t_ms: std::cell::Cell<i64>,
+    /// When the call was off the record, in capture time. The last has no end while it
+    /// still is.
+    off_record: Vec<(i64, Option<i64>)>,
+    /// Draft lines already heard to say "off the record", so that a draft growing word
+    /// by word asks once.
+    said_on: std::cell::RefCell<std::collections::HashSet<i64>>,
     /// Who is asking the agent something now (see `asking`).
     asks: std::cell::RefCell<Asks>,
 }
@@ -458,6 +487,57 @@ impl Worker {
         if let Err(error) = self.store.add_line(&self.id, &line) {
             crate::logger::line(format!("Capture: could not save a line: {error}"));
         }
+    }
+
+    /// Whether any of `from_ms` to `to_ms` was off the record.
+    fn was_off_record(&self, from_ms: i64, to_ms: i64) -> bool {
+        self.off_record
+            .iter()
+            .any(|(start, end)| *start <= to_ms && end.is_none_or(|end| end >= from_ms))
+    }
+
+    /// A line's words as they stand, draft or final: tell the call if they say to go
+    /// off the record. Returns whether they do.
+    fn hear_off_record(&self, line: Option<i64>, text: &str) -> bool {
+        // Only in a call: a file being transcribed keeps every word.
+        let Some(tell) = &self.options.off_record else {
+            return false;
+        };
+        if !super::pause::said(text) {
+            return false;
+        }
+        if line.is_none_or(|line| self.said_on.borrow_mut().insert(line)) {
+            tell();
+        }
+        true
+    }
+
+    fn is_off_record(&self) -> bool {
+        matches!(self.off_record.last(), Some((_, None)))
+    }
+
+    fn go_off_record(&mut self, t_ms: i64, on: bool) {
+        if on == self.is_off_record() {
+            return;
+        }
+        if on {
+            self.off_record.push((t_ms, None));
+            // Words already showing for what's being said now go at once.
+            for state in self.speakers.values() {
+                if let Some(draft) = &state.draft {
+                    let _ = self.store.update_line(draft.line, Kind::Draft, "", None);
+                }
+            }
+            self.line(Kind::Event, t_ms, None, super::pause::STARTED.into());
+            return;
+        }
+        // What's being said now ends here, off the record: the next words start afresh.
+        self.flush_idle(true);
+        if let Some((start, end)) = self.off_record.last_mut() {
+            // A speaker's clock can run this far behind the capture's (see `audio`).
+            *end = Some((t_ms - RESUME_SLACK_MS).max(*start));
+        }
+        self.line(Kind::Event, t_ms, None, super::pause::ENDED.into());
     }
 
     fn start_helper(&mut self, path: PathBuf) {
@@ -543,6 +623,8 @@ impl Worker {
     }
 
     fn audio(&mut self, speaker: Arc<Speaker>, t_ms: i64, samples: Vec<i16>) {
+        // Off the record nobody's words show while they speak (see `pause`).
+        let off_record = self.is_off_record();
         let state = self
             .speakers
             .entry(speaker.id.clone())
@@ -582,6 +664,7 @@ impl Worker {
         // Speech that has begun gets its line at once, where it was said, so the
         // transcript never has to make room for it later.
         if self.drafts
+            && !off_record
             && state.draft.is_none()
             && let Some((t_ms, _)) = state.segmenter.in_progress()
         {
@@ -815,9 +898,14 @@ impl Worker {
             // They stopped speaking meanwhile: the final text is on its way.
             return;
         };
+        let began_ms = draft.t_ms;
         let Some(text) = draft.hear(pieces, audio_ms) else {
             return;
         };
+        // Off the record, or asking to be: heard, and not written down.
+        if self.hear_off_record(Some(line), &text) || self.was_off_record(began_ms, i64::MAX) {
+            return;
+        }
         if let Err(error) = self.store.update_line(line, Kind::Draft, &text, None) {
             crate::logger::line(format!("Capture: could not save a draft: {error}"));
         }
@@ -851,6 +939,16 @@ impl Worker {
         speaker: &Speaker,
         text: String,
     ) {
+        // Said off the record, or the words that asked for it: heard, and not kept.
+        let asked = kind == Kind::Speech && self.hear_off_record(line, &text);
+        if asked || self.was_off_record(t_ms, end_ms.unwrap_or(t_ms)) {
+            if let Some(id) = line
+                && let Err(error) = self.store.update_line(id, Kind::Retracted, "", None)
+            {
+                crate::logger::line(format!("Capture: could not retract a line: {error}"));
+            }
+            return;
+        }
         let spoken = if kind == Kind::Speech {
             text.as_str()
         } else {
@@ -991,6 +1089,8 @@ impl Worker {
                     });
                     self.line(Kind::Bookmark, t_ms, who.as_ref(), label);
                 }
+                Ok(Input::OffRecord { t_ms, on }) => self.go_off_record(t_ms, on),
+                Ok(Input::Frame { t_ms, .. }) if self.was_off_record(t_ms, t_ms) => {}
                 Ok(Input::Frame { t_ms, who, text }) => {
                     let who = who.map(|name| Speaker {
                         id: String::new(),

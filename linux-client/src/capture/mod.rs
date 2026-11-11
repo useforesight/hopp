@@ -13,6 +13,7 @@ pub mod hooks;
 pub mod liveness;
 pub mod models;
 pub mod moments;
+pub mod pause;
 pub mod recorder;
 pub mod resample;
 pub mod store;

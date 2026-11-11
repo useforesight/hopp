@@ -594,3 +594,74 @@ async fn a_call_turned_away_says_why() {
         Some("Your teammate has Do not disturb on, but they'll see that you tried")
     );
 }
+
+fn off_record_events(events: &std::sync::mpsc::Receiver<Event>) -> Vec<Option<u64>> {
+    std::iter::from_fn(|| events.try_recv().ok())
+        .filter_map(|event| match event {
+            Event::OffRecord(left) => Some(left.map(|left| left.as_secs())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn anyone_in_the_call_takes_everyone_off_the_record_and_back() {
+    use crate::capture::pause::Pause;
+    let (events, receive) = crate::wake::detached();
+    let mut worker = Worker::new(Settings::default(), SharedFrames::default(), events);
+    let now = crate::capture::store::now_ms();
+    let mira = |pause: Option<Pause>| {
+        Event::Participants(vec![Participant {
+            identity: "room:test:mira:audio".into(),
+            name: "Mira".into(),
+            pause,
+            ..Default::default()
+        }])
+    };
+    // Nobody has said it.
+    worker.internal(mira(None)).await;
+    assert!(worker.pause_ends.is_none());
+    assert!(off_record_events(&receive).is_empty());
+    // Mira's capture hears "tinfoil hat".
+    let first = Pause::said(None, now).unwrap();
+    worker.internal(mira(Some(first))).await;
+    assert!(worker.pause_ends.is_some());
+    assert!(matches!(off_record_events(&receive)[..], [Some(118..=120)]));
+    // Her attribute coming round again changes nothing.
+    worker.internal(mira(Some(first))).await;
+    assert!(off_record_events(&receive).is_empty());
+    // She presses for two more minutes.
+    let more = Pause::more(Some(first), now);
+    worker.internal(mira(Some(more))).await;
+    assert!(matches!(off_record_events(&receive)[..], [Some(238..=240)]));
+    // The first pause running out no longer ends it.
+    worker.internal(Event::OffRecordOver(first.seq)).await;
+    assert!(worker.pause_ends.is_some());
+    // She resumes: back on the record here too, and an older word can't undo that.
+    worker.internal(mira(Some(Pause::end(Some(more))))).await;
+    assert!(worker.pause_ends.is_none());
+    worker.internal(mira(Some(more))).await;
+    assert!(worker.pause_ends.is_none());
+    assert_eq!(off_record_events(&receive), [None]);
+}
+
+#[tokio::test]
+async fn a_pause_that_ran_out_before_you_joined_leaves_you_on_the_record() {
+    use crate::capture::pause::Pause;
+    let (events, receive) = crate::wake::detached();
+    let mut worker = Worker::new(Settings::default(), SharedFrames::default(), events);
+    let long_ago = crate::capture::store::now_ms() - 600_000;
+    let old = Pause::said(None, long_ago).unwrap();
+    worker
+        .internal(Event::Participants(vec![Participant {
+            identity: "room:test:mira:audio".into(),
+            name: "Mira".into(),
+            pause: Some(old),
+            ..Default::default()
+        }]))
+        .await;
+    assert!(worker.pause_ends.is_none());
+    assert!(off_record_events(&receive).is_empty());
+    // The next one still outranks it.
+    assert_eq!(worker.pause, Some(old));
+}

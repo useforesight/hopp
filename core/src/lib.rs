@@ -10,6 +10,7 @@ pub mod audio {
 pub mod livekit {
     pub mod audio;
     pub mod call_capture;
+    pub mod off_record;
     pub mod participant;
     pub mod stats;
     pub mod video;
@@ -2592,6 +2593,24 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                     room_service.stop_capture();
                 }
             }
+            UserEvent::OffRecord(left_ms) => {
+                log::info!("user_event: OffRecord: {left_ms:?}");
+                if let Err(e) = self.socket.send(Message::OffRecord(left_ms)) {
+                    log::error!("Failed to send OffRecord: {e:?}");
+                }
+            }
+            UserEvent::OffRecordMore => {
+                log::info!("user_event: OffRecordMore");
+                if let Some(room_service) = self.room_service.as_ref() {
+                    room_service.off_record_more();
+                }
+            }
+            UserEvent::OffRecordEnd => {
+                log::info!("user_event: OffRecordEnd");
+                if let Some(room_service) = self.room_service.as_ref() {
+                    room_service.off_record_end();
+                }
+            }
             UserEvent::ListCameras => {
                 log::debug!("user_event: ListCameras");
                 let devices = CameraCapturer::list_devices();
@@ -3730,6 +3749,10 @@ pub enum UserEvent {
     CaptureStart,
     CaptureStop,
     CaptureChanged(Option<String>),
+    /// Off the record with this many milliseconds left, or back on it.
+    OffRecord(Option<u64>),
+    OffRecordMore,
+    OffRecordEnd,
     ListCameras,
     StartCamera {
         msg: CameraStartMessage,
@@ -3904,6 +3927,8 @@ impl RenderEventLoop {
                     Message::CaptureBookmark(label) => UserEvent::CaptureBookmark(label),
                     Message::CaptureStart => UserEvent::CaptureStart,
                     Message::CaptureStop => UserEvent::CaptureStop,
+                    Message::OffRecordMore => UserEvent::OffRecordMore,
+                    Message::OffRecordEnd => UserEvent::OffRecordEnd,
                     Message::ListCameras => UserEvent::ListCameras,
                     Message::StartCamera(msg) => UserEvent::StartCamera {
                         msg,

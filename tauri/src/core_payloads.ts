@@ -360,6 +360,8 @@ export interface CommandMap {
   captures_open_markdown: { args: { callId: string }; return: void };
   captures_bookmark: { args: void; return: void };
   captures_stop: { args: void; return: void };
+  off_record_more: { args: void; return: void };
+  off_record_end: { args: void; return: void };
   captures_requested_call: { args: void; return: string | null };
   captures_current: { args: void; return: string | null };
   app_publish_state: { args: { state: AppState }; return: void };

@@ -325,6 +325,13 @@ pub enum Message {
     /// The capture recording this call now, if any. Its last words may still be finishing
     /// after this says none.
     CaptureChanged(Option<String>),
+    /// The call went off the record with this many milliseconds left, or has more time
+    /// now. None: it's back on the record. Sent whether or not this app captures.
+    OffRecord(Option<u64>),
+    /// Two more minutes off the record, for everyone in the call.
+    OffRecordMore,
+    /// Back on the record now, for everyone in the call.
+    OffRecordEnd,
     AppAction(AppAction),
     /// You let others control your screen, or stopped them, from the sharing pill.
     ControllerCursorChanged(bool),

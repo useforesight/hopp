@@ -20,16 +20,32 @@ pub enum Tone {
     Outgoing,
     Accepted,
     Unavailable,
+    /// One of the last seconds off the record.
+    Beep,
+    /// Back on the record.
+    Resumed,
 }
 
 impl Tone {
-    /// File and volume, matching upstream Hopp's `get_all_sounds`.
+    /// File and volume, matching upstream Hopp's `get_all_sounds`. The beeps have no
+    /// file: see [`Tone::beep`].
     fn sound(self) -> (&'static str, f32) {
         match self {
             Self::Incoming => ("incoming-call.mp3", 0.3),
             Self::Outgoing => ("ring1.mp3", 0.4),
             Self::Accepted => ("bubble-pop.mp3", 0.4),
             Self::Unavailable => ("rejected.mp3", 0.1),
+            Self::Beep => ("hopp-beep.wav", 0.25),
+            Self::Resumed => ("hopp-resumed.wav", 0.25),
+        }
+    }
+
+    /// Pitch in Hz and length in milliseconds, for the tones Hopp makes itself.
+    fn beep(self) -> Option<(f32, u32)> {
+        match self {
+            Self::Beep => Some((880., 90)),
+            Self::Resumed => Some((1320., 380)),
+            _ => None,
         }
     }
 
@@ -91,6 +107,15 @@ impl Tones {
         }
     }
 
+    /// Play a one-off tone over whatever else is playing.
+    pub fn blip(&self, tone: Tone) {
+        if let Some(mut child) = play(tone) {
+            let _ = std::thread::Builder::new()
+                .name("hopp-tone".into())
+                .spawn(move || child.wait());
+        }
+    }
+
     pub fn stop(&mut self) {
         if let Some((_, stop)) = self.looping.take() {
             stop.store(true, Ordering::Release);
@@ -106,7 +131,10 @@ impl Drop for Tones {
 
 fn play(tone: Tone) -> Option<Child> {
     let (file, volume) = tone.sound();
-    let path = sounds()?.join(file);
+    let path = match tone.beep() {
+        Some((pitch, length)) => made(file, pitch, length)?,
+        None => sounds()?.join(file),
+    };
     match Command::new("pw-play")
         .arg(format!("--volume={volume}"))
         .arg(&path)
@@ -121,6 +149,52 @@ fn play(tone: Tone) -> Option<Child> {
             None
         }
     }
+}
+
+const RATE: u32 = 44_100;
+
+/// A sine tone as a WAV file: 16-bit mono, with the ends faded so it doesn't click.
+fn wav(pitch: f32, length_ms: u32) -> Vec<u8> {
+    let count = RATE * length_ms / 1000;
+    let fade = (RATE / 100).min(count / 2).max(1);
+    let mut bytes = Vec::with_capacity(44 + count as usize * 2);
+    bytes.extend_from_slice(b"RIFF");
+    bytes.extend_from_slice(&(36 + count * 2).to_le_bytes());
+    bytes.extend_from_slice(b"WAVEfmt ");
+    bytes.extend_from_slice(&16u32.to_le_bytes());
+    // PCM, one channel.
+    bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&RATE.to_le_bytes());
+    bytes.extend_from_slice(&(RATE * 2).to_le_bytes());
+    bytes.extend_from_slice(&2u16.to_le_bytes());
+    bytes.extend_from_slice(&16u16.to_le_bytes());
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&(count * 2).to_le_bytes());
+    for index in 0..count {
+        let edge = index.min(count - 1 - index).min(fade) as f32 / fade as f32;
+        let wave = (index as f32 / RATE as f32 * pitch * std::f32::consts::TAU).sin();
+        bytes.extend_from_slice(&((wave * edge * 0.8 * f32::from(i16::MAX)) as i16).to_le_bytes());
+    }
+    bytes
+}
+
+/// The file for a tone Hopp makes itself, written once per session.
+fn made(file: &str, pitch: f32, length_ms: u32) -> Option<PathBuf> {
+    let directory = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let path = directory.join(file);
+    if !path.is_file()
+        && let Err(error) = std::fs::write(&path, wav(pitch, length_ms))
+    {
+        crate::logger::line(format!(
+            "call sound unavailable: {}: {error}",
+            path.display()
+        ));
+        return None;
+    }
+    Some(path)
 }
 
 /// Installed next to the binary (`<prefix>/share/hopp/sounds`), or upstream Hopp's
@@ -164,6 +238,28 @@ mod tests {
             );
             assert!((0.0..=1.0).contains(&volume));
         }
+    }
+
+    #[test]
+    fn the_beeps_are_whole_wav_files() {
+        for tone in [Tone::Beep, Tone::Resumed] {
+            let (pitch, length) = tone.beep().unwrap();
+            let bytes = wav(pitch, length);
+            let samples = (RATE * length / 1000) as usize;
+            assert_eq!(bytes.len(), 44 + samples * 2);
+            assert_eq!(&bytes[..4], b"RIFF");
+            let riff = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+            assert_eq!(riff as usize, bytes.len() - 8);
+            // Starts and ends at silence, and is loud in between.
+            let sample = |index: usize| {
+                i16::from_le_bytes(bytes[44 + index * 2..46 + index * 2].try_into().unwrap())
+            };
+            assert_eq!(sample(0), 0);
+            assert_eq!(sample(samples - 1), 0);
+            assert!((0..samples).any(|index| sample(index) > 20_000));
+            assert!(!tone.looped());
+        }
+        assert!(Tone::Accepted.beep().is_none());
     }
 
     #[test]

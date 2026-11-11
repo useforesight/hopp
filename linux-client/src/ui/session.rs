@@ -161,6 +161,8 @@ pub enum SessionEvent {
     MarksChanged,
     /// New camera frames; only windows showing faces redraw.
     Cameras,
+    /// The call went off the record or came back on: its pill opens or closes.
+    OffRecordChanged,
     /// Someone said the wake word, or their ask is over: the "Heard you" bubble opens
     /// or closes.
     HeardChanged,
@@ -288,6 +290,10 @@ pub struct Session {
     pub speaking: super::speaking::Speaking,
     /// Who last said the wake word and what they're asking, while it shows (see `heard`).
     pub heard: Option<super::heard::Heard>,
+    /// The call is off the record until then (see `offrecord`).
+    pub off_record: Option<Instant>,
+    /// Counts the clocks started for it, so that an extended pause has one ticking.
+    off_record_clock: u64,
     /// Your microphone level, 0–1, for the ring round your tile.
     pub microphone_level: f32,
     /// Your microphone gives no sound and reopening it didn't help: its name, or empty
@@ -386,6 +392,8 @@ impl Session {
             cards: Vec::new(),
             speaking: Default::default(),
             heard: None,
+            off_record: None,
+            off_record_clock: 0,
             microphone_level: 0.,
             microphone_silent: None,
         }
@@ -505,6 +513,54 @@ impl Session {
         self.grant
             .as_deref()
             .is_some_and(|grant| canonical_identity(grant) == canonical_identity(identity))
+    }
+
+    /// Two more minutes off the record, for everyone in the call.
+    pub fn off_record_more(&mut self) {
+        self.send(Command::OffRecord(crate::engine::OffRecord::More));
+    }
+
+    /// Back on the record now, for everyone in the call.
+    pub fn off_record_end(&mut self) {
+        self.send(Command::OffRecord(crate::engine::OffRecord::End));
+    }
+
+    /// Redraw the pill's clock each second and beep through the last five. The engine
+    /// says when the pause is over; `clock` ends this one when a newer one starts.
+    fn tick_off_record(&mut self, clock: u64, cx: &mut Context<Self>) {
+        cx.spawn(async move |session, cx| {
+            loop {
+                let Ok(Some(wait)) = session.update(cx, |session, _| {
+                    session
+                        .off_record
+                        .filter(|_| session.off_record_clock == clock)
+                        .map(|ends| super::offrecord::next_tick(ends, Instant::now()))
+                }) else {
+                    return;
+                };
+                cx.background_executor().timer(wait).await;
+                let ticking = session.update(cx, |session, cx| {
+                    let Some(ends) = session
+                        .off_record
+                        .filter(|_| session.off_record_clock == clock)
+                    else {
+                        return false;
+                    };
+                    // A timer wakes a little late: this is the second that just began.
+                    let now = Instant::now() + Duration::from_millis(20);
+                    let left = super::offrecord::seconds_left(ends, now);
+                    if (1..=super::offrecord::COUNTDOWN).contains(&left) {
+                        session.tones.blip(Tone::Beep);
+                    }
+                    cx.notify();
+                    left > 0
+                });
+                if !ticking.unwrap_or(false) {
+                    return;
+                }
+            }
+        })
+        .detach();
     }
 
     pub fn send(&mut self, command: Command) {
@@ -2457,6 +2513,21 @@ impl Session {
                 cx.emit(SessionEvent::HeardChanged);
                 cx.emit(SessionEvent::Cameras);
             }
+            Event::OffRecord(left) => {
+                let was = self.off_record.is_some();
+                self.off_record = left.map(|left| Instant::now() + left);
+                self.off_record_clock += 1;
+                if self.off_record.is_some() {
+                    self.tick_off_record(self.off_record_clock, cx);
+                } else if was {
+                    self.tones.blip(Tone::Resumed);
+                }
+                if was != self.off_record.is_some() {
+                    cx.emit(SessionEvent::OffRecordChanged);
+                }
+            }
+            // The engine's own.
+            Event::OffRecordSaid | Event::OffRecordOver(_) => {}
             Event::MicrophoneSilent(device) => {
                 if let Some(device) = &device {
                     let name = if device.is_empty() {
@@ -2538,6 +2609,8 @@ impl Session {
         self.camera = false;
         self.speaking.clear();
         self.heard = None;
+        self.off_record = None;
+        self.off_record_clock += 1;
         self.microphone_level = 0.;
         self.microphone_silent = None;
         self.peer_control = false;
@@ -2893,6 +2966,9 @@ impl Session {
                     "capturing": participant.capturing,
                 })).collect::<Vec<_>>(),
                 "capture": self.capture,
+                "off_record": self.off_record.map(|ends| {
+                    super::offrecord::seconds_left(ends, Instant::now())
+                }),
                 "microphone": self.microphone,
                 "camera": self.camera,
                 "sharing": self.sharing,

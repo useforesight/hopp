@@ -84,6 +84,8 @@ shot faces-silent  212 452 --scene faces-silent --people 2
 shot faces-heard   212 452 --scene faces-heard --people 2
 shot faces-heard-bubbles 76 314 --scene faces-heard --people 3 --layout bubbles
 shot heard         250 150 --scene heard --people 2
+shot offrecord     380 40 --scene offrecord --people 2
+shot offrecord-ending 380 40 --scene offrecord-ending --people 2
 shot heard-beside  250 150 --scene heard-beside --people 2
 # Shared screen as a tiled viewport (wide and narrow tiles) and as a fitted peek.
 shot viewer-wide   1400 820 --scene viewer --people 3

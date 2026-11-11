@@ -171,6 +171,19 @@ seconds after they stop talking, or at once if the final text turns out not to h
 the word. Hopp can't tell when an agent answers, and only "Jeepers" is shown, not
 another phrase given to `--on-wake`.
 
+**Off the record.** Say "tinfoil hat" or "off the record" and every capture in the
+call stops keeping anything for two minutes, on every client at once: no words, no
+frames of the shared screen, nothing for an agent following the call. The sentence
+with the phrase in it is dropped too, and the transcript gets one line when it starts
+and one when it ends. A pill under the bar counts down, turns amber and beeps through
+the last five seconds, then the capture carries on. `+2 min` on the pill adds two
+minutes (up to ten at once), `Resume` ends it now, and saying the phrase again starts
+the two minutes afresh. Whoever does any of these, everyone's Hopp follows. A capture
+still listens while off the record, in memory, so that it can hear the phrase again.
+It takes a second or two to hear it, as with "Jeepers", so say it before the thing
+you don't want kept. Everyone needs a version of Hopp that knows about it: an older
+one keeps capturing.
+
 **Hooks.** Executables in `~/.config/hopp/hooks/capture-started` and
 `capture-complete` (or in `capture-complete.d/`) run in the background with
 the event as JSON on stdin: `id`, `room`, `title`, `participants`, `started_ms`,

@@ -28,7 +28,7 @@ import { CustomIcons } from "@/components/ui/icons";
 import { avatarGradient, HoppAvatar } from "@/components/ui/hopp-avatar";
 import clsx from "clsx";
 import { ChevronDownIcon } from "@radix-ui/react-icons";
-import { MoreHorizontal } from "lucide-react";
+import { HatGlasses, MoreHorizontal } from "lucide-react";
 import { HiLockClosed, HiMiniLink } from "react-icons/hi2";
 import { CgSpinner } from "react-icons/cg";
 import toast from "react-hot-toast";
@@ -38,6 +38,7 @@ import { useEndCall } from "@/lib/hooks";
 import { CoreParticipantState, typedInvoke } from "@/core_payloads";
 import { useQuery } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
+import { OFF_RECORD_COUNTDOWN_S, offRecordClock, useOffRecordSeconds } from "@/lib/off-record";
 import { getAllWindows } from "@tauri-apps/api/window";
 import { sounds } from "@/constants/sounds";
 
@@ -215,6 +216,7 @@ export function CallCenter() {
     <div className="flex h-[var(--app-height)] w-full flex-col gap-2.5 px-3 pb-3 pt-3.5">
       <CallHeader onCopyRoomLink={handleCopyRoomLink} />
       <CaptureNotice />
+      <OffRecordPill />
       <CallParticipants />
 
       {callTokens.role === ParticipantRole.CONTROLLER && (
@@ -487,6 +489,42 @@ function CaptureNotice() {
       <span className="truncate">
         {who} {names.length === 1 && who !== "You" ? "is" : "are"} transcribing this call
       </span>
+    </div>
+  );
+}
+
+/** The call is off the record, for everyone in it: how long is left, and the two ways to change that. */
+function OffRecordPill() {
+  const seconds = useOffRecordSeconds();
+  if (seconds === null) return null;
+  const ending = seconds <= OFF_RECORD_COUNTDOWN_S;
+  return (
+    <div
+      className={clsx(
+        "flex items-center gap-2 rounded-[12px] bg-raised py-1 pl-3 pr-1 text-xs ring-1 ring-inset animate-in fade-in-0 duration-300",
+        ending ? "ring-warning" : "ring-accent",
+      )}
+    >
+      <HatGlasses aria-hidden className={clsx("size-3.5 shrink-0", ending ? "text-warning" : "text-accent")} />
+      <span role="status" className="truncate font-semibold">
+        Off the record
+      </span>
+      <span role="timer" className={clsx("tabular-nums", ending ? "text-warning" : "text-muted-foreground")}>
+        {offRecordClock(seconds)}
+      </span>
+      <div className="ml-auto flex shrink-0 items-center gap-1">
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-6 rounded-[8px] px-2"
+          onClick={() => typedInvoke("off_record_more")}
+        >
+          +2 min
+        </Button>
+        <Button size="sm" className="h-6 rounded-[8px] px-2" onClick={() => typedInvoke("off_record_end")}>
+          Resume
+        </Button>
+      </div>
     </div>
   );
 }

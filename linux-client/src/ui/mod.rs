@@ -5,6 +5,7 @@
 //! - `viewer`: the shared screen as a tiled viewport that follows the sharer.
 //! - `viewer` in peek mode: the whole screen in `special:hopp`.
 //! - `toast`: incoming and outgoing calls as a layer-shell card.
+//! - `offrecord`: the pill while the call is off the record.
 //! - `heard`: the light round a tile and the bubble when someone says the wake word.
 //!
 //! The `Shell` opens and closes those windows from session state, so the call itself
@@ -21,6 +22,7 @@ mod home;
 mod hypr;
 mod keys;
 mod marks;
+mod offrecord;
 mod overlay;
 mod painted;
 mod palette;
@@ -72,6 +74,8 @@ pub struct Shell {
     /// the call card.
     cards: Option<(WindowHandle<cards::CardsView>, usize, bool)>,
     sharing: Option<WindowHandle<sharing::SharingView>>,
+    /// The "Off the record" pill, and whether it sits below the sharing pill.
+    off_record: Option<(WindowHandle<offrecord::OffRecordView>, bool)>,
     /// Others' marks over the monitor you share.
     marks: Option<WindowHandle<overlay::MarksOverlay>>,
     /// The marks overlay couldn't open over this share, and you've been told.
@@ -320,6 +324,20 @@ impl Shell {
         } else if !sharing && sharing_open {
             Self::close(cx, |shell| shell.sharing.take().map(|handle| handle.into()));
         }
+        // A layer surface can't move: it opens again when the sharing pill comes or goes.
+        let below = cx.global::<Shell>().sharing.is_some();
+        let want_pill = (session.read(cx).off_record.is_some() && Self::allowed(cx, "offrecord"))
+            .then_some(below);
+        let pill_open = cx.global::<Shell>().off_record.map(|(_, below)| below);
+        if pill_open.is_some() && pill_open != want_pill {
+            Self::close(cx, |shell| {
+                shell.off_record.take().map(|(handle, _)| handle.into())
+            });
+        }
+        if let Some(below) = want_pill.filter(|below| pill_open != Some(*below)) {
+            let handle = offrecord::open(session.clone(), below, cx);
+            cx.global_mut::<Shell>().off_record = handle.map(|handle| (handle, below));
+        }
         Self::sync_marks(true, cx);
         let clean = cx.global::<Shell>().clean_share == Some(true);
         // Drawing on your own screen while you share it: the pad over the same monitor.
@@ -553,6 +571,7 @@ impl Shell {
             | SessionEvent::CardsChanged
             | SessionEvent::DrawingChanged
             | SessionEvent::HeardChanged
+            | SessionEvent::OffRecordChanged
             | SessionEvent::SignedIn => {}
             // Frames change no windows; the views showing them redraw on their own.
             SessionEvent::MarksChanged => return Self::sync_marks(false, cx),
@@ -600,6 +619,9 @@ impl Shell {
         }
         if is(shell.sharing.map(Into::into)) {
             shell.sharing = None;
+        }
+        if is(shell.off_record.map(|(handle, _)| handle.into())) {
+            shell.off_record = None;
         }
         if is(shell.captures.map(Into::into)) {
             shell.captures = None;
@@ -659,6 +681,7 @@ pub fn open(engine: Engine, settings: Settings, options: Options) {
                 cards: None,
                 drawpad: None,
                 sharing: None,
+                off_record: None,
                 marks: None,
                 marks_failed: false,
                 clean_share: None,

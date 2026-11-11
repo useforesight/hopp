@@ -258,6 +258,12 @@ fn main() {
             words: Some(words),
         });
     }
+    if matches!(scene.as_str(), "offrecord" | "offrecord-ending") {
+        // Someone said "tinfoil hat": the pill, at the start and in its last seconds.
+        send(Event::OffRecord(Some(std::time::Duration::from_millis(
+            if scene == "offrecord" { 107_900 } else { 4_900 },
+        ))));
+    }
     if scene == "faces-silent" {
         send(Event::MicrophoneSilent(Some("USB Microphone".into())));
     }
@@ -580,6 +586,7 @@ fn main() {
         "faces" | "faces-sharing" | "faces-speaking" | "faces-silent" | "faces-heard" => "faces",
         // The pill alone: the pad (transparent) would cover it in the harness.
         "sharing-draw" | "sharing-stamp" => "sharing",
+        "offrecord-ending" => "offrecord",
         other => other,
     };
     ui::open(

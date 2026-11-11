@@ -857,6 +857,19 @@ impl Session {
             .context("Telling the call about the capture")
     }
 
+    /// Tell everyone in the call to go off the record, to stay off it for longer, or to
+    /// come back on (see `capture::pause`).
+    pub async fn set_pause(&self, pause: crate::capture::pause::Pause) -> Result<()> {
+        self.audio_room
+            .local_participant()
+            .set_attributes(HashMap::from([(
+                crate::capture::pause::ATTRIBUTE.into(),
+                pause.encode(),
+            )]))
+            .await
+            .context("Telling the call to go off the record")
+    }
+
     pub async fn disconnect(&mut self) {
         for task in self.event_tasks.drain(..) {
             task.abort();
@@ -910,6 +923,9 @@ fn participants(room: &Room) -> Vec<Participant> {
                 capturing: attributes
                     .get(CAPTURE_ATTRIBUTE)
                     .is_some_and(|value| value == "1"),
+                pause: attributes
+                    .get(crate::capture::pause::ATTRIBUTE)
+                    .and_then(|value| crate::capture::pause::Pause::parse(value)),
                 muted: !p.track_publications().values().any(|publication| {
                     publication.source() == TrackSource::Microphone && !publication.is_muted()
                 }),

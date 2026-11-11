@@ -14,6 +14,7 @@ use tokio::sync::{Notify, mpsc as async_mpsc, watch};
 
 use crate::{
     api::{ApiClient, RoomInfo, UserInfo},
+    capture::pause::Pause,
     convert::{self, ScreenSlot},
     frames::{self, CameraSlots, FrameSlot},
     media::{self, Session},
@@ -25,6 +26,17 @@ use crate::{
     wake,
 };
 
+/// What someone asks of the pause in a capture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OffRecord {
+    /// The phrase was said: two minutes from now.
+    Said,
+    /// Two minutes more.
+    More,
+    /// Back on the record now.
+    End,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Participant {
     pub identity: String,
@@ -33,6 +45,8 @@ pub struct Participant {
     pub capturing: bool,
     /// Their microphone is muted, or they have none in the call.
     pub muted: bool,
+    /// Their word on going off the record (see `capture::pause`).
+    pub pause: Option<Pause>,
 }
 
 /// How the capture of the current call is going, for the UI and the bar.
@@ -141,6 +155,8 @@ pub enum Command {
     /// Start capturing the call.
     StartCapture,
     StopCapture,
+    /// Off the record, for every client in the call (see `capture::pause`).
+    OffRecord(OffRecord),
     /// Mark this moment in the capture, with an optional label.
     Bookmark(Option<String>),
     /// Set what teammates see before ringing you.
@@ -193,6 +209,13 @@ pub enum Event {
         identity: Option<String>,
         words: Option<Vec<(String, bool)>>,
     },
+    /// The call is off the record for this much longer, on every client: nothing said or
+    /// shown is captured. `None` once it is back on.
+    OffRecord(Option<Duration>),
+    /// The capture heard someone say to go off the record.
+    OffRecordSaid,
+    /// The pause numbered so has run out, unless it was extended meanwhile.
+    OffRecordOver(u64),
     /// Your microphone gives no sound and reopening it hasn't helped: its name (empty for
     /// the system default). `None` once it works again.
     MicrophoneSilent(Option<String>),
@@ -530,6 +553,12 @@ struct Worker {
     recording: Option<crate::capture::recorder::Recorder>,
     /// Keyframes of the shared screen with everyone's ink, while capturing.
     moments: Option<crate::capture::moments::Moments>,
+    /// The newest word on going off the record that anyone in this call has given.
+    pause: Option<Pause>,
+    /// Off the record until then, by this computer's clock.
+    pause_ends: Option<Instant>,
+    /// What this client last told the call about it.
+    own_pause: Option<Pause>,
     /// Captures finishing their last transcriptions after the call.
     finishing: Vec<tokio::task::JoinHandle<()>>,
 }
@@ -603,6 +632,9 @@ impl Worker {
             tap: crate::capture::Tap::default(),
             recording: None,
             moments: None,
+            pause: None,
+            pause_ends: None,
+            own_pause: None,
             finishing: Vec::new(),
         }
     }
@@ -1227,6 +1259,7 @@ impl Worker {
             Command::Ui(request) => self.emit(Event::Ui(request)),
             Command::StartCapture => self.start_capture().await?,
             Command::StopCapture => self.stop_capture(true).await,
+            Command::OffRecord(ask) => self.set_off_record(ask).await,
             Command::Bookmark(label) => {
                 let own = self.session.as_ref().map(Session::own_name);
                 match self.tap.feed() {
@@ -1609,7 +1642,7 @@ impl Worker {
         }
         if let Some(session) = &self.session {
             let (identity, name) = (session.own_identity(), session.own_name());
-            if let Some(moments) = self.moments.as_mut() {
+            if let Some(moments) = self.on_record_moments() {
                 moments.stamp(&identity, &name, &message);
             }
         }
@@ -1640,7 +1673,7 @@ impl Worker {
             return;
         };
         let (identity, name) = (session.own_identity(), session.own_name());
-        if let Some(moments) = self.moments.as_mut() {
+        if let Some(moments) = self.on_record_moments() {
             moments.draw(&identity, &name, event);
         }
     }
@@ -1783,6 +1816,9 @@ impl Worker {
             }
             Event::TransportReconnected => {
                 self.transport_ready = true;
+                // Say it again, in case the server lost it with the connection.
+                self.own_pause = None;
+                self.tell_pause().await;
                 self.emit(Event::TransportReconnected);
             }
             Event::Participants(participants) => {
@@ -1806,6 +1842,7 @@ impl Worker {
                     feed.participants(self.capture_names(&participants));
                 }
                 self.participants = participants.clone();
+                self.follow_pauses().await;
                 // A departed controller loses its grant immediately.
                 if self.grant.active()
                     && !participants
@@ -1866,6 +1903,14 @@ impl Worker {
                 self.leave().await;
                 self.emit(Event::Disconnected(reason));
             }
+            Event::OffRecordSaid => self.set_off_record(OffRecord::Said).await,
+            Event::OffRecordOver(seq) => {
+                let over = self.pause.is_some_and(|pause| pause.seq == seq)
+                    && self.pause_ends.is_some_and(|ends| ends <= Instant::now());
+                if over {
+                    self.on_record();
+                }
+            }
             Event::CaptureChanged => {
                 let status = self
                     .recording
@@ -1916,7 +1961,7 @@ impl Worker {
             {
                 if self.moments.is_some() {
                     let name = self.participant_name(sender);
-                    if let Some(moments) = self.moments.as_mut() {
+                    if let Some(moments) = self.on_record_moments() {
                         moments.stamp(sender, &name, &message);
                     }
                 }
@@ -2003,7 +2048,7 @@ impl Worker {
         ) {
             if self.moments.is_some() {
                 let name = self.participant_name(sender);
-                if let Some(moments) = self.moments.as_mut() {
+                if let Some(moments) = self.on_record_moments() {
                     moments.draw(sender, &name, &event);
                 }
             }
@@ -2273,10 +2318,11 @@ impl Worker {
                 *published = Some([frame.width, frame.height]);
             }
             // A copy for the capture's keyframes, converted on the encoder's thread.
+            let off_record = self.pause_ends.is_some();
             let sampler = self
                 .moments
                 .as_mut()
-                .filter(|moments| moments.wants_sample())
+                .filter(|moments| !off_record && moments.wants_sample())
                 .map(|moments| {
                     moments.sampling();
                     moments.sampler()
@@ -2315,6 +2361,7 @@ impl Worker {
                 && let Some(frame) = &frame
                 && let Some(moments) = self.moments.as_mut()
                 && moments.wants_sample()
+                && self.pause_ends.is_none()
                 && !self.privacy_locked.load(Ordering::Acquire)
             {
                 moments.sample(frame.clone());
@@ -2419,6 +2466,11 @@ impl Worker {
     async fn leave(&mut self) {
         // Leaving removes us from the call, attribute and all; no need to wait on it.
         self.stop_capture(false).await;
+        self.pause = None;
+        self.own_pause = None;
+        if self.pause_ends.take().is_some() {
+            self.emit(Event::OffRecord(None));
+        }
         let was_joining = self.pending_join.is_some();
         if let Some(cancel) = self.pending_call_cancel.take() {
             let _ = cancel.send(true);
@@ -2520,6 +2572,102 @@ impl Worker {
         }
     }
 
+    /// Take the call off the record, give it more time or put it back on, and tell
+    /// everyone in the call to do the same.
+    async fn set_off_record(&mut self, ask: OffRecord) {
+        if self.session.is_none() {
+            return;
+        }
+        let now_ms = crate::capture::store::now_ms();
+        let pause = match ask {
+            OffRecord::Said => Pause::said(self.pause, now_ms),
+            OffRecord::More => Some(Pause::more(self.pause, now_ms)),
+            OffRecord::End => self.pause_ends.map(|_| Pause::end(self.pause)),
+        };
+        if let Some(pause) = pause {
+            self.adopt_pause(pause);
+            self.tell_pause().await;
+        }
+    }
+
+    /// Take up the newest word on the pause, from anyone. Older ones change nothing.
+    fn adopt_pause(&mut self, pause: Pause) {
+        if self.pause >= Some(pause) {
+            return;
+        }
+        self.pause = Some(pause);
+        let Some(left) = pause.left_ms(crate::capture::store::now_ms()) else {
+            self.on_record();
+            return;
+        };
+        let left = Duration::from_millis(left as u64);
+        if self.pause_ends.is_none() {
+            crate::logger::line("Capture: off the record");
+            if let Some(feed) = self.tap.feed() {
+                feed.off_record(true);
+            }
+        }
+        self.pause_ends = Some(Instant::now() + left);
+        self.emit(Event::OffRecord(Some(left)));
+        let over = self.internal_tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(left).await;
+            let _ = over.send(Event::OffRecordOver(pause.seq));
+        });
+    }
+
+    /// The capture's frames, unless the call is off the record: ink drawn then is in none.
+    fn on_record_moments(&mut self) -> Option<&mut crate::capture::moments::Moments> {
+        self.moments.as_mut().filter(|_| self.pause_ends.is_none())
+    }
+
+    /// Back on the record, if the call was off it.
+    fn on_record(&mut self) {
+        if self.pause_ends.take().is_none() {
+            return;
+        }
+        crate::logger::line("Capture: back on the record");
+        if let Some(feed) = self.tap.feed() {
+            feed.off_record(false);
+        }
+        // Ink drawn meanwhile was never noted; frames from here start clean.
+        if let Some(moments) = self.moments.as_mut() {
+            moments.screen_changed(self.capture.as_ref().map(|capture| &capture.target));
+        }
+        self.emit(Event::OffRecord(None));
+    }
+
+    /// Someone's attributes changed: follow the newest pause among them.
+    async fn follow_pauses(&mut self) {
+        let theirs =
+            crate::capture::pause::latest(self.participants.iter().filter_map(|p| p.pause));
+        if let Some(pause) = theirs {
+            self.adopt_pause(pause);
+        }
+        self.tell_pause().await;
+    }
+
+    /// Say what's in force yourself, so that it outlives whoever said it first leaving
+    /// the call and someone joining later still learns of it. Only while it matters:
+    /// off the record, or to take back a pause of your own.
+    async fn tell_pause(&mut self) {
+        let Some(pause) = self.pause.filter(|pause| self.own_pause != Some(*pause)) else {
+            return;
+        };
+        if self.pause_ends.is_none() && self.own_pause.is_none() {
+            return;
+        }
+        let Some(session) = &self.session else {
+            return;
+        };
+        self.own_pause = Some(pause);
+        match tokio::time::timeout(Duration::from_secs(3), session.set_pause(pause)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => crate::logger::line(format!("{error:#}")),
+            Err(_) => crate::logger::line("Telling the call to go off the record timed out"),
+        }
+    }
+
     async fn start_capture(&mut self) -> Result<()> {
         use crate::capture::{config, models, recorder, store};
         if self.recording.is_some() {
@@ -2536,6 +2684,7 @@ impl Worker {
         };
         let changed = self.internal_tx.clone();
         let wakes = self.internal_tx.clone();
+        let said = self.internal_tx.clone();
         let own = crate::protocol::canonical_identity(&session.own_identity()).to_owned();
         let recorder = recorder::Recorder::start(recorder::Options {
             room,
@@ -2552,6 +2701,9 @@ impl Worker {
                 let identity = (speaker != own).then(|| speaker.to_owned());
                 let words = words.map(crate::capture::asking::marked);
                 let _ = wakes.send(Event::WakeHeard { identity, words });
+            })),
+            off_record: Some(Arc::new(move || {
+                let _ = said.send(Event::OffRecordSaid);
             })),
         })?;
         // Lets other Hopp for Linux clients show that the call is being captured. Best
@@ -2579,6 +2731,10 @@ impl Worker {
                 self.moments = Some(moments);
             }
             Err(error) => crate::logger::line(format!("Capture: no keyframes: {error:#}")),
+        }
+        // Started while the call is off the record: it stays off.
+        if self.pause_ends.is_some() {
+            feed.off_record(true);
         }
         self.tap.set(Some(feed));
         let id = recorder.id();

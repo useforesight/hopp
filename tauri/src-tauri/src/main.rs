@@ -753,6 +753,28 @@ fn captures_stop(app: tauri::AppHandle) {
     }
 }
 
+/// Two more minutes off the record, for everyone in the call.
+#[tauri::command(async)]
+fn off_record_more(app: tauri::AppHandle) {
+    log::info!("off_record_more");
+    let data = app.state::<Mutex<AppData>>();
+    let data = data.lock().unwrap();
+    if let Err(e) = data.sender.send(Message::OffRecordMore) {
+        log::error!("off_record_more: failed to send message: {e:?}");
+    }
+}
+
+/// Back on the record now, for everyone in the call.
+#[tauri::command(async)]
+fn off_record_end(app: tauri::AppHandle) {
+    log::info!("off_record_end");
+    let data = app.state::<Mutex<AppData>>();
+    let data = data.lock().unwrap();
+    if let Err(e) = data.sender.send(Message::OffRecordEnd) {
+        log::error!("off_record_end: failed to send message: {e:?}");
+    }
+}
+
 #[tauri::command(async)]
 fn captures_start(app: tauri::AppHandle) {
     log::info!("captures_start");
@@ -1469,6 +1491,12 @@ fn forward_core_events(events_rx: std_mpsc::Receiver<Message>, app: tauri::AppHa
                     log::error!("forward_core_events: failed to emit core_capture_changed: {e:?}");
                 }
             }
+            Message::OffRecord(left_ms) => {
+                log::info!("forward_core_events: off the record: {left_ms:?}");
+                if let Err(e) = app.emit("core_off_record", left_ms) {
+                    log::error!("forward_core_events: failed to emit core_off_record: {e:?}");
+                }
+            }
             Message::AppAction(action) => {
                 log::info!("forward_core_events: {action:?}");
                 match action {
@@ -1949,6 +1977,8 @@ fn main() {
             captures_bookmark,
             captures_current,
             captures_stop,
+            off_record_more,
+            off_record_end,
             hopp::cards::cards_showing,
             hopp::cards::cards_settle,
             hopp::cards::cards_return_focus,

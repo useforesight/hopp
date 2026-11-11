@@ -115,6 +115,12 @@ pub mod engine {
         pub capturing: bool,
         pub muted: bool,
     }
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum OffRecord {
+        Said,
+        More,
+        End,
+    }
     #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
     pub struct CaptureStatus {
         pub id: String,
@@ -189,6 +195,7 @@ pub mod engine {
         StartCapture,
         StopCapture,
         Bookmark(Option<String>),
+        OffRecord(OffRecord),
         SetStatus(crate::api::UserStatus),
         AutoAway(bool),
     }
@@ -293,6 +300,9 @@ pub mod engine {
         CallsPresence(crate::api::CallsPresence),
         Capture(Option<CaptureStatus>),
         CaptureChanged,
+        OffRecord(Option<std::time::Duration>),
+        OffRecordSaid,
+        OffRecordOver(u64),
     }
     pub struct SharedFrames {
         pub remote: FrameSlot,
