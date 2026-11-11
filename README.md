@@ -39,7 +39,11 @@ Release builds connect to `pair.gethopp.app`, upstream's managed service, until 
 
 ## What's new
 
-### In the latest release (v1.4.0)
+### In the latest release (v1.5.0)
+
+- **Reactions.** A party popper in the call controls opens emoji, confetti, a gong, a table flip, a slow clap, fireworks, achievements, a disco, "ship it" and a soundboard. They play on everyone's screen, with sound, and you can turn the sounds off. Coming to the Linux client next.
+
+### Earlier, in v1.4.0
 
 - **Off the record.** Say "tinfoil hat" or "off the record" and every capture in the call pauses for two minutes. Everyone sees the time left, and anyone can add two minutes or resume. Beeps count down the last five seconds.
 - **Heard you.** When your capture hears someone say "Jeepers", a light runs round their tile and a bubble shows their words, well before an agent answers.
