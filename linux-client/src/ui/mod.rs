@@ -7,6 +7,7 @@
 //! - `toast`: incoming and outgoing calls as a layer-shell card.
 //! - `offrecord`: the pill while the call is off the record.
 //! - `heard`: the light round a tile and the bubble when someone says the wake word.
+//! - `reactions`: the tray of reactions to send, and the layer that plays them.
 //!
 //! The `Shell` opens and closes those windows from session state, so the call itself
 //! never depends on any one window staying open.
@@ -26,6 +27,7 @@ mod offrecord;
 mod overlay;
 mod painted;
 mod palette;
+mod reactions;
 mod session;
 mod settings;
 mod sharing;
@@ -87,6 +89,11 @@ pub struct Shell {
     drawpad: Option<WindowHandle<drawpad::DrawPad>>,
     captures: Option<WindowHandle<captures::CapturesView>>,
     settings: Option<WindowHandle<settings::SettingsView>>,
+    /// The reactions playing in this call, while any are (see `reactions`).
+    reactions: Option<Entity<reactions::Reactions>>,
+    /// Their layer, and the monitor it's over.
+    reactions_layer: Option<(WindowHandle<reactions::layer::ReactionsLayer>, String)>,
+    reactions_tray: Option<WindowHandle<reactions::tray::Tray>>,
     /// The user closed the faces window during this call; don't reopen it.
     faces_dismissed: bool,
     /// The user closed the viewer during this share; don't reopen it.
@@ -221,6 +228,163 @@ impl Shell {
     }
 
     /// Super+H: the whole shared screen over whatever you're doing, or back again.
+    pub fn reactions_tray_open(cx: &App) -> bool {
+        cx.global::<Shell>().reactions_tray.is_some()
+    }
+
+    /// The reactions button: the tray beside the call window, or closed if it's open.
+    pub fn toggle_reactions_tray(cx: &mut App) {
+        if Self::reactions_tray_open(cx) {
+            return Self::close_reactions_tray(cx);
+        }
+        let session = Self::session(cx);
+        if !Self::allowed(cx, "reactions") || !session.read(cx).connected {
+            return;
+        }
+        let spot = hypr::placed("hopp.faces").map(|placed| {
+            let (left, top) = reactions::tray::beside(placed.window, placed.monitor);
+            reactions::tray::Spot {
+                output: placed.output,
+                left,
+                top,
+            }
+        });
+        let handle = reactions::tray::open(session, spot, cx);
+        cx.global_mut::<Shell>().reactions_tray = handle;
+        Self::refresh_call_controls(cx);
+    }
+
+    pub fn close_reactions_tray(cx: &mut App) {
+        Self::close(cx, |shell| shell.reactions_tray.take().map(Into::into));
+        Self::refresh_call_controls(cx);
+    }
+
+    /// The reactions button shows whether the tray is open.
+    fn refresh_call_controls(cx: &mut App) {
+        let shell = cx.global::<Shell>();
+        let windows: Vec<gpui_kit::AnyWindowHandle> = [
+            shell.faces.map(Into::into),
+            shell.viewer.map(Into::into),
+            shell.peek.map(Into::into),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        for window in windows {
+            let _ = window.update(cx, |_, window, _| window.refresh());
+        }
+    }
+
+    pub fn set_reaction_sounds(on: bool, cx: &mut App) {
+        Self::session(cx).update(cx, |session, cx| session.set_reaction_sounds(on, cx));
+        if let Some(reactions) = cx.global::<Shell>().reactions.clone() {
+            reactions.update(cx, |reactions, _| reactions.set_sounds(on));
+        }
+    }
+
+    /// Play a reaction over the monitor with the call window, else the focused one.
+    /// Not over the monitor you share unless viewers won't see it there (as with the
+    /// marks overlay); then it's only heard.
+    fn play_reaction(played: &reactions::Played, cx: &mut App) {
+        if !Self::allowed(cx, "reactions") {
+            return;
+        }
+        let session = Self::session(cx);
+        let placed = hypr::placed("hopp.faces").or_else(|| hypr::placed("hopp.viewer"));
+        let call = placed.as_ref().map(|placed| {
+            let window = placed.window;
+            [window.x, window.y, window.width, window.height].map(|value| value as f32)
+        });
+        let (output, (width, height)) = match placed {
+            Some(placed) => (Some(placed.output), placed.monitor),
+            None => hypr::focused_monitor()
+                .map(|(output, size)| (Some(output), size))
+                .unwrap_or_else(|| {
+                    let size = cx
+                        .primary_display()
+                        .map(|display| display.bounds().size)
+                        .map_or((1440., 900.), |size| {
+                            (
+                                f64::from(f32::from(size.width)),
+                                f64::from(f32::from(size.height)),
+                            )
+                        });
+                    (None, size)
+                }),
+        };
+        let size = [width as f32, height as f32];
+        let shared = {
+            let state = session.read(cx);
+            state
+                .share_target
+                .as_ref()
+                .filter(|_| state.sharing)
+                .and_then(|target| target.output_name.clone())
+        };
+        let over_share = shared.is_some() && shared == output;
+        let visible = !over_share
+            || *cx
+                .global_mut::<Shell>()
+                .clean_share
+                .get_or_insert_with(hypr::clean_share);
+        let sounds = session.read(cx).settings.reaction_sounds;
+        let entity = match cx.global::<Shell>().reactions.clone() {
+            Some(entity) => entity,
+            None => {
+                let entity = cx.new(|cx| reactions::Reactions::new(size, sounds, cx));
+                cx.subscribe(&entity, |_, _: &reactions::Idle, cx| {
+                    Self::close_reactions_layer(cx);
+                    cx.global_mut::<Shell>().reactions = None;
+                })
+                .detach();
+                cx.global_mut::<Shell>().reactions = Some(entity.clone());
+                entity
+            }
+        };
+        let open_on = cx
+            .global::<Shell>()
+            .reactions_layer
+            .as_ref()
+            .map(|(_, output)| output.clone());
+        let here = output.clone().unwrap_or_default();
+        if open_on
+            .as_ref()
+            .is_some_and(|open_on| !visible || *open_on != here)
+        {
+            Self::close_reactions_layer(cx);
+        }
+        if visible && cx.global::<Shell>().reactions_layer.is_none() {
+            let handle =
+                reactions::layer::open(entity.clone(), output.as_deref(), (size[0], size[1]), cx);
+            cx.global_mut::<Shell>().reactions_layer = handle.map(|handle| (handle, here));
+        }
+        entity.update(cx, |reactions, cx| {
+            reactions.set_sounds(sounds);
+            reactions.resize(size);
+            reactions.play(played, call, cx);
+        });
+    }
+
+    fn close_reactions_layer(cx: &mut App) {
+        Self::close(cx, |shell| {
+            shell
+                .reactions_layer
+                .take()
+                .map(|(handle, _)| handle.into())
+        });
+    }
+
+    /// The call is over: the tray goes, and whatever's playing stops at once.
+    fn end_reactions(cx: &mut App) {
+        if Self::reactions_tray_open(cx) {
+            Self::close_reactions_tray(cx);
+        }
+        if let Some(reactions) = cx.global_mut::<Shell>().reactions.take() {
+            reactions.update(cx, |reactions, _| reactions.stop());
+        }
+        Self::close_reactions_layer(cx);
+    }
+
     pub fn toggle_peek(cx: &mut App) {
         if let Some(handle) = cx.global_mut::<Shell>().peek.take() {
             let _ = handle.update(cx, |_, window, _| window.remove_window());
@@ -314,6 +478,9 @@ impl Shell {
                 state.sharing,
             )
         };
+        if !in_call {
+            Self::end_reactions(cx);
+        }
         let sharing = sharing && Self::allowed(cx, "sharing");
         let sharing_open = cx.global::<Shell>().sharing.is_some();
         if sharing && !sharing_open {
@@ -576,6 +743,7 @@ impl Shell {
             // Frames change no windows; the views showing them redraw on their own.
             SessionEvent::MarksChanged => return Self::sync_marks(false, cx),
             SessionEvent::Screen | SessionEvent::Cameras => return,
+            SessionEvent::Reaction(played) => return Self::play_reaction(played, cx),
         }
         Self::sync(cx);
     }
@@ -628,6 +796,20 @@ impl Shell {
         }
         if is(shell.settings.map(Into::into)) {
             shell.settings = None;
+        }
+        if is(shell
+            .reactions_layer
+            .as_ref()
+            .map(|(handle, _)| (*handle).into()))
+        {
+            shell.reactions_layer = None;
+        }
+        let tray_closed = is(shell.reactions_tray.map(Into::into));
+        if tray_closed {
+            shell.reactions_tray = None;
+        }
+        if tray_closed {
+            Self::refresh_call_controls(cx);
         }
         if undocked {
             // Faces were in the closed viewer's bands; bring the call window back.
@@ -687,6 +869,9 @@ pub fn open(engine: Engine, settings: Settings, options: Options) {
                 clean_share: None,
                 captures: None,
                 settings: None,
+                reactions: None,
+                reactions_layer: None,
+                reactions_tray: None,
                 faces_dismissed: false,
                 viewer_dismissed: false,
                 docked_viewer: false,

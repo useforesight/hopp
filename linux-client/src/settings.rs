@@ -25,6 +25,9 @@ pub struct Settings {
     /// Show you as Away while the desktop is locked, except during a call.
     #[serde(default = "yes")]
     pub auto_away: bool,
+    /// Play sound with reactions (the reactions tray's switch).
+    #[serde(default = "yes")]
+    pub reaction_sounds: bool,
 }
 
 fn yes() -> bool {
@@ -64,6 +67,7 @@ impl Default for Settings {
             start_microphone: false,
             start_camera: false,
             auto_away: true,
+            reaction_sounds: true,
         }
     }
 }

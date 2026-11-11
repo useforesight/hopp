@@ -123,6 +123,8 @@ pub enum Command {
     SendInput(InputEvent),
     /// Place, update or remove one of your stamps.
     SendStamp(crate::protocol::StampMessage),
+    /// A reaction to everyone in the call, played here at once too.
+    SendReaction(crate::protocol::Reaction),
     ShareClipboard,
     SelectAudio {
         input: Option<String>,
@@ -239,6 +241,14 @@ pub enum Event {
     Stamp {
         sender: String,
         message: crate::protocol::StampMessage,
+    },
+    /// A reaction to play: someone's from the call, or your own (`mine`). `name` is their
+    /// display name.
+    Reaction {
+        sender: String,
+        name: String,
+        mine: bool,
+        reaction: crate::protocol::Reaction,
     },
     Pointer {
         sender: String,
@@ -504,6 +514,7 @@ struct Worker {
     screen_ramp: Option<tokio::task::JoinHandle<()>>,
     input: Option<NativeInput>,
     grant: ControlGrant,
+    reaction_limit: crate::reactions::RateLimit,
     remote_host: Option<String>,
     peer_control: bool,
     participants: Vec<Participant>,
@@ -587,6 +598,7 @@ impl Worker {
             screen_ramp: None,
             input: None,
             grant: ControlGrant::default(),
+            reaction_limit: Default::default(),
             remote_host: None,
             peer_control: false,
             participants: vec![],
@@ -1093,6 +1105,7 @@ impl Worker {
                 self.send_input(event).await?
             }
             Command::SendStamp(message) => self.send_stamp(message).await?,
+            Command::SendReaction(reaction) => self.send_reaction(reaction).await?,
             Command::ShareClipboard => {
                 if !self.peer_control || self.privacy_locked.load(Ordering::Acquire) {
                     bail!("Your partner must grant control before you send clipboard text");
@@ -1664,6 +1677,41 @@ impl Worker {
         Ok(())
     }
 
+    /// One of your reactions, played here and sent to everyone in the call, within the
+    /// same limits as everyone else's.
+    async fn send_reaction(&mut self, reaction: crate::protocol::Reaction) -> Result<()> {
+        let Some(reaction) = reaction.tidy() else {
+            return Ok(());
+        };
+        if !self.transport_ready || self.privacy_locked.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let session = self.session.as_ref().context("Call ended")?;
+        let (identity, name) = (session.own_identity(), session.own_name());
+        if !self
+            .reaction_limit
+            .allow(&identity, &reaction, Instant::now())
+        {
+            return Ok(());
+        }
+        let payload = serde_json::to_vec(&reaction)?;
+        self.emit(Event::Reaction {
+            sender: identity,
+            name,
+            mine: true,
+            reaction,
+        });
+        let session = self.session.as_ref().context("Call ended")?;
+        session
+            .send_data(
+                payload,
+                Some(crate::protocol::REACTION_TOPIC.into()),
+                vec![],
+            )
+            .await?;
+        Ok(())
+    }
+
     /// Your own ink goes into the capture's frames as well as to the call.
     fn own_drawing(&mut self, event: &InputEvent) {
         if self.moments.is_none() || self.remote_host.is_none() && self.capture.is_none() {
@@ -1968,6 +2016,21 @@ impl Worker {
                 self.emit(Event::Stamp {
                     sender: sender.into(),
                     message,
+                });
+            }
+            return Ok(());
+        }
+        if topic == Some(crate::protocol::REACTION_TOPIC) {
+            if let Some(reaction) = crate::protocol::Reaction::from_packet(payload)
+                && self.transport_ready
+                && !self.privacy_locked.load(Ordering::Acquire)
+                && self.reaction_limit.allow(sender, &reaction, Instant::now())
+            {
+                self.emit(Event::Reaction {
+                    sender: sender.into(),
+                    name: self.participant_name(sender),
+                    mine: false,
+                    reaction,
                 });
             }
             return Ok(());

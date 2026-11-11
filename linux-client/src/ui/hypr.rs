@@ -153,6 +153,27 @@ fn placed_in(clients: &Value, monitors: &Value, class: &str, pid: u32) -> Option
     })
 }
 
+/// The monitor with the keyboard focus: its output name and logical size.
+pub fn focused_monitor() -> Option<(String, (f64, f64))> {
+    std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE")?;
+    focused_in(&hyprctl_json("monitors")?)
+}
+
+fn focused_in(monitors: &Value) -> Option<(String, (f64, f64))> {
+    let monitor = monitors
+        .as_array()?
+        .iter()
+        .find(|monitor| monitor["focused"] == true)?;
+    let scale = monitor["scale"].as_f64().filter(|scale| *scale > 0.)?;
+    Some((
+        monitor["name"].as_str()?.to_owned(),
+        (
+            monitor["width"].as_f64()? / scale,
+            monitor["height"].as_f64()? / scale,
+        ),
+    ))
+}
+
 /// Resize this process's window with `class` to `width`×`height` logical pixels.
 /// Runs in the background and retries briefly while the window is being mapped.
 pub fn fit(class: &'static str, width: f32, height: f32) {
@@ -371,6 +392,16 @@ mod tests {
         assert_eq!(reserved_in(&monitors, "eDP-1"), Some([0., 37., 0., 0.]));
         assert_eq!(reserved_in(&monitors, "DP-2"), Some([0.; 4]));
         assert_eq!(reserved_in(&monitors, "HDMI-A-1"), None);
+    }
+
+    #[test]
+    fn the_focused_monitor_is_found_at_its_logical_size() {
+        let monitors = serde_json::json!([
+            {"name": "eDP-1", "width": 3200, "height": 2000, "scale": 2.0, "focused": false},
+            {"name": "DP-2", "width": 5120, "height": 2160, "scale": 1.6, "focused": true}
+        ]);
+        assert_eq!(focused_in(&monitors), Some(("DP-2".into(), (3200., 1350.))));
+        assert_eq!(focused_in(&serde_json::json!([])), None);
     }
 
     #[test]

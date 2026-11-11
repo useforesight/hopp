@@ -218,6 +218,127 @@ impl StampMessage {
     }
 }
 
+/// Reactions: confetti, a gong, fireworks… that play on everyone's screen in the call. They
+/// go out on their own topic, [`REACTION_TOPIC`], so clients that don't know them ignore
+/// them, and clients that know them ignore kinds they don't.
+pub const REACTION_TOPIC: &str = "hopp_reaction";
+/// Packets bigger than this are dropped unread.
+pub const REACTION_PACKET_MAX: usize = 2 * 1024;
+/// The most characters of a reaction's words.
+pub const REACTION_TEXT_MAX: usize = 60;
+pub const REACTION_KINDS: [&str; 11] = [
+    "confetti",
+    "gong",
+    "table_flip",
+    "emoji",
+    "sound",
+    "clap",
+    "fireworks",
+    "achievement",
+    "disco",
+    "disco_end",
+    "ship_it",
+];
+pub const REACTION_EMOJI: [&str; 8] = [
+    "party", "fire", "applause", "lol", "rocket", "hundred", "love", "shock",
+];
+pub const REACTION_SOUNDS: [&str; 8] = [
+    "airhorn",
+    "badumtss",
+    "sad_trombone",
+    "crickets",
+    "drumroll",
+    "chaching",
+    "wooow",
+    "applause",
+];
+
+/// One reaction, as it's sent to the call.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct Reaction {
+    /// One of [`REACTION_KINDS`].
+    pub kind: String,
+    /// Which emoji or sound.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choice: Option<String>,
+    /// How big: the tap streak of confetti, the rockets of fireworks.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub level: u8,
+    /// The achievement's title, or what shipped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// The identity an achievement is for. None: everyone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+}
+
+fn is_zero(level: &u8) -> bool {
+    *level == 0
+}
+
+impl Reaction {
+    pub fn new(kind: &str) -> Self {
+        Self {
+            kind: kind.into(),
+            choice: None,
+            level: 0,
+            text: None,
+            to: None,
+        }
+    }
+
+    /// The reaction in a packet from the call, if it's one this client knows.
+    pub fn from_packet(payload: &[u8]) -> Option<Self> {
+        if payload.len() > REACTION_PACKET_MAX {
+            return None;
+        }
+        serde_json::from_slice::<Self>(payload).ok()?.tidy()
+    }
+
+    /// Within bounds, or None for a kind or choice this client doesn't know. The Mac
+    /// client's `socket_lib::Reaction::tidy` keeps the same rules.
+    pub fn tidy(mut self) -> Option<Self> {
+        if !REACTION_KINDS.contains(&self.kind.as_str()) {
+            return None;
+        }
+        let choices: &[&str] = match self.kind.as_str() {
+            "emoji" => &REACTION_EMOJI,
+            "sound" => &REACTION_SOUNDS,
+            _ => &[],
+        };
+        if choices.is_empty() {
+            self.choice = None;
+        } else if !self
+            .choice
+            .as_deref()
+            .is_some_and(|choice| choices.contains(&choice))
+        {
+            return None;
+        }
+        self.level = match self.kind.as_str() {
+            "confetti" => self.level.min(4),
+            "fireworks" => self.level.clamp(1, 10),
+            _ => 0,
+        };
+        let words = matches!(self.kind.as_str(), "achievement" | "ship_it");
+        self.text = self
+            .text
+            .filter(|_| words)
+            .map(|text| {
+                text.trim()
+                    .chars()
+                    .take(REACTION_TEXT_MAX)
+                    .collect::<String>()
+            })
+            .map(|text| text.trim_end().to_string())
+            .filter(|text| !text.is_empty());
+        self.to = self
+            .to
+            .filter(|to| self.kind == "achievement" && !to.is_empty());
+        Some(self)
+    }
+}
+
 fn valid_clipboard_packet(p: &ClipboardPacket) -> bool {
     p.total_packets > 0
         && p.total_packets <= 256
@@ -355,6 +476,71 @@ mod tests {
         let event: InputEvent = serde_json::from_str(fixture).unwrap();
         assert!(event.valid());
         assert_eq!(serde_json::to_string(&event).unwrap(), fixture);
+    }
+
+    #[test]
+    fn reactions_from_other_clients_read_as_sent() {
+        let examples = [
+            r#"{"kind":"emoji","choice":"fire"}"#,
+            r#"{"kind":"confetti","level":2}"#,
+            r#"{"kind":"fireworks","level":7}"#,
+            r#"{"kind":"achievement","text":"Fixed the flaky test","to":"room:r:u"}"#,
+            r#"{"kind":"ship_it","text":"v1.4.0"}"#,
+            r#"{"kind":"gong"}"#,
+            r#"{"kind":"sound","choice":"sad_trombone"}"#,
+        ];
+        for example in examples {
+            let reaction = Reaction::from_packet(example.as_bytes()).expect(example);
+            assert_eq!(serde_json::to_string(&reaction).unwrap(), example);
+        }
+        // The spec's examples are spaced out.
+        let spaced = r#"{"kind": "emoji", "choice": "fire"}"#;
+        assert_eq!(
+            Reaction::from_packet(spaced.as_bytes()).unwrap().choice,
+            Some("fire".into())
+        );
+    }
+
+    #[test]
+    fn reactions_this_client_cant_play_are_dropped() {
+        for packet in [
+            r#"{"kind":"kazoo"}"#,
+            r#"{"kind":"emoji","choice":"kazoo"}"#,
+            r#"{"kind":"emoji"}"#,
+            r#"{"kind":"sound","choice":"fire"}"#,
+            r#"{"choice":"fire"}"#,
+            r#"{"kind":"gong","level":300}"#,
+            r#"{"kind":"gong","level":-1}"#,
+            r#"{"kind":7}"#,
+            "not json",
+            "",
+        ] {
+            assert_eq!(Reaction::from_packet(packet.as_bytes()), None, "{packet}");
+        }
+        let huge = format!(
+            r#"{{"kind":"ship_it","text":"{}"}}"#,
+            "x".repeat(REACTION_PACKET_MAX)
+        );
+        assert_eq!(Reaction::from_packet(huge.as_bytes()), None);
+    }
+
+    #[test]
+    fn reactions_keep_within_bounds() {
+        let read = |packet: &str| Reaction::from_packet(packet.as_bytes()).unwrap();
+        assert_eq!(read(r#"{"kind":"confetti","level":9}"#).level, 4);
+        assert_eq!(read(r#"{"kind":"fireworks"}"#).level, 1);
+        assert_eq!(read(r#"{"kind":"fireworks","level":99}"#).level, 10);
+        assert_eq!(read(r#"{"kind":"gong","level":3}"#).level, 0);
+        let gong = read(r#"{"kind":"gong","choice":"fire","text":"hi","to":"x","later":1}"#);
+        assert_eq!((gong.choice, gong.text, gong.to), (None, None, None));
+        let long = read(&format!(
+            r#"{{"kind":"ship_it","text":"  {}  "}}"#,
+            "é".repeat(80)
+        ));
+        assert_eq!(long.text.unwrap().chars().count(), REACTION_TEXT_MAX);
+        assert_eq!(read(r#"{"kind":"ship_it","text":"   "}"#).text, None);
+        assert_eq!(read(r#"{"kind":"achievement","to":""}"#).to, None);
+        assert_eq!(read(r#"{"kind":"ship_it","to":"x"}"#).to, None);
     }
 }
 
