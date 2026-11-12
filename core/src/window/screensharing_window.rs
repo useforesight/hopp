@@ -1627,6 +1627,31 @@ impl ScreensharingWindow {
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } => {
+                // While you control their screen, keys are theirs.
+                let controlling = self.mouse_in_participant_area
+                    && self.state.active_tab == "control"
+                    && self.state.remote_control_allowed;
+                if let Some(key) = crate::window_manager::window_key(key_event, self.modifiers)
+                    .filter(|_| !controlling)
+                {
+                    use crate::window_manager::WindowKey;
+                    match key {
+                        WindowKey::Minimise => self.window.set_minimized(true),
+                        WindowKey::Close => {
+                            input_events.extend(self.release_stamp());
+                            input_events.extend(self.stamp_input(StampInput::Finish));
+                            self.drop_note();
+                            self.window.set_visible(false);
+                        }
+                        key => {
+                            let _ = self
+                                .event_loop_proxy
+                                .send_event(crate::UserEvent::WindowKey(key));
+                        }
+                    }
+                    return input_events;
+                }
+
                 // Intercept Cmd+Q to gracefully exit instead of hard quit
                 #[cfg(target_os = "macos")]
                 if key_event.state.is_pressed() && self.modifiers.super_key() {

@@ -987,6 +987,25 @@ impl<'a> Application<'a> {
         }
     }
 
+    /// ⌘`: from the faces to their screen, or back.
+    fn focus_next_call_window(&mut self) {
+        let camera_focused = self.camera_window.as_ref().is_some_and(|w| w.has_focus());
+        let screen_visible = self
+            .screensharing_window
+            .as_ref()
+            .is_some_and(|w| w.is_visible());
+        let camera_visible = self.camera_window.as_ref().is_some_and(|w| w.is_visible());
+        if camera_focused && screen_visible {
+            if let Some(screen) = &mut self.screensharing_window {
+                screen.focus_window();
+            }
+        } else if camera_visible {
+            if let Some(camera) = &self.camera_window {
+                camera.focus_window();
+            }
+        }
+    }
+
     fn close_camera_window(&mut self) {
         log::info!("close_camera_window");
         if let Some(cam) = &mut self.camera_window {
@@ -2949,6 +2968,14 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                 log::info!("user_event: CloseCameraWindow");
                 self.close_camera_window();
             }
+            UserEvent::WindowKey(key) => {
+                log::info!("user_event: WindowKey {key:?}");
+                match key {
+                    window_manager::WindowKey::HideAll => window_manager::hide_all(),
+                    window_manager::WindowKey::NextWindow => self.focus_next_call_window(),
+                    _ => {}
+                }
+            }
             UserEvent::BringWindowsToFront => {
                 log::info!("user_event: BringWindowsToFront");
                 let mut focused = false;
@@ -3792,6 +3819,8 @@ fn local_tool_mode(enabled: &socket_lib::DrawingEnabled) -> room_service::Drawin
 
 #[derive(Debug, Clone)]
 pub enum UserEvent {
+    /// A window key pressed in a call window that needs more than that window.
+    WindowKey(window_manager::WindowKey),
     CursorPosition(f32, f32, String),
     MouseClick(MouseClickData, String),
     ControllerCursorEnabled(bool),

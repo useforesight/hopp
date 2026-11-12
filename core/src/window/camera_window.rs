@@ -227,6 +227,8 @@ pub struct CameraWindow {
     screensharing_active: bool,
     resize_timer: Option<Instant>,
     visible: bool,
+    /// Whether the window floats over others: only while it's pinned.
+    on_top: bool,
 }
 
 pub fn camera_window_attributes() -> WindowAttributes {
@@ -244,16 +246,12 @@ pub fn camera_window_attributes() -> WindowAttributes {
 
     #[cfg(target_os = "macos")]
     let attrs = {
-        use winit::{
-            platform::macos::WindowAttributesExtMacOS,
-            window::{WindowButtons, WindowLevel},
-        };
+        use winit::{platform::macos::WindowAttributesExtMacOS, window::WindowButtons};
         attrs
             .with_title_hidden(true)
             .with_titlebar_transparent(true)
             .with_fullsize_content_view(true)
             .with_transparent(true)
-            .with_window_level(WindowLevel::AlwaysOnTop)
             .with_enabled_buttons(WindowButtons::MINIMIZE)
     };
     attrs
@@ -354,6 +352,7 @@ impl CameraWindow {
             screensharing_active: false,
             resize_timer: None,
             visible: true,
+            on_top: false,
         })
     }
 
@@ -392,6 +391,10 @@ impl CameraWindow {
             log::error!("CameraWindow::stop_redraw_thread: failed to send Stop: {e:?}");
         }
         self.redraw_thread.take();
+    }
+
+    pub fn has_focus(&self) -> bool {
+        self.window.has_focus()
     }
 
     pub fn is_visible(&self) -> bool {
@@ -556,6 +559,21 @@ impl CameraWindow {
             ..
         } = event
         {
+            if let Some(key) = crate::window_manager::window_key(key_event, self.modifiers) {
+                use crate::window_manager::WindowKey;
+                let event = match key {
+                    WindowKey::Minimise => {
+                        self.window.set_minimized(true);
+                        None
+                    }
+                    WindowKey::Close => Some(crate::UserEvent::CloseCameraWindow),
+                    key => Some(crate::UserEvent::WindowKey(key)),
+                };
+                if let Some(event) = event {
+                    let _ = self.event_loop_proxy.send_event(event);
+                }
+                return;
+            }
             if key_event.state.is_pressed() && self.modifiers.super_key() {
                 if let winit::keyboard::Key::Character(ref ch) = key_event.logical_key {
                     if ch.as_ref() == "q" {
@@ -903,6 +921,17 @@ impl CameraWindow {
     /// Recompute what follows from the current viewport size.
     fn sync_compact_constraints(&mut self) {
         self.state.is_compact = self.state.viewport_size.width < COMPACT_WIDTH_THRESHOLD;
+
+        // Pinned, the faces float over everything. Full size, they're a window like any
+        // other, so they don't sit on top of a shared screen.
+        if self.on_top != self.state.is_compact {
+            self.on_top = self.state.is_compact;
+            self.window.set_window_level(if self.on_top {
+                winit::window::WindowLevel::AlwaysOnTop
+            } else {
+                winit::window::WindowLevel::Normal
+            });
+        }
 
         // Only the header has the device menus. One left open would come back with the header.
         let (controls_placement, _) = controls_layout(self.state.viewport_size);

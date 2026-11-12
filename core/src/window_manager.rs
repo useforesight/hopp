@@ -82,6 +82,60 @@ pub fn ensure_on_screen(window: &Window) {
     }
 }
 
+/// The usual Mac window keys. The call windows belong to a helper with no menu, so nothing
+/// would give them these otherwise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowKey {
+    /// ⌘H: hide every call window. The call carries on.
+    HideAll,
+    /// ⌘M
+    Minimise,
+    /// ⌘W: put this window away. The call carries on.
+    Close,
+    /// ⌘`: the other call window.
+    NextWindow,
+}
+
+/// Which window key this is, if any. Only on macOS, where these are what people expect.
+pub fn window_key(
+    event: &winit::event::KeyEvent,
+    modifiers: winit::keyboard::ModifiersState,
+) -> Option<WindowKey> {
+    use winit::keyboard::{Key, KeyCode, PhysicalKey};
+    if !cfg!(target_os = "macos")
+        || !event.state.is_pressed()
+        || !modifiers.super_key()
+        || modifiers.control_key()
+        || modifiers.alt_key()
+    {
+        return None;
+    }
+    if event.physical_key == PhysicalKey::Code(KeyCode::Backquote) {
+        return Some(WindowKey::NextWindow);
+    }
+    if modifiers.shift_key() {
+        return None;
+    }
+    let Key::Character(ch) = &event.logical_key else {
+        return None;
+    };
+    match ch.to_lowercase().as_str() {
+        "h" => Some(WindowKey::HideAll),
+        "m" => Some(WindowKey::Minimise),
+        "w" => Some(WindowKey::Close),
+        _ => None,
+    }
+}
+
+/// Hides every window the helper has, as ⌘H does for an app. Showing any of them again
+/// brings them all back.
+pub fn hide_all() {
+    #[cfg(target_os = "macos")]
+    if let Some(mtm) = objc2::MainThreadMarker::new() {
+        objc2_app_kit::NSApplication::sharedApplication(mtm).hide(None);
+    }
+}
+
 /// Brings a window you may have lost back to you, before it's shown. A hidden window, or one
 /// left on another Space, comes to the screen with your pointer and the Space you're on. One
 /// you can already see stays where you put it.

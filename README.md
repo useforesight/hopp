@@ -42,6 +42,7 @@ Release builds connect to `pair.gethopp.app`, upstream's managed service, until 
 ### In the latest release (v1.5.1)
 
 - **Who's sharing.** The sharer's tile in the camera window has a green ring and a "Sharing" badge; click it to see their screen. The shared screen opens on the screen and Space you're on, rather than wherever it was last, and the call panel's button names whose screen it is.
+- **Call windows behave.** The faces only float on top when pinned, and ⌘H, ⌘M, ⌘W and ⌘` work in the call windows.
 
 ### Earlier, in v1.5.0
 
