@@ -2318,8 +2318,8 @@ impl ScreensharingWindow {
                         &self.screen_share_buffer,
                         &self.participants_manager,
                         &self.click_animation_renderer,
-                        true,
                         (
+                            true,
                             self.layout(),
                             self.prefs.faces_in_shared,
                             &mut self.face_frame_ids,
@@ -2549,8 +2549,9 @@ impl ScreensharingWindow {
         screen_share_buffer: &'a Arc<crate::livekit::video::VideoBufferManager>,
         participants: &'a ParticipantsManager,
         click_animation_renderer: &'a ClickAnimationRenderer,
-        skip_buffer: bool,
-        (layout, faces_in_shared, face_frame_ids): (
+        // This frame: whether their screen has a new picture, where things go, and the faces.
+        (skip_buffer, layout, faces_in_shared, face_frame_ids): (
+            bool,
             ShareLayout,
             FacesInShared,
             &mut HashMap<String, u64>,
@@ -3075,8 +3076,8 @@ impl ScreensharingWindow {
                 &self.screen_share_buffer,
                 &self.participants_manager,
                 &self.click_animation_renderer,
-                skip_buffer,
                 (
+                    skip_buffer,
                     self.layout(),
                     self.prefs.faces_in_shared,
                     &mut self.face_frame_ids,
