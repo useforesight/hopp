@@ -2284,10 +2284,10 @@ fn strip_size(faces: usize) -> (f64, f64) {
 }
 
 /// Who the strip shows, in order, and how many more there are. Not you, unless you're alone.
-fn strip_people<'p>(
-    participants: &'p HashMap<String, ParticipantInfo>,
+fn strip_people(
+    participants: &HashMap<String, ParticipantInfo>,
     self_hidden: bool,
-) -> (Vec<(&'p String, &'p ParticipantInfo)>, usize) {
+) -> (Vec<(&String, &ParticipantInfo)>, usize) {
     let mut people: Vec<(&String, &ParticipantInfo)> = participants
         .iter()
         .filter(|(identity, _)| !self_hidden || identity.as_str() != "local")
