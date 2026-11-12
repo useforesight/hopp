@@ -92,29 +92,31 @@ impl Heard {
     }
 }
 
-/// The point `turn` (0–1) of the way round a square of `side` with rounded corners,
-/// clockwise from the end of the top-left corner.
-pub fn edge_point(side: f32, radius: f32, turn: f32) -> (f32, f32) {
+/// The point `turn` (0–1) of the way round a `width` × `height` tile with rounded
+/// corners, clockwise from the end of the top-left corner.
+pub fn edge_point(width: f32, height: f32, radius: f32, turn: f32) -> (f32, f32) {
     use std::f32::consts::FRAC_PI_2;
-    let radius = radius.clamp(0., side / 2.);
-    let straight = side - 2. * radius;
+    let radius = radius.clamp(0., width.min(height) / 2.);
+    let (across, down) = (width - 2. * radius, height - 2. * radius);
     let arc = FRAC_PI_2 * radius;
-    let mut along = turn.rem_euclid(1.) * 4. * (straight + arc);
+    let mut along = turn.rem_euclid(1.) * 2. * (across + down + 2. * arc);
     // Each edge, then the corner it runs into: top, right, bottom, left.
+    let straights = [across, down, across, down];
     let starts = [
         (radius, 0.),
-        (side, radius),
-        (side - radius, side),
-        (0., side - radius),
+        (width, radius),
+        (width - radius, height),
+        (0., height - radius),
     ];
     let directions = [(1., 0.), (0., 1.), (-1., 0.), (0., -1.)];
     let corners = [
-        (side - radius, radius),
-        (side - radius, side - radius),
-        (radius, side - radius),
+        (width - radius, radius),
+        (width - radius, height - radius),
+        (radius, height - radius),
         (radius, radius),
     ];
     for edge in 0..4 {
+        let straight = straights[edge];
         if along <= straight {
             return (
                 starts[edge].0 + directions[edge].0 * along,
@@ -134,9 +136,14 @@ pub fn edge_point(side: f32, radius: f32, turn: f32) -> (f32, f32) {
     starts[0]
 }
 
-/// The light on a tile of `side`: a bright head with a fading tail, on a faint ring.
+/// The light on a `width` × `height` tile: a bright head with a fading tail, on a faint ring.
 /// Drawn as overlapping dots, which GPUI keeps smooth on any graphics driver.
-pub fn light(side: f32, radius: f32, glow: Glow, cx: &gpui_kit::App) -> gpui_kit::Div {
+pub fn light(
+    (width, height): (f32, f32),
+    radius: f32,
+    glow: Glow,
+    cx: &gpui_kit::App,
+) -> gpui_kit::Div {
     let theme = cx.omarchy();
     let (accent, bright) = (theme.accent, theme.bright);
     div().absolute().inset_0().child(
@@ -144,7 +151,7 @@ pub fn light(side: f32, radius: f32, glow: Glow, cx: &gpui_kit::App) -> gpui_kit
             |bounds, _, _| bounds,
             move |_, bounds: Bounds<Pixels>, window, _| {
                 let inset = LINE / 2.;
-                let (inner, corner) = (side - LINE, (radius - inset).max(0.));
+                let (inner, corner) = ((width - LINE, height - LINE), (radius - inset).max(0.));
                 window.paint_quad(gpui_kit::quad(
                     bounds,
                     px(radius),
@@ -153,12 +160,13 @@ pub fn light(side: f32, radius: f32, glow: Glow, cx: &gpui_kit::App) -> gpui_kit
                     accent.opacity(0.3 * glow.strength),
                     Default::default(),
                 ));
-                let perimeter = 4. * (inner - 2. * corner) + std::f32::consts::TAU * corner;
+                let perimeter =
+                    2. * (inner.0 + inner.1 - 4. * corner) + std::f32::consts::TAU * corner;
                 let dots = ((TAIL * perimeter) / 1.5).ceil().max(1.) as usize;
                 // Tail first, so the head is drawn over it.
                 for dot in (0..dots).rev() {
                     let behind = dot as f32 / dots as f32;
-                    let (x, y) = edge_point(inner, corner, glow.turn - behind * TAIL);
+                    let (x, y) = edge_point(inner.0, inner.1, corner, glow.turn - behind * TAIL);
                     let fade = (1. - behind).powf(1.6) * glow.strength;
                     let color = if dot == 0 {
                         bright.opacity(fade)
@@ -470,19 +478,25 @@ mod tests {
 
     #[test]
     fn the_light_stays_on_the_tiles_edge_all_the_way_round() {
-        for (side, radius) in [(140., 9.), (64., 32.), (100., 0.)] {
-            let mut last = edge_point(side, radius, 0.);
+        for (width, height, radius) in [
+            (140., 140., 9.),
+            (64., 64., 32.),
+            (100., 100., 0.),
+            (320., 180., 9.),
+        ] {
+            let mut last = edge_point(width, height, radius, 0.);
             assert_eq!(last, (radius, 0.));
             let (mut travelled, steps) = (0., 2_000);
             for step in 1..=steps {
-                let (x, y) = edge_point(side, radius, step as f32 / steps as f32);
-                assert!((0. ..=side).contains(&x) && (0. ..=side).contains(&y));
+                let (x, y) = edge_point(width, height, radius, step as f32 / steps as f32);
+                assert!((0. ..=width).contains(&x) && (0. ..=height).contains(&y));
                 let moved = ((x - last.0).powi(2) + (y - last.1).powi(2)).sqrt();
-                assert!(moved < side * 4. / steps as f32 * 1.5, "no jumps: {moved}");
+                let round = 2. * (width + height);
+                assert!(moved < round / steps as f32 * 1.5, "no jumps: {moved}");
                 travelled += moved;
                 last = (x, y);
             }
-            let perimeter = 4. * (side - 2. * radius) + std::f32::consts::TAU * radius;
+            let perimeter = 2. * (width + height - 4. * radius) + std::f32::consts::TAU * radius;
             assert!(
                 (travelled - perimeter).abs() < 0.5,
                 "{travelled} of {perimeter}"
@@ -491,7 +505,7 @@ mod tests {
         // Halfway round the first corner, the top right.
         let turn =
             (80. + std::f32::consts::FRAC_PI_4 * 10.) / (4. * 80. + std::f32::consts::TAU * 10.);
-        let (x, y) = edge_point(100., 10., turn);
+        let (x, y) = edge_point(100., 100., 10., turn);
         assert!(
             (x - 97.07).abs() < 0.1 && (y - 2.93).abs() < 0.1,
             "{x}, {y}"

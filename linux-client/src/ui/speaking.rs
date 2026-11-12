@@ -20,6 +20,9 @@ pub struct Speaking {
     current: Vec<String>,
     /// Stopped speaking, and when.
     stopped: HashMap<String, Instant>,
+    /// Who spoke last, besides you: the speaker view keeps them big until someone else
+    /// speaks.
+    last: Option<String>,
 }
 
 impl Speaking {
@@ -34,8 +37,19 @@ impl Speaking {
         for key in &speakers {
             self.stopped.remove(key);
         }
+        let still = |key: &String| speakers.contains(key);
+        if !self.last.as_ref().is_some_and(still)
+            && let Some(key) = speakers.iter().find(|key| *key != YOU)
+        {
+            self.last = Some(key.clone());
+        }
         self.current = speakers;
         self.next_expiry(now)
+    }
+
+    /// Who spoke last, besides you, even if they've stopped.
+    pub fn last(&self) -> Option<&str> {
+        self.last.as_deref()
     }
 
     pub fn is_speaking(&self, key: &str, now: Instant) -> bool {
@@ -64,6 +78,7 @@ impl Speaking {
     pub fn clear(&mut self) {
         self.current.clear();
         self.stopped.clear();
+        self.last = None;
     }
 }
 
@@ -98,5 +113,22 @@ mod tests {
         speaking.update(vec![], start + ms(100));
         assert_eq!(speaking.update(vec![YOU.into()], start + ms(200)), None);
         assert!(speaking.is_speaking(YOU, start + ms(900)));
+    }
+
+    #[test]
+    fn the_last_speaker_stays_until_someone_else_speaks() {
+        let start = Instant::now();
+        let mut speaking = Speaking::default();
+        speaking.update(vec![YOU.into()], start);
+        assert_eq!(speaking.last(), None, "you are never the speaker");
+        speaking.update(vec!["sam".into()], start);
+        speaking.update(vec![], start + ms(10));
+        assert_eq!(speaking.last(), Some("sam"), "still Sam after they stop");
+        speaking.update(vec!["sam".into(), "mira".into()], start + ms(20));
+        assert_eq!(speaking.last(), Some("sam"), "Sam carries on, so stays");
+        speaking.update(vec!["mira".into()], start + ms(30));
+        assert_eq!(speaking.last(), Some("mira"));
+        speaking.clear();
+        assert_eq!(speaking.last(), None);
     }
 }

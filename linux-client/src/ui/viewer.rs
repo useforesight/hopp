@@ -21,12 +21,12 @@ use gpui_omarchy::{ActiveTheme, IconName};
 use super::{
     Shell,
     faces::{call_controls, face_tile, faces_for},
-    geometry::{Bands, ViewMode, Viewport, dock_bands},
+    geometry::{Bands, Dock, ViewMode, Viewport, dock, screen_area},
     painted::Painted,
     session::{Session, SessionEvent},
     style::{self, Tone},
 };
-use crate::protocol::Point;
+use crate::{protocol::Point, settings::FacesInShared};
 
 /// How long a sharer cursor position keeps steering the view.
 const CURSOR_FRESH: Duration = Duration::from_secs(3);
@@ -35,6 +35,9 @@ const MANUAL_HOLD: Duration = Duration::from_secs(4);
 /// The control pill fades after this much stillness.
 const PILL_IDLE: Duration = Duration::from_millis(2600);
 const MINIMAP_WIDTH: f32 = 168.;
+/// Bubbles over the screen's corner: their size, and how many before "+N".
+const BUBBLE: f32 = 48.;
+const MOST_BUBBLES: usize = 5;
 
 pub struct ViewerView {
     session: Entity<Session>,
@@ -54,9 +57,11 @@ pub struct ViewerView {
     last_frame: Instant,
     /// Whether the view has placed itself once since opening.
     settled: bool,
-    /// Faces and controls are in the bands around a fitted screen (reported to the shell
-    /// so the floating call window can step aside).
+    /// Faces and controls are in this window (reported to the shell so the floating call
+    /// window can step aside).
     docked: bool,
+    /// Where the faces go back to from their own window.
+    faces_back: FacesInShared,
 }
 
 impl ViewerView {
@@ -104,7 +109,49 @@ impl ViewerView {
             last_frame: Instant::now(),
             settled: false,
             docked: false,
+            faces_back: FacesInShared::Side,
         }
+    }
+
+    /// The faces out to the call window, or back into this one, remembered in settings.
+    fn toggle_faces(&mut self, cx: &mut Context<Self>) {
+        let back = self.faces_back;
+        let faces_back = self.session.update(cx, |session, cx| {
+            let now = session.settings.faces_in_shared;
+            session.settings.faces_in_shared = if now == FacesInShared::Off {
+                back
+            } else {
+                FacesInShared::Off
+            };
+            let _ = crate::settings::save(&session.settings);
+            cx.notify();
+            now
+        });
+        if faces_back != FacesInShared::Off {
+            self.faces_back = faces_back;
+        }
+    }
+
+    /// Sends the faces to the call window, or brings them back.
+    fn faces_button(&self, cx: &mut Context<Self>) -> gpui_kit::Stateful<gpui_kit::Div> {
+        let out = self.session.read(cx).settings.faces_in_shared == FacesInShared::Off;
+        style::control(
+            "faces-out",
+            if out {
+                IconName::Users
+            } else {
+                IconName::PictureInPicture2
+            },
+            Tone::Plain,
+            if out {
+                "Faces in this window"
+            } else {
+                "Faces in their own window"
+            },
+            cx,
+        )
+        .size(px(26.))
+        .on_click(cx.listener(|view, _, _, cx| view.toggle_faces(cx)))
     }
 
     fn source(&self, cx: &gpui_kit::App) -> Option<[u32; 2]> {
@@ -469,7 +516,8 @@ impl ViewerView {
                         .when(!compact, |who| who.child(title(cx))),
                 )
                 .child(self.mode_switch(false, cx))
-                .child(div().flex().gap(px(6.)).children(actions));
+                .child(div().flex().gap(px(6.)).children(actions))
+                .child(self.faces_button(cx));
         }
         let narrow = bands.size - 24. < 180.;
         let who = if narrow {
@@ -505,7 +553,8 @@ impl ViewerView {
             div().flex().gap(px(4.)).children(actions)
         } else {
             div().flex().flex_col().gap(px(6.)).children(actions)
-        };
+        }
+        .child(self.faces_button(cx));
         style::frosted(cx)
             .flex_col()
             .when(narrow, |panel| panel.items_center())
@@ -668,6 +717,7 @@ impl ViewerView {
                 )
             })
             .child(style::separator(cx))
+            .child(self.faces_button(cx))
             .child(
                 style::control(
                     "peek",
@@ -826,11 +876,18 @@ impl Render for ViewerView {
         if let Some(ambient) = &ambient {
             self.painted.show("ambient", &ambient.image, window);
         }
-        let bands = match (fit, self.bounds.get(), picture.as_ref()) {
-            (true, Some(view), Some(picture)) => dock_bands(view, picture.source),
-            _ => None,
+        let whole = Bounds {
+            origin: point(px(0.), px(0.)),
+            size: window.viewport_size(),
         };
-        let docked = bands.is_some();
+        let dock = dock(
+            session.settings.faces_in_shared,
+            fit,
+            self.peek,
+            whole,
+            picture.as_ref().map(|picture| picture.source),
+        );
+        let docked = dock != Dock::Away;
         if docked != self.docked {
             self.docked = docked;
             let peek = self.peek;
@@ -1009,10 +1066,18 @@ impl Render for ViewerView {
                 );
         }
 
+        // The screen has the window, or what a rail leaves of it.
+        let area = screen_area(whole, dock);
+        let mut screen = div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .w(area.size.width)
+            .h(area.size.height);
         if let Some(picture) = picture {
             let (image, source) = (picture.image, picture.source);
             let sprites = self.sprites.clone();
-            stage = stage.child(
+            screen = screen.child(
                 canvas(
                     move |bounds, _, _| {
                         bounds_cell.set(Some(bounds));
@@ -1065,7 +1130,7 @@ impl Render for ViewerView {
                 .size_full(),
             );
         } else {
-            stage = stage.child(
+            screen = screen.child(
                 div()
                     .size_full()
                     .flex()
@@ -1083,137 +1148,97 @@ impl Render for ViewerView {
             );
         }
 
-        let compact = f32::from(window.viewport_size().width) < 820.;
+        let compact = f32::from(area.size.width) < 820.;
         let view_bounds = self.bounds.get();
         let minimap = view_bounds.and_then(|bounds| self.minimap(bounds, cx));
-        stage = match bands {
-            Some(bands) => {
-                let panel = self.dock_panel(bands, compact, cx);
-                let faces = faces_for(self.session.read(cx));
-                // The bars beside a speaker's name move while they talk.
-                if faces
-                    .iter()
-                    .any(|face| face.speaking || face.heard.is_some())
-                {
-                    window.request_animation_frame();
-                }
-                let (width, height) = view_bounds
-                    .map(|view| (f32::from(view.size.width), f32::from(view.size.height)))
-                    .unwrap_or_default();
-                let along = if bands.sideways { height } else { width };
-                let side = dock_face_side(bands, along, faces.len());
-                // The call card: faces filling the band, with the call buttons beside
-                // (or under) them.
-                let controls = call_controls(&self.session, cx);
-                let buttons = if bands.sideways && side >= super::faces::controls_row_width() {
-                    div().flex().gap(px(4.)).children(controls)
-                } else if side >= 2. * style::CONTROL + 4. {
-                    div().grid().grid_cols(2).gap(px(4.)).children(controls)
-                } else if bands.sideways {
-                    div().flex().flex_col().gap(px(4.)).children(controls)
-                } else {
-                    div().flex().gap(px(4.)).children(controls)
-                };
-                let mut tiles = style::frosted(cx).items_center().gap(px(6.)).p(px(8.));
-                tiles = if bands.sideways {
-                    tiles.flex_col()
-                } else {
-                    tiles.flex_row()
-                };
-                for face in faces {
-                    tiles =
-                        tiles.child(face_tile(&mut self.painted, face, side, false, window, cx));
-                }
-                let tiles = tiles.child(buttons);
-                // Panels swallow pointer input so clicks there never pan or reach the peer.
-                let shield = |panel: gpui_kit::Div| {
-                    panel
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-                        .on_mouse_down(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
-                        .on_mouse_move(|_, _, cx| cx.stop_propagation())
-                        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-                };
-                let pad = px(12.);
-                let band = px(bands.size);
-                if bands.sideways {
-                    stage
-                        .child(
-                            div()
-                                .absolute()
-                                .top_0()
-                                .bottom_0()
-                                .left_0()
-                                .w(band)
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(shield(panel)),
-                        )
-                        .child(
-                            div()
-                                .absolute()
-                                .top_0()
-                                .bottom_0()
-                                .right_0()
-                                .w(band)
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(shield(tiles)),
-                        )
-                } else {
-                    stage
-                        .child(
-                            div()
-                                .absolute()
-                                .left_0()
-                                .right_0()
-                                .top_0()
-                                .h(band)
-                                .px(pad)
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(shield(panel)),
-                        )
-                        .child(
-                            div()
-                                .absolute()
-                                .left_0()
-                                .right_0()
-                                .bottom_0()
-                                .h(band)
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(shield(tiles)),
-                        )
-                }
-            }
-            None => {
-                let pill = self.pill(compact, cx);
-                stage
-                    .child(
-                        div()
-                            .absolute()
-                            .top(px(10.))
-                            .left_0()
-                            .right_0()
-                            .flex()
-                            .justify_center()
-                            .when(idle, |row| row.invisible())
-                            .child(pill),
-                    )
-                    .children(minimap)
-            }
+        // How far the whole window runs along a band or rail.
+        let along = |bands: Bands| {
+            f32::from(if bands.sideways {
+                whole.size.height
+            } else {
+                whole.size.width
+            })
         };
+        let mut overlays: Vec<gpui_kit::AnyElement> = Vec::new();
+        if let Dock::Bands(bands) = dock {
+            let panel = self.dock_panel(bands, compact, cx);
+            let tiles = self.call_card(bands, along(bands), window, cx);
+            let pad = px(12.);
+            let band = px(bands.size);
+            // Whose screen in one band, the call in the other.
+            let (first, second) = if bands.sideways {
+                (
+                    div().top_0().bottom_0().left_0().w(band),
+                    div().top_0().bottom_0().right_0().w(band),
+                )
+            } else {
+                (
+                    div().left_0().right_0().top_0().h(band).px(pad),
+                    div().left_0().right_0().bottom_0().h(band),
+                )
+            };
+            for (holder, card) in [(first, panel), (second, tiles)] {
+                overlays.push(
+                    holder
+                        .absolute()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(shield(card))
+                        .into_any_element(),
+                );
+            }
+        } else {
+            let pill = self.pill(compact, cx);
+            screen = screen
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(10.))
+                        .left_0()
+                        .right_0()
+                        .flex()
+                        .justify_center()
+                        .when(idle, |row| row.invisible())
+                        .child(pill),
+                )
+                .children(minimap);
+        }
+        match dock {
+            Dock::Rail(rail) => {
+                let card = self.call_card(rail, along(rail), window, cx);
+                let holder = div()
+                    .absolute()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(theme.inset.opacity(0.62));
+                let holder = if rail.sideways {
+                    holder.top_0().bottom_0().right_0().w(px(rail.size))
+                } else {
+                    holder.left_0().right_0().bottom_0().h(px(rail.size))
+                };
+                // The whole rail, so clicks between the faces never reach the screen.
+                overlays.push(shield(holder.child(card)).into_any_element());
+            }
+            Dock::Bubbles => {
+                let bubbles = self.bubbles(window, cx);
+                screen = screen.child(
+                    div()
+                        .absolute()
+                        .top(px(12.))
+                        .right(px(12.))
+                        .child(shield(bubbles)),
+                );
+            }
+            Dock::Bands(_) | Dock::Away => {}
+        }
         self.painted.finish(window);
         let stamp_hint = {
             let session = self.session.read(cx);
             (session.stamping || session.note.is_some()).then(|| session.stamp_hint())
         };
-        stage
+        let screen = screen
             .when_some(stamp_hint, |stage, hint| {
                 stage.child(
                     div()
@@ -1241,8 +1266,124 @@ impl Render for ViewerView {
                         .left(px(12.))
                         .child(style::muted_text("Esc releases control", cx)),
                 )
-            })
+            });
+        stage.child(screen).children(overlays)
     }
+}
+
+impl ViewerView {
+    /// The call in a band or rail: faces as big as it allows, with the call buttons beside
+    /// (or under) them.
+    fn call_card(
+        &mut self,
+        bands: Bands,
+        along: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::Div {
+        let faces = faces_for(self.session.read(cx));
+        // The bars beside a speaker's name move while they talk.
+        if faces
+            .iter()
+            .any(|face| face.speaking || face.heard.is_some())
+        {
+            window.request_animation_frame();
+        }
+        let side = dock_face_side(bands, along, faces.len());
+        let controls = call_controls(&self.session, cx);
+        let buttons = if bands.sideways && side >= super::faces::controls_row_width() {
+            div().flex().gap(px(4.)).children(controls)
+        } else if side >= 2. * style::CONTROL + 4. {
+            div().grid().grid_cols(2).gap(px(4.)).children(controls)
+        } else if bands.sideways {
+            div().flex().flex_col().gap(px(4.)).children(controls)
+        } else {
+            div().flex().gap(px(4.)).children(controls)
+        };
+        let mut tiles = style::frosted(cx).items_center().gap(px(6.)).p(px(8.));
+        tiles = if bands.sideways {
+            tiles.flex_col()
+        } else {
+            tiles.flex_row()
+        };
+        for face in faces {
+            tiles = tiles.child(face_tile(
+                &mut self.painted,
+                face,
+                (side, side),
+                false,
+                window,
+                cx,
+            ));
+        }
+        tiles.child(buttons)
+    }
+
+    /// Round faces over the screen's corner, "+N" for the rest, and the call buttons.
+    fn bubbles(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui_kit::Div {
+        let theme = cx.omarchy().clone();
+        let faces = faces_for(self.session.read(cx));
+        if faces
+            .iter()
+            .any(|face| face.speaking || face.heard.is_some())
+        {
+            window.request_animation_frame();
+        }
+        // "+N" takes the last bubble's place.
+        let shown = if faces.len() > MOST_BUBBLES {
+            MOST_BUBBLES - 1
+        } else {
+            faces.len()
+        };
+        let more = faces.len() - shown;
+        let mut card = style::frosted(cx)
+            .flex_col()
+            .items_center()
+            .gap(px(6.))
+            .p(px(6.));
+        for face in faces.into_iter().take(shown) {
+            card = card.child(face_tile(
+                &mut self.painted,
+                face,
+                (BUBBLE, BUBBLE),
+                true,
+                window,
+                cx,
+            ));
+        }
+        if more > 0 {
+            card = card.child(
+                div()
+                    .size(px(BUBBLE))
+                    .rounded_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(theme.surface)
+                    .text_size(px(13.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.bright)
+                    .child(format!("+{more}")),
+            );
+        }
+        card.child(
+            div()
+                .grid()
+                .grid_cols(2)
+                .gap(px(4.))
+                .children(call_controls(&self.session, cx)),
+        )
+    }
+}
+
+/// Panels swallow pointer input so clicks there never pan or reach the peer.
+fn shield(panel: gpui_kit::Div) -> gpui_kit::Div {
+    panel
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+        .on_mouse_down(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
+        .on_mouse_move(|_, _, cx| cx.stop_propagation())
+        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
 }
 
 /// Face size in a docked call card: as big as the band allows, shrinking so everyone (and

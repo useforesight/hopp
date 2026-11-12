@@ -623,9 +623,9 @@ impl Shell {
         cx.global::<Shell>().faces?;
         let session = Self::session(cx);
         let session = session.read(cx);
-        let layout = session.settings.face_layout;
+        let (layout, face) = (session.settings.face_layout, session.settings.face_size);
         let people = faces::FacesView::people(session);
-        let index = faces::faces_for(session)
+        let index = faces::faces_in_window(session, layout)
             .iter()
             .position(|face| face.key == key)?;
         let placed = hypr::placed("hopp.faces")?;
@@ -633,7 +633,7 @@ impl Shell {
             width: placed.window.width as f32,
             height: placed.window.height as f32,
         };
-        let tile = faces::tile_centre(index, people, layout, window);
+        let tile = faces::tile_centre(index, people, layout, face, window)?;
         let row = layout == faces::FaceLayout::Row;
         let (side, left, top) = heard::beside(placed.window, placed.monitor, tile, row);
         Some(heard::Spot {

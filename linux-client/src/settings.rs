@@ -16,6 +16,9 @@ pub struct Settings {
     pub face_size: FaceSize,
     #[serde(default)]
     pub face_layout: FaceLayout,
+    /// Where the faces go while you watch someone's screen.
+    #[serde(default)]
+    pub faces_in_shared: FacesInShared,
     /// Unmute as soon as a call connects. Off by default: you join muted.
     #[serde(default)]
     pub start_microphone: bool,
@@ -52,6 +55,25 @@ pub enum FaceLayout {
     Column,
     Row,
     Bubbles,
+    /// Wide tiles, everyone the same size, for a meeting.
+    Grid,
+    /// Whoever is talking big, everyone else in a row below.
+    Speaker,
+}
+
+/// Where the faces go while you watch someone's screen.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FacesInShared {
+    /// In the screen's window, down its side.
+    #[default]
+    Side,
+    /// In the screen's window, along its bottom.
+    Bottom,
+    /// Small round faces over a corner of the screen.
+    Bubbles,
+    /// In the call window, as when nobody shares.
+    Off,
 }
 
 impl Default for Settings {
@@ -64,6 +86,7 @@ impl Default for Settings {
             camera_device: None,
             face_size: FaceSize::default(),
             face_layout: FaceLayout::default(),
+            faces_in_shared: FacesInShared::default(),
             start_microphone: false,
             start_camera: false,
             auto_away: true,

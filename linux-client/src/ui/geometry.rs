@@ -6,7 +6,7 @@
 //! and `frame_point` maps a click back through that crop.
 use gpui_kit::{Bounds, Pixels, point, px, size};
 
-use crate::protocol::Point;
+use crate::{protocol::Point, settings::FacesInShared};
 
 /// The whole image inside `view`, preserving aspect ratio (letterboxed).
 pub fn contain(view: Bounds<Pixels>, source: [u32; 2]) -> Bounds<Pixels> {
@@ -63,6 +63,80 @@ pub fn dock_bands(view: Bounds<Pixels>, source: [u32; 2]) -> Option<Bands> {
         size: x.max(y),
     };
     (bands.size >= MIN_DOCK).then_some(bands)
+}
+
+/// Where the faces go in a shared screen's window.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Dock {
+    /// Not here: the call window has them.
+    Away,
+    /// In the bands either side of a fitted screen.
+    Bands(Bands),
+    /// In a rail of their own down the right (`sideways`) or along the bottom; the screen
+    /// has the rest of the window.
+    Rail(Bands),
+    /// Round faces over the screen's top-right corner.
+    Bubbles,
+}
+
+/// A rail's share of the window, and the least and most it takes, in logical pixels.
+const SIDE_RAIL: (f32, f32, f32) = (0.18, 128., 260.);
+const BOTTOM_RAIL: (f32, f32, f32) = (0.2, 112., 220.);
+
+/// Where the faces go in `window`, showing `source` (if it has arrived), as `faces` asks.
+/// A fitted screen's own bands are used when they're wide enough; peek uses nothing else.
+pub fn dock(
+    faces: FacesInShared,
+    fit: bool,
+    peek: bool,
+    window: Bounds<Pixels>,
+    source: Option<[u32; 2]>,
+) -> Dock {
+    let Some(source) = source else {
+        return Dock::Away;
+    };
+    match faces {
+        FacesInShared::Off => Dock::Away,
+        FacesInShared::Bubbles => Dock::Bubbles,
+        FacesInShared::Side | FacesInShared::Bottom => {
+            if fit && let Some(bands) = dock_bands(window, source) {
+                return Dock::Bands(bands);
+            }
+            if peek {
+                return Dock::Away;
+            }
+            let sideways = faces == FacesInShared::Side;
+            let (share, least, most) = if sideways { SIDE_RAIL } else { BOTTOM_RAIL };
+            let length = f32::from(if sideways {
+                window.size.width
+            } else {
+                window.size.height
+            });
+            // A small window keeps all of itself for the screen.
+            if length < 3. * least {
+                return Dock::Away;
+            }
+            Dock::Rail(Bands {
+                sideways,
+                size: (length * share).clamp(least, most),
+            })
+        }
+    }
+}
+
+/// The part of `window` the screen has: all of it, unless a rail takes some.
+pub fn screen_area(window: Bounds<Pixels>, dock: Dock) -> Bounds<Pixels> {
+    match dock {
+        Dock::Rail(rail) if rail.sideways => Bounds {
+            origin: window.origin,
+            size: size(window.size.width - px(rail.size), window.size.height),
+        },
+        Dock::Rail(rail) => Bounds {
+            origin: window.origin,
+            size: size(window.size.width, window.size.height - px(rail.size)),
+        },
+        _ => window,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -281,6 +355,70 @@ mod tests {
             origin: point(px(x), px(y)),
             size: size(px(width), px(height)),
         }
+    }
+
+    #[test]
+    fn the_faces_take_a_rail_unless_the_screen_leaves_bands_for_them() {
+        let screen = Some([2560, 1600]);
+        let tile = view(0., 0., 1600., 900.);
+        // Cropped: a rail down the side, and the screen has the rest.
+        let side = dock(FacesInShared::Side, false, false, tile, screen);
+        assert_eq!(
+            side,
+            Dock::Rail(Bands {
+                sideways: true,
+                size: 260.
+            })
+        );
+        assert_eq!(screen_area(tile, side), view(0., 0., 1340., 900.));
+        let bottom = dock(FacesInShared::Bottom, false, false, tile, screen);
+        assert_eq!(
+            bottom,
+            Dock::Rail(Bands {
+                sideways: false,
+                size: 180.
+            })
+        );
+        assert_eq!(screen_area(tile, bottom), view(0., 0., 1600., 720.));
+        // Fitted into an ultrawide tile, the bands either side are room enough.
+        let wide = view(0., 0., 1600., 675.);
+        assert!(matches!(
+            dock(FacesInShared::Bottom, true, false, wide, screen),
+            Dock::Bands(Bands { sideways: true, .. })
+        ));
+        // Fitted with no room around it, a rail all the same; peek leaves it be.
+        assert!(matches!(
+            dock(FacesInShared::Side, true, false, tile, screen),
+            Dock::Rail(_)
+        ));
+        assert_eq!(
+            dock(FacesInShared::Side, true, true, tile, screen),
+            Dock::Away
+        );
+    }
+
+    #[test]
+    fn the_faces_stay_in_the_call_window_when_asked_or_theres_no_room() {
+        let screen = Some([2560, 1600]);
+        let tile = view(0., 0., 1600., 900.);
+        assert_eq!(
+            dock(FacesInShared::Off, false, false, tile, screen),
+            Dock::Away
+        );
+        assert_eq!(
+            dock(FacesInShared::Side, false, false, tile, None),
+            Dock::Away
+        );
+        let narrow = view(0., 0., 360., 900.);
+        assert_eq!(
+            dock(FacesInShared::Side, false, false, narrow, screen),
+            Dock::Away
+        );
+        assert_eq!(
+            dock(FacesInShared::Bubbles, false, false, narrow, screen),
+            Dock::Bubbles
+        );
+        assert_eq!(screen_area(tile, Dock::Bubbles), tile);
     }
 
     #[test]

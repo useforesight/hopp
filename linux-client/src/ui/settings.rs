@@ -20,7 +20,7 @@ use super::{
 };
 use crate::{
     capture::{config, models},
-    settings::{FaceLayout, FaceSize},
+    settings::{FaceLayout, FaceSize, FacesInShared},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -565,6 +565,8 @@ impl SettingsView {
             &[
                 (FaceLayout::Column, "Column"),
                 (FaceLayout::Row, "Row"),
+                (FaceLayout::Grid, "Grid"),
+                (FaceLayout::Speaker, "Speaker"),
                 (FaceLayout::Bubbles, "Bubbles"),
             ],
             settings.face_layout,
@@ -577,19 +579,43 @@ impl SettingsView {
             },
             cx,
         );
+        let shared = self.segmented(
+            "faces-in-shared",
+            &[
+                (FacesInShared::Side, "Side"),
+                (FacesInShared::Bottom, "Bottom"),
+                (FacesInShared::Bubbles, "Bubbles"),
+                (FacesInShared::Off, "Own window"),
+            ],
+            settings.faces_in_shared,
+            |view, faces, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.settings.faces_in_shared = faces;
+                    let _ = crate::settings::save(&session.settings);
+                    cx.notify();
+                })
+            },
+            cx,
+        );
         div()
             .flex()
             .flex_col()
             .child(Self::row(
                 "Size",
-                Some("Tiles are always square and never stretch."),
+                Some("Square in a column or row, wide in a grid or speaker view. Never stretched."),
                 size,
                 cx,
             ))
             .child(Self::row(
                 "Layout",
-                Some("Hover the call window to change these there too."),
+                Some("Speaker: whoever is talking big, everyone else below. Hover the call window to change these there too."),
                 layout,
+                cx,
+            ))
+            .child(Self::row(
+                "Faces while someone shares",
+                Some("Down the side of their screen, along its bottom or over its corner, in its window, or in the call window as usual. The button by the screen's controls switches it."),
+                shared,
                 cx,
             ))
             .into_any_element()

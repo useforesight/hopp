@@ -1,14 +1,15 @@
-//! The call window: everyone's face in fixed square tiles, plus call controls.
+//! The call window: everyone's face in fixed tiles, plus call controls.
 //!
 //! The window is floated and pinned by the Hyprland rules Hopp installs, and its size is
 //! derived from the number of people rather than chosen by dragging, so a camera is never
-//! stretched by a tile. Cameras are centre-cropped to fill their square.
+//! stretched by a tile. Tiles are square in a column or row, wide (16:9) in the grid and
+//! speaker views, and cameras are centre-cropped to fill them.
 use gpui_kit::{
     AppContext, Bounds, Context, Corners, Entity, FontWeight, InteractiveElement, IntoElement,
     MouseButton, ParentElement, Render, Size, StatefulInteractiveElement, Styled, Window, canvas,
     div, prelude::FluentBuilder, px, size,
 };
-use gpui_omarchy::{ActiveTheme, IconName, icon};
+use gpui_omarchy::{ActiveTheme, IconName, icon, with_tooltip};
 
 use super::{
     geometry::cover,
@@ -49,8 +50,20 @@ impl FaceLayout {
     fn next(self) -> Self {
         match self {
             Self::Column => Self::Row,
-            Self::Row => Self::Bubbles,
+            Self::Row => Self::Grid,
+            Self::Grid => Self::Speaker,
+            Self::Speaker => Self::Bubbles,
             Self::Bubbles => Self::Column,
+        }
+    }
+
+    fn icon(self) -> IconName {
+        match self {
+            Self::Column => IconName::Rows3,
+            Self::Row => IconName::Columns3,
+            Self::Grid => IconName::LayoutGrid,
+            Self::Speaker => IconName::CircleUser,
+            Self::Bubbles => IconName::CircleDot,
         }
     }
 }
@@ -60,10 +73,25 @@ const GAP: f32 = 6.;
 const CONTROL_GAP: f32 = 4.;
 /// Mic, camera, share, capture, reactions and leave.
 pub(super) const CALL_CONTROLS: usize = 6;
+/// A wide tile's width and height, as multiples of the chosen size: 16:9.
+const WIDE: (f32, f32) = (1.6, 0.9);
+/// Everyone else's tiles under the speaker: at most this much of the speaker's height,
+/// and never smaller than [`LEAST_TILE`].
+const UNDER_SPEAKER: f32 = 0.5;
+const LEAST_TILE: f32 = 32.;
+/// Narrower tiles show the voice slot alone, as bubbles do, instead of a name.
+const NAME_MIN_WIDTH: f32 = 72.;
 
 /// The call controls in one row.
 pub(super) fn controls_row_width() -> f32 {
     CALL_CONTROLS as f32 * CONTROL + (CALL_CONTROLS - 1) as f32 * CONTROL_GAP
+}
+
+fn controls_row() -> Size<f32> {
+    Size {
+        width: controls_row_width(),
+        height: CONTROL,
+    }
 }
 
 /// The call controls as a two-column grid.
@@ -75,11 +103,6 @@ fn controls_grid() -> Size<f32> {
     }
 }
 
-/// Controls as one row or a two-column grid, whichever the tile width allows.
-fn controls_in_one_row(layout: FaceLayout, tile: f32) -> bool {
-    layout == FaceLayout::Column && tile >= controls_row_width()
-}
-
 fn tile_side(layout: FaceLayout, face: FaceSize) -> f32 {
     if layout == FaceLayout::Bubbles {
         64.
@@ -88,9 +111,176 @@ fn tile_side(layout: FaceLayout, face: FaceSize) -> f32 {
     }
 }
 
-/// Exact window size for `people` faces. Pure, so the arithmetic is tested.
+/// Where something goes in the call window, from the window's top left.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct Place {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+impl Place {
+    fn centre(self) -> (f32, f32) {
+        (self.x + self.width / 2., self.y + self.height / 2.)
+    }
+}
+
+/// Everything in a call window: its size, each tile in [`faces_in_window`] order, and the
+/// call controls.
+#[derive(Debug)]
+pub(super) struct Places {
+    pub window: Size<f32>,
+    pub tiles: Vec<Place>,
+    pub controls: Place,
+}
+
+/// `count` lengths in a line, with gaps between.
+fn run(count: f32, length: f32) -> f32 {
+    count * length + (count - 1.).max(0.) * GAP
+}
+
+/// Lays out a call window for `people` at tile size `side`. Pure, so the arithmetic is
+/// tested.
+pub(super) fn places(people: usize, layout: FaceLayout, side: f32) -> Places {
+    let count = people.max(1);
+    let row = controls_row();
+    let grid = controls_grid();
+    match layout {
+        FaceLayout::Column | FaceLayout::Bubbles => {
+            // The controls fit one row under a wide enough column, else a grid.
+            let controls = if layout == FaceLayout::Column && side >= row.width {
+                row
+            } else {
+                grid
+            };
+            let inner = side.max(controls.width);
+            let strip = run(count as f32, side);
+            Places {
+                window: Size {
+                    width: inner + 2. * PAD,
+                    height: strip + GAP + controls.height + 2. * PAD,
+                },
+                tiles: (0..count)
+                    .map(|index| Place {
+                        x: PAD + (inner - side) / 2.,
+                        y: PAD + index as f32 * (side + GAP),
+                        width: side,
+                        height: side,
+                    })
+                    .collect(),
+                controls: Place {
+                    x: PAD + (inner - controls.width) / 2.,
+                    y: PAD + strip + GAP,
+                    width: controls.width,
+                    height: controls.height,
+                },
+            }
+        }
+        FaceLayout::Row => {
+            let inner = side.max(grid.height);
+            let strip = run(count as f32, side);
+            Places {
+                window: Size {
+                    width: strip + GAP + grid.width + 2. * PAD,
+                    height: inner + 2. * PAD,
+                },
+                tiles: (0..count)
+                    .map(|index| Place {
+                        x: PAD + index as f32 * (side + GAP),
+                        y: PAD + (inner - side) / 2.,
+                        width: side,
+                        height: side,
+                    })
+                    .collect(),
+                controls: Place {
+                    x: PAD + strip + GAP,
+                    y: PAD + (inner - grid.height) / 2.,
+                    width: grid.width,
+                    height: grid.height,
+                },
+            }
+        }
+        FaceLayout::Grid => {
+            let (width, height) = (side * WIDE.0, side * WIDE.1);
+            // As square a grid as there can be: 2 side by side, 3 or 4 in two rows…
+            let columns = (count as f32).sqrt().ceil() as usize;
+            let rows = count.div_ceil(columns);
+            let inner = run(columns as f32, width).max(row.width);
+            let tiles = (0..count)
+                .map(|index| {
+                    let (line, column) = (index / columns, index % columns);
+                    // A last row that isn't full sits in the middle.
+                    let in_line = (count - line * columns).min(columns) as f32;
+                    Place {
+                        x: PAD + (inner - run(in_line, width)) / 2. + column as f32 * (width + GAP),
+                        y: PAD + line as f32 * (height + GAP),
+                        width,
+                        height,
+                    }
+                })
+                .collect();
+            let strip = run(rows as f32, height);
+            Places {
+                window: Size {
+                    width: inner + 2. * PAD,
+                    height: strip + GAP + row.height + 2. * PAD,
+                },
+                tiles,
+                controls: Place {
+                    x: PAD + (inner - row.width) / 2.,
+                    y: PAD + strip + GAP,
+                    width: row.width,
+                    height: row.height,
+                },
+            }
+        }
+        FaceLayout::Speaker => {
+            let (width, height) = (side * WIDE.0, side * WIDE.1);
+            let others = (count - 1) as f32;
+            let room = width.max(row.width);
+            let small = if others > 0. {
+                ((room - (others - 1.) * GAP) / others)
+                    .min(height * UNDER_SPEAKER)
+                    .max(LEAST_TILE)
+            } else {
+                0.
+            };
+            let inner = room.max(run(others, small));
+            let mut tiles = vec![Place {
+                x: PAD + (inner - width) / 2.,
+                y: PAD,
+                width,
+                height,
+            }];
+            let left = PAD + (inner - run(others, small)) / 2.;
+            tiles.extend((0..count - 1).map(|index| Place {
+                x: left + index as f32 * (small + GAP),
+                y: PAD + height + GAP,
+                width: small,
+                height: small,
+            }));
+            let below = PAD + height + GAP + if others > 0. { small + GAP } else { 0. };
+            Places {
+                window: Size {
+                    width: inner + 2. * PAD,
+                    height: below + row.height + PAD,
+                },
+                tiles,
+                controls: Place {
+                    x: PAD + (inner - row.width) / 2.,
+                    y: below,
+                    width: row.width,
+                    height: row.height,
+                },
+            }
+        }
+    }
+}
+
+/// Exact window size for `people` faces.
 pub fn window_size(people: usize, layout: FaceLayout, face: FaceSize) -> Size<f32> {
-    sized(people, layout, tile_side(layout, face))
+    places(people, layout, tile_side(layout, face)).window
 }
 
 /// The tile side to use: the chosen size, shrunk in steps until the window fits `limit`
@@ -98,7 +288,7 @@ pub fn window_size(people: usize, layout: FaceLayout, face: FaceSize) -> Size<f3
 fn fitted_side(people: usize, layout: FaceLayout, face: FaceSize, limit: Size<f32>) -> f32 {
     let mut side = tile_side(layout, face);
     while side > 64. {
-        let size = sized(people, layout, side);
+        let size = places(people, layout, side).window;
         if size.width <= limit.width && size.height <= limit.height {
             break;
         }
@@ -107,58 +297,26 @@ fn fitted_side(people: usize, layout: FaceLayout, face: FaceSize, limit: Size<f3
     side
 }
 
-/// The middle of tile `index` in a call window of `window` size showing `people`: the
-/// reverse of [`sized`], for placing things beside a tile from outside the window.
+/// The middle of tile `index` in a call window of `window` size showing `people`, for
+/// placing things beside a tile from outside the window. The window was sized to fit the
+/// screen, so the tile size that fits the window is the one it shows.
 pub(super) fn tile_centre(
     index: usize,
     people: usize,
     layout: FaceLayout,
+    face: FaceSize,
     window: Size<f32>,
-) -> (f32, f32) {
-    let count = people.max(1) as f32;
-    let grid = controls_grid();
-    let side = |strip: f32| (strip - (count - 1.) * GAP) / count;
-    let along = |side: f32| PAD + index as f32 * (side + GAP) + side / 2.;
-    match layout {
-        FaceLayout::Row => {
-            let side = side(window.width - 2. * PAD - GAP - grid.width);
-            (along(side), window.height / 2.)
-        }
-        FaceLayout::Column | FaceLayout::Bubbles => {
-            let strip = window.height - 2. * PAD - GAP;
-            // The window is as wide as a tile, unless the controls' grid is wider.
-            let controls = if controls_in_one_row(layout, window.width - 2. * PAD) {
-                CONTROL
-            } else {
-                grid.height
-            };
-            let side = side(strip - controls);
-            (window.width / 2., along(side))
-        }
-    }
-}
-
-fn sized(people: usize, layout: FaceLayout, tile: f32) -> Size<f32> {
-    let people = people.max(1) as f32;
-    let strip = people * tile + (people - 1.) * GAP;
-    let grid = controls_grid();
-    match layout {
-        FaceLayout::Column | FaceLayout::Bubbles => {
-            let controls = if controls_in_one_row(layout, tile) {
-                CONTROL
-            } else {
-                grid.height
-            };
-            Size {
-                width: tile.max(grid.width) + 2. * PAD,
-                height: strip + GAP + controls + 2. * PAD,
-            }
-        }
-        FaceLayout::Row => Size {
-            width: strip + GAP + grid.width + 2. * PAD,
-            height: tile.max(grid.height) + 2. * PAD,
-        },
-    }
+) -> Option<(f32, f32)> {
+    // Hyprland reports whole pixels.
+    let limit = Size {
+        width: window.width + 1.,
+        height: window.height + 1.,
+    };
+    let side = fitted_side(people, layout, face, limit);
+    places(people, layout, side)
+        .tiles
+        .get(index)
+        .map(|place| place.centre())
 }
 
 /// One person in a call surface. Badges are (icon, is it an alert).
@@ -167,6 +325,9 @@ pub(super) struct Face {
     pub name: String,
     pub picture: Option<Picture>,
     pub badges: Vec<(IconName, bool)>,
+    /// They're sharing their screen (or you are): a green ring and a "Sharing" badge,
+    /// which brings their screen to you.
+    pub sharing: bool,
     /// The call hears them speaking: green bars move beside their name.
     pub speaking: bool,
     /// Their microphone is muted: a red mic beside their name.
@@ -200,9 +361,6 @@ pub(super) fn faces_for(session: &Session) -> Vec<Face> {
                 .as_deref()
                 .is_some_and(|identity| crate::protocol::canonical_identity(identity) == key);
             let mut badges = Vec::new();
-            if sharing {
-                badges.push((IconName::Monitor, false));
-            }
             if session.is_granted(&participant.identity) {
                 badges.push((IconName::MousePointer2, false));
             }
@@ -217,6 +375,7 @@ pub(super) fn faces_for(session: &Session) -> Vec<Face> {
                 heard: heard(&key),
                 key,
                 badges,
+                sharing,
                 level: None,
                 silent: false,
             };
@@ -229,9 +388,6 @@ pub(super) fn faces_for(session: &Session) -> Vec<Face> {
     // Muted shows beside your name, as everyone's does.
     if silent {
         badges.push((IconName::TriangleAlert, true));
-    }
-    if session.sharing {
-        badges.push((IconName::Monitor, false));
     }
     if session.capture.is_some() {
         badges.push((IconName::AudioLines, false));
@@ -250,12 +406,30 @@ pub(super) fn faces_for(session: &Session) -> Vec<Face> {
             None
         },
         badges,
+        sharing: session.sharing,
     };
     others
         .into_iter()
         .map(|(_, face)| face)
         .chain(std::iter::once(you))
         .collect()
+}
+
+/// Everyone as the call window shows them: in the speaker view, whoever spoke last comes
+/// first (into the big tile), else whoever leads [`faces_for`] (the sharer, or someone
+/// else before you).
+pub(super) fn faces_in_window(session: &Session, layout: FaceLayout) -> Vec<Face> {
+    let mut faces = faces_for(session);
+    if layout == FaceLayout::Speaker
+        && let Some(speaker) = session
+            .speaking
+            .last()
+            .and_then(|key| faces.iter().position(|face| face.key == key))
+    {
+        let face = faces.remove(speaker);
+        faces.insert(0, face);
+    }
+    faces
 }
 
 /// Mute, camera, share, capture, reactions and leave, wired straight to the session.
@@ -402,11 +576,12 @@ pub(super) fn capture_tooltip(capture: Option<&crate::engine::CaptureStatus>) ->
     }
 }
 
-/// A square (or round) face: camera centre-cropped to fill it, initials when it's off.
+/// A face `width` × `height` (or round): camera centre-cropped to fill it, initials when
+/// it's off.
 pub(super) fn face_tile(
     painted: &mut Painted,
     face: Face,
-    side: f32,
+    (width, height): (f32, f32),
     round: bool,
     window: &mut Window,
     cx: &gpui_kit::App,
@@ -416,6 +591,7 @@ pub(super) fn face_tile(
         name,
         picture,
         badges,
+        sharing,
         speaking,
         muted,
         level,
@@ -423,13 +599,16 @@ pub(super) fn face_tile(
         heard,
     } = face;
     let theme = cx.omarchy().clone();
+    let side = width.min(height);
     let radius = if round { side / 2. } else { 9. };
+    let you = key == super::speaking::YOU;
     let color = style::person_color(&name, cx);
     let mut tile = div()
         .id(gpui_kit::ElementId::Name(format!("tile-{key}").into()))
         .group("tile")
         .relative()
-        .size(px(side))
+        .w(px(width))
+        .h(px(height))
         .flex_shrink_0()
         .rounded(px(radius))
         .overflow_hidden()
@@ -468,14 +647,15 @@ pub(super) fn face_tile(
         );
     }
     let voice = voice(&key, muted, speaking, level, cx);
-    if round {
-        // Bubbles have no room for a name: the slot alone, while it has news.
+    if round || width < NAME_MIN_WIDTH {
+        // Bubbles and small tiles have no room for a name: the slot alone, while it has
+        // news.
         if speaking || muted {
             tile = tile.child(
                 div()
                     .absolute()
                     .bottom(px(4.))
-                    .left(px(side / 2. - 9.))
+                    .left(px(width / 2. - 9.))
                     .size(px(18.))
                     .rounded_full()
                     .flex()
@@ -493,7 +673,7 @@ pub(super) fn face_tile(
                 .absolute()
                 .left(px(5.))
                 .bottom(px(5.))
-                .max_w(px(side - 10.))
+                .max_w(px(width - 10.))
                 .h(px(16.))
                 .px(px(5.))
                 .rounded(px(4.))
@@ -507,7 +687,7 @@ pub(super) fn face_tile(
                 .child(div().min_w_0().text_ellipsis().child(name)),
         );
         if silent {
-            tile = tile.child(silent_notice(side, cx));
+            tile = tile.child(silent_notice(height, cx));
         }
     }
     let mut corner = div()
@@ -516,6 +696,9 @@ pub(super) fn face_tile(
         .right(px(5.))
         .flex()
         .gap(px(3.));
+    if sharing {
+        corner = corner.child(sharing_badge(&key, you, width >= 120., cx));
+    }
     for (glyph, alert) in badges {
         corner = corner.child(
             div()
@@ -533,9 +716,46 @@ pub(super) fn face_tile(
                 .child(icon(glyph).size(px(11.))),
         );
     }
-    tile.child(corner).when_some(heard, |tile, glow| {
-        tile.child(super::heard::light(side, radius, glow, cx))
-    })
+    tile.when(sharing, |tile| tile.border_2().border_color(theme.success))
+        .child(corner)
+        .when_some(heard, |tile, glow| {
+            tile.child(super::heard::light((width, height), radius, glow, cx))
+        })
+}
+
+/// "Sharing" in green on the sharer's tile (just the screen, on a small one). On theirs it
+/// brings their screen to you; on yours it only says so.
+fn sharing_badge(
+    key: &str,
+    you: bool,
+    label: bool,
+    cx: &gpui_kit::App,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let theme = cx.omarchy();
+    div()
+        .id(gpui_kit::ElementId::Name(format!("sharing-{key}").into()))
+        .h(px(18.))
+        .px(px(if label { 6. } else { 3.5 }))
+        .rounded_full()
+        .flex()
+        .items_center()
+        .gap(px(3.))
+        .bg(theme.success)
+        .text_color(theme.on_accent)
+        .text_size(px(10.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .child(icon(IconName::Monitor).size(px(11.)))
+        .when(label, |badge| badge.child("Sharing"))
+        .when(!you, |badge| {
+            with_tooltip(
+                badge
+                    .cursor_pointer()
+                    // A click here must not start a window drag.
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(|_, _, cx| cx.defer(super::Shell::show_viewer)),
+                "See their screen",
+            )
+        })
 }
 
 /// Before someone's name: a grey mic, green bars that move while they speak, or a red
@@ -692,6 +912,8 @@ impl Render for FacesView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.omarchy().clone();
         let session = self.session.read(cx);
+        // Settings can change them while the window is open.
+        (self.face, self.layout) = (session.settings.face_size, session.settings.face_layout);
         let people = Self::people(session);
         // Leave room for the bar and a margin around the window.
         let limit = window
@@ -708,7 +930,8 @@ impl Render for FacesView {
                 height: f32::INFINITY,
             });
         let side = fitted_side(people, self.layout, self.face, limit);
-        let wanted = sized(people, self.layout, side);
+        let places = places(people, self.layout, side);
+        let wanted = places.window;
         if self.applied != Some(wanted) {
             self.applied = Some(wanted);
             window.resize(size(px(wanted.width), px(wanted.height)));
@@ -716,7 +939,7 @@ impl Render for FacesView {
             super::hypr::fit("hopp.faces", wanted.width, wanted.height);
         }
 
-        let faces = faces_for(session);
+        let faces = faces_in_window(session, self.layout);
         // The bars move while anyone speaks.
         if faces
             .iter()
@@ -725,30 +948,44 @@ impl Render for FacesView {
             window.request_animation_frame();
         }
         let round = self.layout == FaceLayout::Bubbles;
-        let mut tiles = div().flex().gap(px(GAP));
-        tiles = if self.layout == FaceLayout::Row {
-            tiles.flex_row()
-        } else {
-            tiles.flex_col()
-        };
-        for face in faces {
-            tiles = tiles.child(face_tile(&mut self.painted, face, side, round, window, cx));
+        let mut root = div()
+            .id("faces")
+            .group("faces")
+            .relative()
+            .size_full()
+            // Frosted: the desktop shows through between the tiles (Hyprland blurs it
+            // when decoration:blur is on).
+            .bg(theme.inset.opacity(0.62))
+            .text_color(theme.foreground)
+            .font_family(theme.font.clone())
+            .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move());
+        for (face, place) in faces.into_iter().zip(&places.tiles) {
+            root = root.child(div().absolute().left(px(place.x)).top(px(place.y)).child(
+                face_tile(
+                    &mut self.painted,
+                    face,
+                    (place.width, place.height),
+                    round,
+                    window,
+                    cx,
+                ),
+            ));
         }
         self.painted.finish(window);
 
-        let controls = call_controls(&self.session, cx);
-        let one_row = controls_in_one_row(self.layout, side);
-        let mut grid = div()
+        let controls = places.controls;
+        let controls = div()
+            .absolute()
+            .left(px(controls.x))
+            .top(px(controls.y))
+            .w(px(controls.width))
             .flex()
             .flex_wrap()
             .justify_center()
-            .gap(px(CONTROL_GAP));
-        grid = if one_row {
-            grid.w_full()
-        } else {
-            grid.w(px(2. * CONTROL + CONTROL_GAP))
-        };
-        let controls = grid.children(controls);
+            .gap(px(CONTROL_GAP))
+            // Controls must not start a window drag.
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .children(call_controls(&self.session, cx));
 
         // Layout and size toggles float over the first tile on hover, so they never
         // change the window's size or shape.
@@ -761,22 +998,12 @@ impl Render for FacesView {
             .invisible()
             .group_hover("faces", |style| style.visible())
             .child(
-                style::chip(
-                    "layout",
-                    "",
-                    Some(match self.layout {
-                        FaceLayout::Column => IconName::Rows3,
-                        FaceLayout::Row => IconName::Columns3,
-                        FaceLayout::Bubbles => IconName::CircleDot,
-                    }),
-                    Tone::Off,
-                    cx,
-                )
-                .px(px(5.))
-                .on_click(cx.listener(|view, _, _, cx| {
-                    view.layout = view.layout.next();
-                    view.persist(cx);
-                })),
+                style::chip("layout", "", Some(self.layout.icon()), Tone::Off, cx)
+                    .px(px(5.))
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.layout = view.layout.next();
+                        view.persist(cx);
+                    })),
             )
             .when(!round, |row| {
                 row.child(
@@ -789,34 +1016,7 @@ impl Render for FacesView {
                 )
             });
 
-        let mut root = div()
-            .id("faces")
-            .group("faces")
-            .relative()
-            .size_full()
-            .p(px(PAD))
-            .flex()
-            .gap(px(GAP))
-            .items_center()
-            // Frosted: the desktop shows through between the tiles (Hyprland blurs it
-            // when decoration:blur is on).
-            .bg(theme.inset.opacity(0.62))
-            .text_color(theme.foreground)
-            .font_family(theme.font.clone())
-            .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move());
-        root = if self.layout == FaceLayout::Row {
-            root.flex_row()
-        } else {
-            root.flex_col()
-        };
-        root.child(tiles)
-            .child(
-                // Controls must not start a window drag.
-                div()
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .child(controls),
-            )
-            .child(tweaks)
+        root.child(controls).child(tweaks)
     }
 }
 
@@ -853,24 +1053,68 @@ pub fn open(
 mod tests {
     use super::*;
 
+    const LAYOUTS: [FaceLayout; 5] = [
+        FaceLayout::Column,
+        FaceLayout::Row,
+        FaceLayout::Bubbles,
+        FaceLayout::Grid,
+        FaceLayout::Speaker,
+    ];
+
     #[test]
     fn a_tiles_middle_is_found_from_the_window_size() {
-        for layout in [FaceLayout::Column, FaceLayout::Row, FaceLayout::Bubbles] {
-            for tile in [64., 112., 200., 320.] {
-                for people in 1..5 {
-                    let window = sized(people, layout, tile);
-                    let last = people - 1;
-                    let along = PAD + last as f32 * (tile + GAP) + tile / 2.;
-                    let wanted = if layout == FaceLayout::Row {
-                        (along, window.height / 2.)
-                    } else {
-                        (window.width / 2., along)
+        for layout in LAYOUTS {
+            for face in [FaceSize::Small, FaceSize::Medium, FaceSize::Large] {
+                for people in 1..7 {
+                    let placed = places(people, layout, tile_side(layout, face));
+                    // As Hyprland reports it, in whole pixels.
+                    let window = Size {
+                        width: placed.window.width.round(),
+                        height: placed.window.height.round(),
                     };
-                    let found = tile_centre(last, people, layout, window);
-                    assert!(
-                        (found.0 - wanted.0).abs() < 0.01 && (found.1 - wanted.1).abs() < 0.01,
-                        "{layout:?} {tile} {people}: {found:?}, not {wanted:?}"
-                    );
+                    for (index, tile) in placed.tiles.iter().enumerate() {
+                        let found = tile_centre(index, people, layout, face, window).unwrap();
+                        let wanted = tile.centre();
+                        assert!(
+                            (found.0 - wanted.0).abs() < 0.01 && (found.1 - wanted.1).abs() < 0.01,
+                            "{layout:?} {face:?} {people}: {found:?}, not {wanted:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn everything_is_inside_the_window_and_no_two_things_overlap() {
+        for layout in LAYOUTS {
+            for side in [64., 112., 200., 320.] {
+                for people in 1..10 {
+                    let placed = places(people, layout, side);
+                    assert_eq!(placed.tiles.len(), people, "{layout:?}");
+                    let all: Vec<Place> = placed
+                        .tiles
+                        .iter()
+                        .copied()
+                        .chain([placed.controls])
+                        .collect();
+                    for (index, place) in all.iter().enumerate() {
+                        assert!(
+                            place.x >= PAD - 0.01
+                                && place.y >= PAD - 0.01
+                                && place.x + place.width <= placed.window.width - PAD + 0.01
+                                && place.y + place.height <= placed.window.height - PAD + 0.01,
+                            "{layout:?} {side} {people}: {place:?} outside {:?}",
+                            placed.window
+                        );
+                        for other in &all[index + 1..] {
+                            let apart = place.x + place.width <= other.x + 0.01
+                                || other.x + other.width <= place.x + 0.01
+                                || place.y + place.height <= other.y + 0.01
+                                || other.y + other.height <= place.y + 0.01;
+                            assert!(apart, "{layout:?} {side} {people}: {place:?} on {other:?}");
+                        }
+                    }
                 }
             }
         }
@@ -913,6 +1157,43 @@ mod tests {
     }
 
     #[test]
+    fn the_grid_is_wide_tiles_as_square_as_it_can_be() {
+        let two = places(2, FaceLayout::Grid, 200.);
+        assert_eq!((two.tiles[0].width, two.tiles[0].height), (320., 180.));
+        assert_eq!(two.tiles[0].y, two.tiles[1].y, "two side by side");
+        let four = places(4, FaceLayout::Grid, 200.);
+        assert_eq!(four.window.width, two.window.width, "four in two rows");
+        assert_eq!(four.tiles[2].x, four.tiles[0].x);
+        // Three: the third in the middle under the first two.
+        let three = places(3, FaceLayout::Grid, 200.);
+        let middle = three.tiles[2].centre().0;
+        assert!((middle - three.window.width / 2.).abs() < 0.01);
+        assert_eq!(
+            three.controls.width,
+            controls_row_width(),
+            "controls in a row"
+        );
+    }
+
+    #[test]
+    fn the_speaker_is_big_and_everyone_else_is_in_a_row_below() {
+        let placed = places(4, FaceLayout::Speaker, 200.);
+        let speaker = placed.tiles[0];
+        assert_eq!((speaker.width, speaker.height), (320., 180.));
+        for other in &placed.tiles[1..] {
+            assert_eq!(other.y, speaker.y + speaker.height + GAP);
+            assert!(other.height <= speaker.height * UNDER_SPEAKER);
+        }
+        // So many people that their row is wider than the speaker: the window widens.
+        let crowd = places(14, FaceLayout::Speaker, 112.);
+        assert!(crowd.tiles[1].width >= LEAST_TILE);
+        assert!(crowd.window.width > 112. * WIDE.0 + 2. * PAD);
+        // Alone, there's no row.
+        let alone = places(1, FaceLayout::Speaker, 200.);
+        assert_eq!(alone.controls.y, PAD + 180. + GAP);
+    }
+
+    #[test]
     fn the_bars_stay_in_their_slot_and_follow_your_level() {
         for step in 0..200 {
             let seconds = step as f32 * 0.037;
@@ -938,6 +1219,6 @@ mod tests {
         assert_eq!(two, 320.);
         let five = fitted_side(5, FaceLayout::Column, FaceSize::Large, screen);
         assert!(five < 320.);
-        assert!(sized(5, FaceLayout::Column, five).height <= screen.height);
+        assert!(places(5, FaceLayout::Column, five).window.height <= screen.height);
     }
 }
