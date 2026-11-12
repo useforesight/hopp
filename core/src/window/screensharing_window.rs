@@ -1631,7 +1631,7 @@ impl ScreensharingWindow {
                 let controlling = self.mouse_in_participant_area
                     && self.state.active_tab == "control"
                     && self.state.remote_control_allowed;
-                if let Some(key) = crate::window_manager::window_key(&key_event, self.modifiers)
+                if let Some(key) = crate::window_manager::window_key(key_event, self.modifiers)
                     .filter(|_| !controlling)
                 {
                     use crate::window_manager::WindowKey;
