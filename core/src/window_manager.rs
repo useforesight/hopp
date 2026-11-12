@@ -82,6 +82,78 @@ pub fn ensure_on_screen(window: &Window) {
     }
 }
 
+/// Brings a window you may have lost back to you, before it's shown. A hidden window, or one
+/// left on another Space, comes to the screen with your pointer and the Space you're on. One
+/// you can already see stays where you put it.
+pub fn bring_to_you(window: &Window) {
+    let lost = window.is_visible() == Some(false) || !on_active_space(window);
+    log::info!("bring_to_you: lost={lost}");
+    if lost {
+        move_to_pointer_screen(window);
+    }
+    #[cfg(target_os = "macos")]
+    with_ns_window(window, |ns_window| {
+        // Ordered in, it joins the Space you're on rather than taking you to its own.
+        ns_window.setCollectionBehavior(
+            ns_window.collectionBehavior() | NSWindowCollectionBehavior::MoveToActiveSpace,
+        );
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn on_active_space(window: &Window) -> bool {
+    with_ns_window(window, |ns_window| ns_window.isOnActiveSpace()).unwrap_or(true)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn on_active_space(_window: &Window) -> bool {
+    true
+}
+
+#[cfg(target_os = "macos")]
+fn with_ns_window<T>(window: &Window, f: impl FnOnce(&objc2_app_kit::NSWindow) -> T) -> Option<T> {
+    let RawWindowHandle::AppKit(handle) = window.window_handle().ok()?.as_raw() else {
+        return None;
+    };
+    let ns_view: Option<Retained<NSView>> =
+        unsafe { Retained::retain(handle.ns_view.as_ptr().cast()) };
+    ns_view.and_then(|v| v.window()).map(|w| f(&w))
+}
+
+/// Centres the window on the screen with the pointer, unless it's on that screen already.
+#[cfg(target_os = "macos")]
+fn move_to_pointer_screen(window: &Window) {
+    let Some(pointer) = ScreenshareFunctions::cursor_position() else {
+        return;
+    };
+    let Some(monitor) = window.available_monitors().find(|m| {
+        let scale = m.scale_factor();
+        let pos: LogicalPosition<f64> = m.position().to_logical(scale);
+        let size: LogicalSize<f64> = m.size().to_logical(scale);
+        pointer.x >= pos.x
+            && pointer.x < pos.x + size.width
+            && pointer.y >= pos.y
+            && pointer.y < pos.y + size.height
+    }) else {
+        return;
+    };
+    if window.current_monitor().as_ref() == Some(&monitor) {
+        return;
+    }
+    let scale = monitor.scale_factor();
+    let pos: LogicalPosition<f64> = monitor.position().to_logical(scale);
+    let size: LogicalSize<f64> = monitor.size().to_logical(scale);
+    let outer: LogicalSize<f64> = window.outer_size().to_logical(window.scale_factor());
+    let x = pos.x + ((size.width - outer.width) / 2.0).max(0.0);
+    let y = pos.y + ((size.height - outer.height) / 2.0).max(0.0);
+    log::info!("move_to_pointer_screen: to ({x:.1}, {y:.1})");
+    window.set_outer_position(LogicalPosition::new(x, y));
+}
+
+/// Only macOS can tell where the pointer is, so elsewhere it stays where it was.
+#[cfg(not(target_os = "macos"))]
+fn move_to_pointer_screen(_window: &Window) {}
+
 #[cfg(target_os = "macos")]
 use winit::platform::macos::WindowExtMacOS;
 
