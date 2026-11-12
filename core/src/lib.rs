@@ -90,8 +90,8 @@ use room_service::RoomService;
 #[cfg(target_os = "macos")]
 use sharing_pill::{SharingPill, SharingPillClick, SharingPillState};
 use socket_lib::{
-    CallStartMessage, CameraStartMessage, Content, ContentType, Message, ScreenShareMessage,
-    ScreenSharePickerMode, ScreenShareResolution, SentryMetadata, SocketSender,
+    CallStartMessage, CallWindowPrefs, CameraStartMessage, Content, ContentType, Message,
+    ScreenShareMessage, ScreenSharePickerMode, ScreenShareResolution, SentryMetadata, SocketSender,
 };
 use stamp_voice::{StampHolder, StampVoice};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -433,6 +433,7 @@ pub struct Application<'a> {
     start_camera_on_call: bool,
     screen_share_resolution: ScreenShareResolution,
     screen_share_picker_mode: ScreenSharePickerMode,
+    call_window_prefs: CallWindowPrefs,
     remote_control_enabled: bool,
     clipboard_controller: Option<ClipboardController>,
     screen_selection: Option<ScreenSelectionState>,
@@ -530,6 +531,7 @@ impl<'a> Application<'a> {
             start_camera_on_call: false,
             screen_share_resolution: ScreenShareResolution::P4K,
             screen_share_picker_mode: ScreenSharePickerMode::Screen,
+            call_window_prefs: CallWindowPrefs::default(),
             remote_control_enabled: true,
             clipboard_controller,
             screen_selection: None,
@@ -997,7 +999,7 @@ impl<'a> Application<'a> {
         let camera_visible = self.camera_window.as_ref().is_some_and(|w| w.is_visible());
         if camera_focused && screen_visible {
             if let Some(screen) = &mut self.screensharing_window {
-                screen.focus_window();
+                screen.focus_window(true);
             }
         } else if camera_visible {
             if let Some(camera) = &self.camera_window {
@@ -1063,6 +1065,7 @@ impl<'a> Application<'a> {
             participants,
             self.event_loop_proxy.clone(),
             mic,
+            self.call_window_prefs,
         ) {
             Ok(mut cam) => {
                 cam.set_screensharing_active(screensharing_active);
@@ -2660,6 +2663,20 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                 log::info!("user_event: SetScreenSharePickerMode({mode:?})");
                 self.screen_share_picker_mode = mode;
             }
+            UserEvent::SetCallWindowPrefs(prefs) => {
+                log::info!("user_event: SetCallWindowPrefs({prefs:?})");
+                self.call_window_prefs = prefs;
+                if let Some(camera_window) = &mut self.camera_window {
+                    camera_window.set_prefs(prefs);
+                }
+            }
+            UserEvent::CallWindowPrefsChanged(prefs) => {
+                log::info!("user_event: CallWindowPrefsChanged({prefs:?})");
+                self.call_window_prefs = prefs;
+                if let Err(e) = self.socket.send(Message::CallWindowPrefsChanged(prefs)) {
+                    log::error!("Failed to send CallWindowPrefsChanged: {e:?}");
+                }
+            }
             UserEvent::SetTelemetryEnabled(enabled) => {
                 log::info!("user_event: SetTelemetryEnabled({enabled})");
                 sentry_utils::set_telemetry_enabled(enabled);
@@ -2896,6 +2913,9 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                 redraw_tx,
             } => {
                 log::info!("user_event: OpenScreenShareWindow");
+                // A new share comes with its redraw channel; asked for by hand, it comes without.
+                let bring_to_you =
+                    redraw_tx.is_none() || self.call_window_prefs.bring_shared_to_you;
                 let buffer = self
                     .room_service
                     .as_ref()
@@ -2918,7 +2938,7 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                             (rx, tx),
                         );
                     }
-                    screensharing_window.focus_window();
+                    screensharing_window.focus_window(bring_to_you);
                 } else if let Some(room_service) = self.room_service.as_ref() {
                     if let Some(screen_share_buffer) = room_service.screen_share_buffer() {
                         let redraw_rx = redraw_rx.and_then(|arc| arc.lock().ok()?.take());
@@ -2981,7 +3001,7 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                 let mut focused = false;
                 if let Some(screen_sharing_window) = &mut self.screensharing_window {
                     if screen_sharing_window.is_visible() {
-                        screen_sharing_window.focus_window();
+                        screen_sharing_window.focus_window(true);
                         focused = true;
                     }
                 }
@@ -3939,6 +3959,9 @@ pub enum UserEvent {
     SetNoiseCancellation(bool),
     SetScreenShareResolution(ScreenShareResolution),
     SetScreenSharePickerMode(ScreenSharePickerMode),
+    SetCallWindowPrefs(CallWindowPrefs),
+    /// Changed from a call window, for the app to remember.
+    CallWindowPrefsChanged(CallWindowPrefs),
     SetTelemetryEnabled(bool),
     CreateRoomResult(Result<Vec<socket_lib::CoreParticipantState>, String>),
     /// The call server cut this call off; the app decides whether to rejoin or leave.
@@ -4102,6 +4125,7 @@ impl RenderEventLoop {
                     Message::SetScreenSharePickerMode(mode) => {
                         UserEvent::SetScreenSharePickerMode(mode)
                     }
+                    Message::SetCallWindowPrefs(prefs) => UserEvent::SetCallWindowPrefs(prefs),
                     Message::SetTelemetryEnabled(enabled) => {
                         UserEvent::SetTelemetryEnabled(enabled)
                     }

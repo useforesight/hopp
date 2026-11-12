@@ -154,6 +154,76 @@ pub fn bring_to_you(window: &Window) {
     });
 }
 
+/// The part of the window's screen that windows can use, clear of the menu bar and the Dock:
+/// x, y, width, height in points from the top left of the main screen.
+pub fn usable_area(window: &Window) -> Option<[f64; 4]> {
+    #[cfg(target_os = "macos")]
+    {
+        let area = with_ns_window(window, |ns_window| {
+            let mtm = objc2::MainThreadMarker::new()?;
+            let screen = ns_window.screen()?;
+            // Cocoa counts up from the bottom of the main screen; winit counts down from its top.
+            let main_height = objc2_app_kit::NSScreen::screens(mtm)
+                .firstObject()?
+                .frame()
+                .size
+                .height;
+            let visible = screen.visibleFrame();
+            Some([
+                visible.origin.x,
+                main_height - visible.origin.y - visible.size.height,
+                visible.size.width,
+                visible.size.height,
+            ])
+        })
+        .flatten();
+        if area.is_some() {
+            return area;
+        }
+    }
+    let monitor = window
+        .current_monitor()
+        .or_else(|| window.available_monitors().next())?;
+    let scale = monitor.scale_factor();
+    let pos: LogicalPosition<f64> = monitor.position().to_logical(scale);
+    let size: LogicalSize<f64> = monitor.size().to_logical(scale);
+    // Roughly where a menu bar or a task bar would be.
+    Some([pos.x, pos.y + 32.0, size.width, size.height - 64.0])
+}
+
+/// Takes away, or gives back, the window's title-bar buttons and shadow, for a window that
+/// is only what it draws.
+pub fn set_bare(window: &Window, bare: bool) {
+    #[cfg(target_os = "macos")]
+    with_ns_window(window, |ns_window| {
+        use objc2_app_kit::NSWindowButton;
+        for kind in [
+            NSWindowButton::CloseButton,
+            NSWindowButton::MiniaturizeButton,
+            NSWindowButton::ZoomButton,
+        ] {
+            if let Some(button) = ns_window.standardWindowButton(kind) {
+                button.setHidden(bare);
+            }
+        }
+        ns_window.setHasShadow(!bare);
+    });
+    #[cfg(not(target_os = "macos"))]
+    let _ = (window, bare);
+}
+
+/// Whether a mouse button is held down anywhere, as it is while a window is dragged.
+pub fn mouse_button_held() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        objc2_app_kit::NSEvent::pressedMouseButtons() != 0
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn on_active_space(window: &Window) -> bool {
     with_ns_window(window, |ns_window| ns_window.isOnActiveSpace()).unwrap_or(true)
