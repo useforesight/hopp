@@ -31,6 +31,7 @@ use iced_winit::core::{window, Event, Size, Theme};
 use iced_winit::runtime::user_interface::Cache;
 use iced_winit::runtime::UserInterface;
 use iced_winit::{conversion, Clipboard};
+use socket_lib::{CallWindowPrefs, FacesLayout, FacesOnTop, PinnedStyle, ScreenCorner};
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::keyboard::ModifiersState;
@@ -121,7 +122,7 @@ const COMPACT_WIDTH_THRESHOLD: f32 = 300.0;
 const REGULAR_CONTROLS_MIN_WIDTH: f32 =
     CallControlsDensity::Regular.total_width() + 2.0 * (HEADER_SIDE_WIDTH + CONTENT_PADDING);
 /// Keeps the native traffic lights clear, and balances them on the other side of the controls.
-const HEADER_SIDE_WIDTH: f32 = 80.0;
+const HEADER_SIDE_WIDTH: f32 = 92.0;
 /// Narrower than this, the controls don't fit in the header at all.
 const HEADER_CONTROLS_MIN_WIDTH: f32 =
     CallControlsDensity::Compact.total_width() + 2.0 * (HEADER_SIDE_WIDTH + CONTENT_PADDING);
@@ -132,6 +133,8 @@ const CONTROLS_STRIP_MIN_WINDOW_HEIGHT: f32 = 140.0;
 /// Narrower than this, the controls are down to the essentials.
 const ICON_CONTROLS_MIN_WIDTH: f32 = CallControlsDensity::Icons.total_width() + 8.0;
 const HIDE_NAME_TILE_THRESHOLD: f32 = 150.0;
+/// Narrower than this, a tile in another window has no room for a name.
+const FACE_CARD_NAME_MIN_WIDTH: f32 = 96.0;
 
 const COMPACT_TOP_INSET: f32 = 24.0;
 
@@ -139,13 +142,48 @@ const ICON_MICROPHONE_OFF: char = '\u{F106}';
 const ICON_PIN_ANGLE: char = '\u{F10B}';
 const ICON_SCREEN_SHARE: char = '\u{F102}';
 
-const PIN_CORNER_WIDTH: f64 = CAMERA_WINDOW_MIN_WIDTH;
-const PIN_CORNER_HEIGHT: f64 = CAMERA_WINDOW_MIN_HEIGHT;
-const PIN_CORNER_MARGIN: f64 = 40.0;
+/// Pinned as a box of everyone.
+const PIN_BOX_WIDTH: f64 = CAMERA_WINDOW_MIN_WIDTH;
+const PIN_BOX_HEIGHT: f64 = CAMERA_WINDOW_MIN_HEIGHT;
+/// Pinned to show only whoever is speaking: room for their picture and name. Short enough
+/// that the controls show on hover, see `CONTROLS_STRIP_MIN_WINDOW_HEIGHT`.
+const PIN_SPEAKER_WIDTH: f64 = 200.0;
+const PIN_SPEAKER_HEIGHT: f64 = 135.0;
+/// Between a pinned window and the edges of the screen.
+const PIN_CORNER_MARGIN: f64 = 16.0;
+
+/// Pinned as a strip: a column of round faces, a little bigger while someone speaks.
+const STRIP_FACE: f32 = 44.0;
+const STRIP_SPEAKER_FACE: f32 = 52.0;
+const STRIP_GAP: f32 = 8.0;
+/// Room for a face's ring and shadow at the edges of the window.
+const STRIP_PADDING: f32 = 8.0;
+const STRIP_BUTTON_HEIGHT: f32 = 26.0;
+/// Under the faces, for the controls that show on hover.
+const STRIP_CONTROLS_HEIGHT: f32 = STRIP_GAP + 2.0 * STRIP_BUTTON_HEIGHT + 6.0;
+/// With more people than this, the strip ends with how many more there are.
+const STRIP_MAX_FACES: usize = 6;
+const STRIP_WIDTH: f32 = STRIP_SPEAKER_FACE + 2.0 * STRIP_PADDING;
+
+/// How long a dragged pinned window waits, still, before it settles into the nearest corner.
+const SNAP_DELAY: Duration = Duration::from_millis(250);
+/// Someone who takes over the speaker view keeps it at least this long, so it doesn't flick
+/// between people talking over each other.
+const SPEAKER_HOLD: Duration = Duration::from_millis(1500);
+
+/// Tiles go from square, where the space is tall, to as wide as a camera's picture.
+const SQUAREST_TILE: f32 = 1.0;
+const WIDEST_TILE: f32 = 16.0 / 9.0;
+/// The speaker view's row of everyone else, as a share of the height, and its limits.
+const SPEAKER_ROW_SHARE: f32 = 0.22;
+const SPEAKER_ROW_MIN_HEIGHT: f32 = 60.0;
+const SPEAKER_ROW_MAX_HEIGHT: f32 = 140.0;
 
 const ICON_EYE_ON_SVG: &[u8] = include_bytes!("../../resources/icons/EyeOn.svg");
 const ICON_MICROPHONE_SVG: &[u8] = include_bytes!("../../resources/icons/microphone.svg");
 const ICON_EYE_OFF_SVG: &[u8] = include_bytes!("../../resources/icons/EyeOff.svg");
+const ICON_LAYOUT_GRID_SVG: &[u8] = include_bytes!("../../resources/icons/layout-grid.svg");
+const ICON_LAYOUT_SPEAKER_SVG: &[u8] = include_bytes!("../../resources/icons/layout-speaker.svg");
 
 const AVATAR_SIZE: f32 = 130.0;
 const AVATAR_RADIUS: f32 = 20.0;
@@ -173,6 +211,10 @@ pub enum CameraMessage {
     PinToCorner,
     /// Bring the shared screen to you, from the sharer's badge.
     ViewScreen,
+    /// Pressed on a pinned window's faces, which move it.
+    DragWindow,
+    /// Between everyone the same size and the speaker big.
+    ToggleLayout,
 }
 
 struct CameraState {
@@ -188,6 +230,11 @@ struct CameraState {
     /// True while the pointer is on the window (`ControlsPlacement::Hover` shows the controls).
     pointer_over_window: bool,
     toast: Option<ToastState>,
+    /// How the window looks while it's pinned; None when it's an ordinary window.
+    pinned: Option<PinnedStyle>,
+    layout: FacesLayout,
+    /// Who the speaker view shows, see `SpeakerFocus`.
+    speaker: Option<String>,
 }
 
 impl Default for CameraState {
@@ -199,7 +246,45 @@ impl Default for CameraState {
             is_compact: false,
             pointer_over_window: false,
             toast: None,
+            pinned: None,
+            layout: FacesLayout::default(),
+            speaker: None,
         }
+    }
+}
+
+/// Who the speaker view shows: whoever is talking. Someone who takes over keeps it for at
+/// least `SPEAKER_HOLD`, and the last to speak keeps it while nobody talks.
+#[derive(Default)]
+struct SpeakerFocus {
+    identity: Option<String>,
+    since: Option<Instant>,
+}
+
+impl SpeakerFocus {
+    /// `people` in the order they're shown, each with whether they're speaking.
+    fn update(&mut self, people: &[(&str, bool)], now: Instant) -> Option<String> {
+        let here = |identity: &str| people.iter().find(|(person, _)| *person == identity);
+        let current = self.identity.as_deref().and_then(here);
+        if current.is_none() {
+            self.identity = None;
+        }
+        let current_speaking = current.is_some_and(|(_, speaking)| *speaking);
+        let held = current.is_some()
+            && self
+                .since
+                .is_some_and(|since| now.saturating_duration_since(since) < SPEAKER_HOLD);
+        if !current_speaking && !held {
+            if let Some((next, _)) = people.iter().find(|(_, speaking)| *speaking) {
+                self.identity = Some(next.to_string());
+                self.since = Some(now);
+            }
+        }
+        if self.identity.is_none() {
+            self.identity = people.first().map(|(person, _)| person.to_string());
+            self.since = Some(now);
+        }
+        self.identity.clone()
     }
 }
 
@@ -227,8 +312,14 @@ pub struct CameraWindow {
     screensharing_active: bool,
     resize_timer: Option<Instant>,
     visible: bool,
-    /// Whether the window floats over others: only while it's pinned.
+    /// Whether the window floats over others, see `FacesOnTop`.
     on_top: bool,
+    prefs: CallWindowPrefs,
+    speaker_focus: SpeakerFocus,
+    /// When a pinned window last moved, until it settles into a corner.
+    moved_at: Option<Instant>,
+    /// How many faces the pinned strip is sized for.
+    strip_faces: usize,
 }
 
 pub fn camera_window_attributes() -> WindowAttributes {
@@ -265,6 +356,7 @@ impl CameraWindow {
         participants: Arc<RwLock<HashMap<String, ParticipantInfo>>>,
         event_loop_proxy: EventLoopProxy<UserEvent>,
         active_mic_name: Option<String>,
+        prefs: CallWindowPrefs,
     ) -> Result<Self, CameraWindowError> {
         log::info!("CameraWindow::new");
 
@@ -323,6 +415,7 @@ impl CameraWindow {
             .unwrap_or(false);
         let state = CameraState {
             viewport_size: IcedSize::new(logical.width, logical.height),
+            layout: prefs.layout,
             ..Default::default()
         };
         let call_controls = CallControlsState::new(camera_active, None, active_mic_name);
@@ -353,7 +446,25 @@ impl CameraWindow {
             resize_timer: None,
             visible: true,
             on_top: false,
+            prefs,
+            speaker_focus: SpeakerFocus::default(),
+            moved_at: None,
+            strip_faces: 0,
         })
+    }
+
+    /// Settings for the call windows, from the app.
+    pub fn set_prefs(&mut self, prefs: CallWindowPrefs) {
+        let restyle = self
+            .state
+            .pinned
+            .is_some_and(|style| style != prefs.pinned_style);
+        self.prefs = prefs;
+        self.state.layout = prefs.layout;
+        if restyle {
+            self.pin_to_corner();
+        }
+        self.sync_compact_constraints();
     }
 
     /// Recreates the context's render engine and rebuilds this window's renderer on it.
@@ -422,8 +533,12 @@ impl CameraWindow {
             .ok()
             .and_then(|p| p.get("local").map(|info| info.camera_active()))
             .unwrap_or(false);
+        // Still the size and shape it was put away at, so still pinned if it was.
         self.state = CameraState {
             viewport_size: IcedSize::new(logical.width, logical.height),
+            pinned: self.state.pinned,
+            self_hidden: self.state.pinned.is_some(),
+            layout: self.prefs.layout,
             ..Default::default()
         };
         self.call_controls = CallControlsState::new(camera_active, None, active_mic_name);
@@ -619,6 +734,11 @@ impl CameraWindow {
             WindowEvent::ModifiersChanged(new_modifiers) => {
                 self.modifiers = new_modifiers.state();
             }
+            WindowEvent::Moved(_) => {
+                if self.state.pinned.is_some() {
+                    self.moved_at = Some(Instant::now());
+                }
+            }
             WindowEvent::Resized(new_size) => {
                 if new_size.width > 0 && new_size.height > 0 {
                     self.viewport = Viewport::with_physical_size(
@@ -627,6 +747,10 @@ impl CameraWindow {
                     );
                     let logical = self.viewport.logical_size();
                     self.state.viewport_size = IcedSize::new(logical.width, logical.height);
+                    // Made bigger by hand, it's an ordinary window again.
+                    if logical.width >= COMPACT_WIDTH_THRESHOLD && self.state.pinned.is_some() {
+                        self.state.pinned = None;
+                    }
 
                     self.sync_compact_constraints();
 
@@ -699,6 +823,9 @@ impl CameraWindow {
         outer_skip: bool,
         last_rendered_frame_ids: &mut HashMap<String, u64>,
     ) -> iced::Element<'a, CameraMessage, Theme, iced::Renderer> {
+        if state.pinned == Some(PinnedStyle::Strip) {
+            return strip_view(state, participants, outer_skip, last_rendered_frame_ids);
+        }
         let (controls_placement, controls_density) = controls_layout(state.viewport_size);
         let controls = call_controls
             .view(participants, controls_density)
@@ -716,13 +843,24 @@ impl CameraWindow {
         } else {
             0.0
         };
+        let arrangement = if state.pinned == Some(PinnedStyle::Speaker) {
+            Arrangement::OnlySpeaker
+        } else if state.is_compact || state.layout == FacesLayout::Grid {
+            Arrangement::Grid
+        } else {
+            Arrangement::Speaker
+        };
         let video_grid = create_participant_grid(
-            state.viewport_size,
+            GridProps {
+                available_size: state.viewport_size,
+                self_hidden: state.self_hidden,
+                local_tile_hovered: state.local_tile_hovered,
+                reserved_height: top_inset + strip_height,
+                outer_skip,
+                arrangement,
+                speaker: state.speaker.as_deref(),
+            },
             participants,
-            state.self_hidden,
-            state.local_tile_hovered,
-            top_inset + strip_height,
-            outer_skip,
             last_rendered_frame_ids,
         );
 
@@ -847,7 +985,7 @@ impl CameraWindow {
         }
         if !state.is_compact {
             layers.push(
-                container(pin_button())
+                container(row![layout_button(state.layout), pin_button()].spacing(6))
                     .width(Length::Fill)
                     .height(Length::Fill)
                     .align_x(Alignment::End)
@@ -904,6 +1042,19 @@ impl CameraWindow {
                     self.pin_to_corner();
                 }
             }
+            CameraMessage::ToggleLayout => {
+                self.prefs.layout = match self.prefs.layout {
+                    FacesLayout::Grid => FacesLayout::Speaker,
+                    FacesLayout::Speaker => FacesLayout::Grid,
+                };
+                self.state.layout = self.prefs.layout;
+                self.send_prefs();
+            }
+            CameraMessage::DragWindow => {
+                if let Err(e) = self.window.drag_window() {
+                    log::warn!("CameraWindow: couldn't drag the window: {e:?}");
+                }
+            }
             CameraMessage::ViewScreen => {
                 let open = UserEvent::OpenScreenShareWindow {
                     participants: Arc::new(RwLock::new(HashMap::new())),
@@ -922,10 +1073,15 @@ impl CameraWindow {
     fn sync_compact_constraints(&mut self) {
         self.state.is_compact = self.state.viewport_size.width < COMPACT_WIDTH_THRESHOLD;
 
-        // Pinned, the faces float over everything. Full size, they're a window like any
-        // other, so they don't sit on top of a shared screen.
-        if self.on_top != self.state.is_compact {
-            self.on_top = self.state.is_compact;
+        // By default the faces float over everything only while pinned. Full size, they're a
+        // window like any other, so they don't sit on top of a shared screen.
+        let on_top = match self.prefs.faces_on_top {
+            FacesOnTop::Always => true,
+            FacesOnTop::WhenPinned => self.state.is_compact,
+            FacesOnTop::Never => false,
+        };
+        if self.on_top != on_top {
+            self.on_top = on_top;
             self.window.set_window_level(if self.on_top {
                 winit::window::WindowLevel::AlwaysOnTop
             } else {
@@ -940,40 +1096,46 @@ impl CameraWindow {
         }
     }
 
-    /// Resize and reposition the window to the top-right corner of the current monitor,
-    /// hiding the local participant tile.
+    /// Shrinks the window into a corner of its screen, in the style from Settings, hiding
+    /// the local participant.
     fn pin_to_corner(&mut self) {
+        let style = self.prefs.pinned_style;
+        self.state.pinned = Some(style);
         self.state.self_hidden = true;
         self.state.local_tile_hovered = false;
         // The window is about to move out from under the pointer.
         self.cursor = mouse::Cursor::Unavailable;
         self.state.pointer_over_window = false;
 
-        let monitor = self
+        let strip = style == PinnedStyle::Strip;
+        self.set_bare(strip);
+        // The strip is sized by how many faces it has, not by hand.
+        self.window.set_resizable(!strip);
+        self.strip_faces = self.count_strip_faces();
+        let (width, height) = self.pinned_size();
+        self.window
+            .set_min_inner_size(Some(winit::dpi::LogicalSize::new(
+                width.min(CAMERA_WINDOW_MIN_WIDTH),
+                height.min(CAMERA_WINDOW_MIN_HEIGHT),
+            )));
+        let _ = self
             .window
-            .current_monitor()
-            .or_else(|| self.window.available_monitors().next());
-
-        if let Some(monitor) = monitor {
-            let scale = monitor.scale_factor();
-            let mon_size: winit::dpi::LogicalSize<f64> = monitor.size().to_logical(scale);
-            let mon_pos: winit::dpi::LogicalPosition<f64> = monitor.position().to_logical(scale);
-
-            let x = mon_pos.x + mon_size.width - PIN_CORNER_WIDTH - PIN_CORNER_MARGIN;
-            let y = mon_pos.y + PIN_CORNER_MARGIN;
-
-            let _ = self.window.request_inner_size(winit::dpi::LogicalSize::new(
-                PIN_CORNER_WIDTH,
-                PIN_CORNER_HEIGHT,
-            ));
-            self.window
-                .set_outer_position(winit::dpi::LogicalPosition::new(x, y));
-        }
+            .request_inner_size(winit::dpi::LogicalSize::new(width, height));
+        self.place_in_corner(self.prefs.pinned_corner, (width, height));
     }
 
     /// Restore the window to its default size, centered on the current monitor.
     fn unpin(&mut self) {
         self.state.self_hidden = false;
+        self.state.pinned = None;
+        self.moved_at = None;
+        self.set_bare(false);
+        self.window.set_resizable(true);
+        self.window
+            .set_min_inner_size(Some(winit::dpi::LogicalSize::new(
+                CAMERA_WINDOW_MIN_WIDTH,
+                CAMERA_WINDOW_MIN_HEIGHT,
+            )));
 
         let monitor = self
             .window
@@ -998,9 +1160,130 @@ impl CameraWindow {
         }
     }
 
+    /// The strip has no frame, shadow or frosted glass: only its faces.
+    fn set_bare(&self, bare: bool) {
+        crate::window_manager::set_bare(&self.window, bare);
+        #[cfg(target_os = "macos")]
+        super::vibrancy::set_macos_vibrancy_hidden(&self.window, bare);
+    }
+
+    fn pinned_size(&self) -> (f64, f64) {
+        match self.state.pinned {
+            Some(PinnedStyle::Strip) => strip_size(self.strip_faces),
+            Some(PinnedStyle::Speaker) => (PIN_SPEAKER_WIDTH, PIN_SPEAKER_HEIGHT),
+            _ => (PIN_BOX_WIDTH, PIN_BOX_HEIGHT),
+        }
+    }
+
+    fn count_strip_faces(&self) -> usize {
+        let participants = self.participants.read().unwrap();
+        let (faces, more) = strip_people(&participants, self.state.self_hidden);
+        faces.len() + usize::from(more > 0)
+    }
+
+    fn place_in_corner(&self, corner: ScreenCorner, size: (f64, f64)) {
+        let Some(area) = crate::window_manager::usable_area(&self.window) else {
+            return;
+        };
+        let (x, y) = corner_position(corner, size, area);
+        self.window
+            .set_outer_position(winit::dpi::LogicalPosition::new(x, y));
+    }
+
+    /// The strip grows and shrinks as people come and go, staying in its corner.
+    fn sync_strip_size(&mut self) {
+        if self.state.pinned != Some(PinnedStyle::Strip) {
+            return;
+        }
+        let faces = self.count_strip_faces();
+        if faces == self.strip_faces {
+            return;
+        }
+        self.strip_faces = faces;
+        let size = strip_size(faces);
+        let _ = self
+            .window
+            .request_inner_size(winit::dpi::LogicalSize::new(size.0, size.1));
+        self.place_in_corner(self.prefs.pinned_corner, size);
+    }
+
+    /// A pinned window let go after a drag goes to the nearest corner, and stays in that
+    /// corner the next time it's pinned.
+    fn settle_in_corner(&mut self) {
+        let Some(moved_at) = self.moved_at else {
+            return;
+        };
+        if moved_at.elapsed() < SNAP_DELAY || crate::window_manager::mouse_button_held() {
+            return;
+        }
+        self.moved_at = None;
+        if self.state.pinned.is_none() {
+            return;
+        }
+        let Some(area) = crate::window_manager::usable_area(&self.window) else {
+            return;
+        };
+        let Ok(position) = self.window.outer_position() else {
+            return;
+        };
+        let scale = self.window.scale_factor();
+        let position: winit::dpi::LogicalPosition<f64> = position.to_logical(scale);
+        let size: winit::dpi::LogicalSize<f64> = self.window.outer_size().to_logical(scale);
+        let centre = (
+            position.x + size.width / 2.0,
+            position.y + size.height / 2.0,
+        );
+        let corner = nearest_corner(centre, area);
+        let (x, y) = corner_position(corner, (size.width, size.height), area);
+        // Its own move here comes back as another, which finds it already in place.
+        if (x - position.x).abs() > 1.0 || (y - position.y).abs() > 1.0 {
+            self.window
+                .set_outer_position(winit::dpi::LogicalPosition::new(x, y));
+        }
+        if corner != self.prefs.pinned_corner {
+            log::info!("CameraWindow: pinned to {corner:?}");
+            self.prefs.pinned_corner = corner;
+            self.send_prefs();
+        }
+    }
+
+    /// For the app to remember what was changed here.
+    fn send_prefs(&self) {
+        if let Err(e) = self
+            .event_loop_proxy
+            .send_event(UserEvent::CallWindowPrefsChanged(self.prefs))
+        {
+            log::error!("CameraWindow: failed to send CallWindowPrefsChanged: {e:?}");
+        }
+    }
+
+    /// Who the speaker view shows: someone else when there's anyone else.
+    fn sync_speaker(&mut self) {
+        let participants = self.participants.read().unwrap();
+        let mut people: Vec<(&str, bool)> = participants
+            .iter()
+            .filter(|(identity, _)| identity.as_str() != "local")
+            .map(|(identity, info)| (identity.as_str(), info.is_speaking()))
+            .collect();
+        people.sort_by_key(|(identity, _)| participants[*identity].name());
+        if people.is_empty() {
+            people.extend(
+                participants
+                    .get("local")
+                    .map(|info| ("local", info.is_speaking())),
+            );
+        }
+        let speaker = self.speaker_focus.update(&people, Instant::now());
+        drop(participants);
+        self.state.speaker = speaker;
+    }
+
     /// Perform a full redraw: build UI, draw, present.
     fn redraw(&mut self) {
         self.sync_compact_constraints();
+        self.sync_speaker();
+        self.sync_strip_size();
+        self.settle_in_corner();
         toast::tick_toast(&mut self.state.toast);
 
         let output = match self.surface.get_current_texture() {
@@ -1387,6 +1670,71 @@ fn self_visibility_button<'a>(
         .into()
 }
 
+/// Shows the layout you'd switch to.
+fn layout_button<'a>(
+    layout: FacesLayout,
+) -> iced::Element<'a, CameraMessage, Theme, iced::Renderer> {
+    let (icon_data, tooltip_text) = match layout {
+        FacesLayout::Grid => (ICON_LAYOUT_SPEAKER_SVG, "Speaker view"),
+        FacesLayout::Speaker => (ICON_LAYOUT_GRID_SVG, "Everyone the same size"),
+    };
+    let slate300 = ColorToken::Slate300.to_color();
+    let icon = svg(svg::Handle::from_memory(icon_data))
+        .width(Length::Fixed(14.0))
+        .height(Length::Fixed(14.0))
+        .style(move |_theme: &Theme, _status| svg::Style {
+            color: Some(slate300),
+        });
+
+    let btn = button(
+        container(icon)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill),
+    )
+    .width(Length::Fixed(38.0))
+    .height(Length::Fixed(26.0))
+    .on_press(CameraMessage::ToggleLayout)
+    .padding(Padding::from([6.0, 12.0]))
+    .style(move |_theme: &Theme, status| {
+        let bg_color = match status {
+            button::Status::Hovered => ColorToken::Slate600.to_color(),
+            button::Status::Pressed => ColorToken::Slate800.to_color(),
+            _ => ColorToken::Slate700.to_color(),
+        };
+        button::Style {
+            background: Some(Background::Color(bg_color)),
+            border: Border {
+                color: Color::from_rgba(1.0, 1.0, 1.0, 0.3),
+                width: 1.0,
+                radius: 19.0.into(),
+            },
+            text_color: Color::WHITE,
+            shadow: Shadow::default(),
+            snap: false,
+        }
+    });
+
+    let tooltip_content = container(text(tooltip_text).size(12).color(Color::WHITE))
+        .padding(Padding::from([4.0, 8.0]))
+        .style(|_theme: &Theme| container::Style {
+            background: Some(Background::Color(ColorToken::Gray600.to_color())),
+            border: Border {
+                color: Color::from_rgba(1.0, 1.0, 1.0, 0.15),
+                width: 1.0,
+                radius: 6.0.into(),
+            },
+            shadow: ShadowToken::Xs.to_shadow(),
+            ..Default::default()
+        });
+
+    tooltip(btn, tooltip_content, tooltip::Position::Bottom)
+        .gap(4)
+        .snap_within_viewport(true)
+        .into()
+}
+
 fn pin_button<'a>() -> iced::Element<'a, CameraMessage, Theme, iced::Renderer> {
     let shortcut = if cfg!(target_os = "macos") {
         "⌘P"
@@ -1462,7 +1810,7 @@ struct ParticipantCardProps<'a> {
     pub(super) is_capturing: bool,
     pub(super) is_sharing: bool,
     pub(super) buffers: Arc<VideoBufferManager>,
-    pub(super) tile_size: f32,
+    pub(super) tile: TileSize,
     pub(super) is_small_window: bool,
     pub(super) is_local: bool,
     pub(super) local_tile_hovered: bool,
@@ -1486,7 +1834,7 @@ fn participant_card<'a>(
         is_capturing,
         is_sharing,
         buffers,
-        tile_size,
+        tile,
         is_small_window,
         is_local,
         local_tile_hovered,
@@ -1501,7 +1849,7 @@ fn participant_card<'a>(
     // Background layer: GPU video if buffer exists and is active, Slate900 fallback otherwise
     let bg_element: iced::Element<'a, CameraMessage, Theme, iced::Renderer> =
         if buffers.is_inactive() {
-            container(initials_avatar(name, tile_size))
+            container(initials_avatar(name, tile.width.min(tile.height)))
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .center_x(Length::Fill)
@@ -1630,7 +1978,13 @@ fn participant_card<'a>(
         .width(Length::Fill)
         .height(Length::Fill)
         .style(move |_theme: &Theme| container::Style {
-            border: if is_sharing {
+            border: if is_speaking {
+                Border {
+                    color: ColorToken::Green400.to_color(),
+                    width: 2.0,
+                    radius: TILE_RADIUS.into(),
+                }
+            } else if is_sharing {
                 Border {
                     color: ColorToken::Emerald500.to_color(),
                     width: 2.0,
@@ -1648,8 +2002,8 @@ fn participant_card<'a>(
 
     // Stack: clipped video below, border on top.
     let tile = container(iced::widget::stack![clipped_content, border_frame])
-        .width(Length::Fixed(tile_size))
-        .height(Length::Fixed(tile_size))
+        .width(Length::Fixed(tile.width))
+        .height(Length::Fixed(tile.height))
         .style(move |_theme: &Theme| container::Style {
             border: Border {
                 radius: TILE_RADIUS.into(),
@@ -1671,6 +2025,34 @@ fn participant_card<'a>(
     } else {
         tile.into()
     }
+}
+
+/// Someone's tile in another window: the same as theirs here, without this window's buttons.
+/// `nothing` is that window's message for a tile that doesn't do anything.
+pub(crate) fn face_card<'a, M: Clone + 'a>(
+    identity: &str,
+    info: &ParticipantInfo,
+    (width, height): (f32, f32),
+    skip_buffer: bool,
+    nothing: M,
+) -> iced::Element<'a, M, Theme, iced::Renderer> {
+    participant_card(ParticipantCardProps {
+        participant_id: identity_to_id(identity),
+        name: info.name(),
+        is_speaking: info.is_speaking(),
+        is_muted: info.muted(),
+        is_capturing: info.capturing(),
+        // You're looking at their screen already.
+        is_sharing: false,
+        buffers: info.camera_buffers(),
+        tile: TileSize { width, height },
+        is_small_window: true,
+        is_local: identity == "local",
+        local_tile_hovered: false,
+        hide_name: width < FACE_CARD_NAME_MIN_WIDTH,
+        skip_buffer,
+    })
+    .map(move |_| nothing.clone())
 }
 
 /// "Sharing" on the sharer's tile. On someone else's, it's a button to their screen.
@@ -1792,7 +2174,7 @@ fn capturing_badge<'a>() -> iced::Element<'a, CameraMessage, Theme, iced::Render
 }
 
 /// Hash an identity string to a u64 for GPU texture keying.
-fn identity_to_id(identity: &str) -> u64 {
+pub(crate) fn identity_to_id(identity: &str) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let mut hasher = DefaultHasher::new();
@@ -1832,17 +2214,184 @@ fn controls_layout(viewport_size: IcedSize) -> (ControlsPlacement, CallControlsD
     (placement, density)
 }
 
-/// Create the responsive participant grid.
-///
-/// Calculates optimal grid layout based on available size, maximizing tile size
-/// while ensuring all participants are visible. Matches the iced-poc algorithm.
-fn create_participant_grid<'a>(
+/// A tile's size, in logical points.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct TileSize {
+    width: f32,
+    height: f32,
+}
+
+impl TileSize {
+    fn area(self) -> f32 {
+        self.width * self.height
+    }
+}
+
+/// The biggest tile that fits in a cell this size: as wide as the cell allows, between
+/// square and a camera's 16:9.
+fn fit_tile(cell_width: f32, cell_height: f32) -> TileSize {
+    if cell_width <= 0.0 || cell_height <= 0.0 {
+        return TileSize {
+            width: 0.0,
+            height: 0.0,
+        };
+    }
+    let aspect = (cell_width / cell_height).clamp(SQUAREST_TILE, WIDEST_TILE);
+    let width = cell_width.min(cell_height * aspect);
+    TileSize {
+        width,
+        height: width / aspect,
+    }
+}
+
+/// Columns, rows and tile size that show `count` people as big as they'll go in this space.
+fn grid_layout(count: usize, width: f32, height: f32) -> (usize, usize, TileSize) {
+    let mut best = (1, count, fit_tile(0.0, 0.0));
+    for cols in 1..=count {
+        let rows = count.div_ceil(cols);
+        let tile = fit_tile(
+            (width - TILE_SPACING * (cols - 1) as f32) / cols as f32,
+            (height - TILE_SPACING * (rows - 1) as f32) / rows as f32,
+        );
+        if tile.area() > best.2.area() {
+            best = (cols, rows, tile);
+        }
+    }
+    best
+}
+
+/// The speaker's tile, and the tiles in the row of `others` below it.
+fn speaker_layout(others: usize, width: f32, height: f32) -> (TileSize, TileSize) {
+    if others == 0 {
+        return (fit_tile(width, height), fit_tile(0.0, 0.0));
+    }
+    let row_height =
+        (height * SPEAKER_ROW_SHARE).clamp(SPEAKER_ROW_MIN_HEIGHT, SPEAKER_ROW_MAX_HEIGHT);
+    let cell_width = (width - TILE_SPACING * (others - 1) as f32) / others as f32;
+    let small = fit_tile(cell_width.min(row_height * WIDEST_TILE), row_height);
+    let big = fit_tile(width, height - small.height - TILE_SPACING);
+    (big, small)
+}
+
+/// The strip's window, for this many faces.
+fn strip_size(faces: usize) -> (f64, f64) {
+    let faces = faces.max(1) as f32;
+    let height = 2.0 * STRIP_PADDING
+        + faces * STRIP_SPEAKER_FACE
+        + (faces - 1.0) * STRIP_GAP
+        + STRIP_CONTROLS_HEIGHT;
+    (STRIP_WIDTH as f64, height as f64)
+}
+
+/// Who the strip shows, in order, and how many more there are. Not you, unless you're alone.
+fn strip_people(
+    participants: &HashMap<String, ParticipantInfo>,
+    self_hidden: bool,
+) -> (Vec<(&String, &ParticipantInfo)>, usize) {
+    let mut people: Vec<(&String, &ParticipantInfo)> = participants
+        .iter()
+        .filter(|(identity, _)| !self_hidden || identity.as_str() != "local")
+        .collect();
+    if people.is_empty() {
+        people.extend(participants.iter());
+    }
+    people.sort_by(|a, b| a.1.name().cmp(b.1.name()));
+    if people.len() > STRIP_MAX_FACES {
+        // The last place goes to how many more there are.
+        let more = people.len() - (STRIP_MAX_FACES - 1);
+        people.truncate(STRIP_MAX_FACES - 1);
+        (people, more)
+    } else {
+        (people, 0)
+    }
+}
+
+/// Where a window this size sits in a corner of the usable area (x, y, width, height).
+fn corner_position(corner: ScreenCorner, size: (f64, f64), area: [f64; 4]) -> (f64, f64) {
+    let [x, y, width, height] = area;
+    let left = x + PIN_CORNER_MARGIN;
+    let right = x + width - size.0 - PIN_CORNER_MARGIN;
+    let top = y + PIN_CORNER_MARGIN;
+    let bottom = y + height - size.1 - PIN_CORNER_MARGIN;
+    match corner {
+        ScreenCorner::TopLeft => (left, top),
+        ScreenCorner::TopRight => (right, top),
+        ScreenCorner::BottomLeft => (left, bottom),
+        ScreenCorner::BottomRight => (right, bottom),
+    }
+}
+
+/// The corner of the usable area (x, y, width, height) nearest a window centred here.
+fn nearest_corner(centre: (f64, f64), area: [f64; 4]) -> ScreenCorner {
+    let [x, y, width, height] = area;
+    let right = centre.0 > x + width / 2.0;
+    let bottom = centre.1 > y + height / 2.0;
+    match (right, bottom) {
+        (false, false) => ScreenCorner::TopLeft,
+        (true, false) => ScreenCorner::TopRight,
+        (false, true) => ScreenCorner::BottomLeft,
+        (true, true) => ScreenCorner::BottomRight,
+    }
+}
+
+/// Whether this person's picture hasn't changed since it was last drawn, so it needn't be
+/// uploaded again.
+pub(crate) fn should_skip(
+    identity: &str,
+    buffers: &VideoBufferManager,
+    outer_skip: bool,
+    last_rendered_frame_ids: &mut HashMap<String, u64>,
+) -> bool {
+    if outer_skip {
+        return true;
+    }
+    let current_frame_id = buffers.current_frame_id();
+    let last_id = last_rendered_frame_ids
+        .entry(identity.to_string())
+        .or_insert(0);
+
+    // Same logic for resetting the frame id as in the screensharing window
+    if current_frame_id > 0 && *last_id > 40 && current_frame_id < *last_id - 40 {
+        *last_id = 0;
+    }
+
+    let skip = current_frame_id > 0 && current_frame_id <= *last_id;
+    if !skip {
+        *last_id = current_frame_id;
+    }
+    skip
+}
+
+/// How the faces are arranged in the window.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Arrangement {
+    /// Everyone the same size.
+    Grid,
+    /// The speaker big, everyone else in a row below.
+    Speaker,
+    /// Only the speaker.
+    OnlySpeaker,
+}
+
+struct GridProps<'s> {
     available_size: IcedSize,
-    participants: &'a Arc<RwLock<HashMap<String, ParticipantInfo>>>,
     self_hidden: bool,
     local_tile_hovered: bool,
+    /// Taken from the top and bottom by the header or the controls.
     reserved_height: f32,
     outer_skip: bool,
+    arrangement: Arrangement,
+    speaker: Option<&'s str>,
+}
+
+/// Create the responsive participant grid.
+///
+/// Calculates the layout that shows everyone as big as they'll go, with tiles between square
+/// and 16:9 so a wide window is filled. In the speaker arrangements, whoever is speaking is
+/// big and everyone else is in a row below, or not shown.
+fn create_participant_grid<'a>(
+    props: GridProps<'_>,
+    participants: &'a Arc<RwLock<HashMap<String, ParticipantInfo>>>,
     last_rendered_frame_ids: &mut HashMap<String, u64>,
 ) -> iced::Element<'a, CameraMessage, Theme, iced::Renderer> {
     let participants_guard = participants.read().unwrap();
@@ -1851,7 +2400,7 @@ fn create_participant_grid<'a>(
     let mut sorted: Vec<(&String, &ParticipantInfo)> = participants_guard.iter().collect();
     sorted.sort_by(|a, b| a.1.name().cmp(b.1.name()));
 
-    let sorted: Vec<(&String, &ParticipantInfo)> = if self_hidden {
+    let sorted: Vec<(&String, &ParticipantInfo)> = if props.self_hidden {
         sorted
             .into_iter()
             .filter(|(identity, _)| identity.as_str() != "local")
@@ -1865,129 +2414,378 @@ fn create_participant_grid<'a>(
         return Space::new().width(Length::Fill).height(Length::Fill).into();
     }
 
+    let available_size = props.available_size;
     // Subtract the header or the strip of controls from vertical space, then apply grid padding
     let available_width = available_size.width - (MIN_GRID_PADDING * 2.0);
-    let available_height = (available_size.height - reserved_height) - (MIN_GRID_PADDING * 2.0);
+    let available_height =
+        (available_size.height - props.reserved_height) - (MIN_GRID_PADDING * 2.0);
 
     // Determine if this is a small window for styling purposes
     let is_small_window = available_size.width < SMALL_WIDTH_THRESHOLD
         || available_size.height < SMALL_HEIGHT_THRESHOLD;
 
-    // Find the optimal grid configuration that maximizes tile size
-    // while ensuring ALL participants are visible
-    let mut best_tile_size = 0.0_f32;
-    let mut best_cols = 1;
-    let mut best_rows = participant_count;
+    let mut card = |(identity, info): (&String, &ParticipantInfo), tile: TileSize, hide_name| {
+        let camera_buffers = info.camera_buffers();
+        let skip_buffer = should_skip(
+            identity,
+            &camera_buffers,
+            props.outer_skip,
+            last_rendered_frame_ids,
+        );
+        let is_local = identity.as_str() == "local";
+        participant_card(ParticipantCardProps {
+            participant_id: identity_to_id(identity),
+            name: info.name(),
+            is_speaking: info.is_speaking(),
+            is_muted: info.muted(),
+            is_capturing: info.capturing(),
+            is_sharing: info.is_screensharing(),
+            buffers: camera_buffers,
+            tile,
+            is_small_window,
+            is_local,
+            local_tile_hovered: props.local_tile_hovered,
+            hide_name,
+            skip_buffer,
+        })
+    };
+    let too_small_for_a_name =
+        |tile: TileSize| tile.width.min(tile.height) < HIDE_NAME_TILE_THRESHOLD;
 
-    for cols in 1..=participant_count {
-        let rows = (participant_count as f32 / cols as f32).ceil() as usize;
+    let speaker_index = props
+        .speaker
+        .and_then(|speaker| {
+            sorted
+                .iter()
+                .position(|(identity, _)| identity.as_str() == speaker)
+        })
+        .unwrap_or(0);
 
-        // Calculate max tile size for this configuration
-        let max_tile_width = (available_width - (TILE_SPACING * (cols - 1) as f32)) / cols as f32;
-        let max_tile_height = (available_height - (TILE_SPACING * (rows - 1) as f32)) / rows as f32;
-
-        // Tile size is constrained by both width and height (1:1 aspect ratio)
-        let tile_size = max_tile_width.min(max_tile_height);
-
-        // Always pick the configuration with the largest tile size that fits all participants
-        if tile_size > 0.0 && tile_size > best_tile_size {
-            best_tile_size = tile_size;
-            best_cols = cols;
-            best_rows = rows;
+    let content: iced::Element<'a, CameraMessage, Theme, iced::Renderer> = match props.arrangement {
+        Arrangement::OnlySpeaker => {
+            // Pinned this small, the name is what says who it is.
+            let tile = fit_tile(available_width, available_height);
+            card(sorted[speaker_index], tile, false)
         }
-    }
+        Arrangement::Speaker if participant_count > 1 => {
+            let (big, small) =
+                speaker_layout(participant_count - 1, available_width, available_height);
+            let speaker = card(sorted[speaker_index], big, too_small_for_a_name(big));
+            let others: Vec<iced::Element<'a, CameraMessage, Theme, iced::Renderer>> = sorted
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != speaker_index)
+                .map(|(_, person)| card(*person, small, too_small_for_a_name(small)))
+                .collect();
+            column![speaker, row(others).spacing(TILE_SPACING)]
+                .spacing(TILE_SPACING)
+                .align_x(Alignment::Center)
+                .into()
+        }
+        _ => {
+            let (tiles_per_row, num_rows, tile) =
+                grid_layout(participant_count, available_width, available_height);
+            let hide_name = too_small_for_a_name(tile);
 
-    let tile_size = best_tile_size;
-    let tiles_per_row = best_cols;
-    let num_rows = best_rows;
-    let hide_name = tile_size < HIDE_NAME_TILE_THRESHOLD;
-
-    // Calculate actual grid dimensions
-    let actual_cols = tiles_per_row.min(participant_count);
-    let grid_content_width =
-        (tile_size * actual_cols as f32) + (TILE_SPACING * (actual_cols - 1) as f32);
-    let grid_content_height =
-        (tile_size * num_rows as f32) + (TILE_SPACING * (num_rows - 1) as f32);
-
-    // Calculate dynamic padding to center the grid within the grid area (below header)
-    let grid_area_height = available_size.height - reserved_height;
-    let h_padding = ((available_size.width - grid_content_width) / 2.0).max(MIN_GRID_PADDING);
-    let v_padding = ((grid_area_height - grid_content_height) / 2.0).max(MIN_GRID_PADDING);
-
-    // Create rows of participants
-    let mut rows_vec: Vec<iced::Element<'a, CameraMessage, Theme, iced::Renderer>> = Vec::new();
-    let mut participants_iter = sorted.iter();
-
-    for _ in 0..num_rows {
-        let mut row_tiles: Vec<iced::Element<'a, CameraMessage, Theme, iced::Renderer>> =
-            Vec::new();
-
-        for _ in 0..tiles_per_row {
-            if let Some((identity, info)) = participants_iter.next() {
-                let id = identity_to_id(identity);
-                let camera_buffers = info.camera_buffers();
-                let is_local = identity.as_str() == "local";
-
-                let should_skip = if outer_skip {
-                    true
-                } else {
-                    let current_frame_id = camera_buffers.current_frame_id();
-                    let last_id = last_rendered_frame_ids
-                        .entry(identity.to_string())
-                        .or_insert(0);
-
-                    // Same logic for resetting the frame id as in the screensharing window
-                    if current_frame_id > 0 && *last_id > 40 && current_frame_id < *last_id - 40 {
-                        *last_id = 0;
-                    }
-
-                    let skip = current_frame_id > 0 && current_frame_id <= *last_id;
-                    if !skip {
-                        *last_id = current_frame_id;
-                    }
-                    skip
-                };
-
-                row_tiles.push(participant_card(ParticipantCardProps {
-                    participant_id: id,
-                    name: info.name(),
-                    is_speaking: info.is_speaking(),
-                    is_muted: info.muted(),
-                    is_capturing: info.capturing(),
-                    is_sharing: info.is_screensharing(),
-                    buffers: camera_buffers,
-                    tile_size,
-                    is_small_window,
-                    is_local,
-                    local_tile_hovered,
-                    hide_name,
-                    skip_buffer: should_skip,
-                }));
+            // Create rows of participants
+            let mut rows_vec: Vec<iced::Element<'a, CameraMessage, Theme, iced::Renderer>> =
+                Vec::new();
+            let mut participants_iter = sorted.iter();
+            for _ in 0..num_rows {
+                let row_tiles: Vec<iced::Element<'a, CameraMessage, Theme, iced::Renderer>> =
+                    participants_iter
+                        .by_ref()
+                        .take(tiles_per_row)
+                        .map(|person| card(*person, tile, hide_name))
+                        .collect();
+                if !row_tiles.is_empty() {
+                    rows_vec.push(row(row_tiles).spacing(TILE_SPACING).into());
+                }
             }
+            column(rows_vec)
+                .spacing(TILE_SPACING)
+                .align_x(Alignment::Center)
+                .into()
         }
+    };
 
-        if !row_tiles.is_empty() {
-            let participant_row = row(row_tiles).spacing(TILE_SPACING);
-            rows_vec.push(participant_row.into());
-        }
-    }
-
-    // Create the grid column
-    let grid = column(rows_vec)
-        .spacing(TILE_SPACING)
-        .align_x(Alignment::Center);
-
-    // Use dynamic padding to center the grid exactly
-    container(grid)
+    // Centred in the space below the header
+    container(content)
         .width(Length::Fill)
         .height(Length::Fill)
-        .padding(
-            Padding::new(0.0)
-                .top(v_padding)
-                .bottom(v_padding)
-                .left(h_padding)
-                .right(h_padding),
+        .padding(MIN_GRID_PADDING)
+        .center_x(Length::Fill)
+        .center_y(Length::Fill)
+        .into()
+}
+
+/// Pinned as a strip: a column of round faces, with mute and unpin on hover.
+fn strip_view<'a>(
+    state: &'a CameraState,
+    participants: &'a Arc<RwLock<HashMap<String, ParticipantInfo>>>,
+    outer_skip: bool,
+    last_rendered_frame_ids: &mut HashMap<String, u64>,
+) -> iced::Element<'a, CameraMessage, Theme, iced::Renderer> {
+    let participants_guard = participants.read().unwrap();
+    let (people, more) = strip_people(&participants_guard, state.self_hidden);
+
+    let mut faces = column![].spacing(STRIP_GAP).align_x(Alignment::Center);
+    for (identity, info) in people {
+        let buffers = info.camera_buffers();
+        let skip_buffer = should_skip(identity, &buffers, outer_skip, last_rendered_frame_ids);
+        let speaking = info.is_speaking();
+        let size = if speaking {
+            STRIP_SPEAKER_FACE
+        } else {
+            STRIP_FACE
+        };
+        faces = faces.push(
+            container(round_face(RoundFace {
+                participant_id: identity_to_id(identity),
+                name: info.name(),
+                buffers,
+                size,
+                speaking,
+                muted: info.muted(),
+                mirror: identity.as_str() == "local",
+                skip_buffer,
+            }))
+            .center_x(Length::Fixed(STRIP_SPEAKER_FACE))
+            .center_y(Length::Fixed(STRIP_SPEAKER_FACE)),
+        );
+    }
+    if more > 0 {
+        let count = container(
+            text(format!("+{more}"))
+                .size(14)
+                .font(GEIST_MEDIUM)
+                .color(Color::WHITE),
         )
+        .center_x(Length::Fixed(STRIP_FACE))
+        .center_y(Length::Fixed(STRIP_FACE))
+        .style(|_theme: &Theme| container::Style {
+            background: Some(Background::Color(ColorToken::Slate700.to_color())),
+            border: Border {
+                radius: (STRIP_FACE / 2.0).into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        faces = faces.push(
+            container(count)
+                .center_x(Length::Fixed(STRIP_SPEAKER_FACE))
+                .center_y(Length::Fixed(STRIP_SPEAKER_FACE)),
+        );
+    }
+    // The faces are the handle that moves the window.
+    let faces = mouse_area(faces).on_press(CameraMessage::DragWindow);
+
+    let local_muted = participants_guard
+        .get("local")
+        .is_some_and(|info| info.muted());
+    let controls: iced::Element<'a, CameraMessage, Theme, iced::Renderer> =
+        if state.pointer_over_window {
+            let mic: iced::Element<'a, CameraMessage, Theme, iced::Renderer> = if local_muted {
+                text(ICON_MICROPHONE_OFF.to_string())
+                    .font(ICONS_FONT)
+                    .size(14.0)
+                    .color(ColorToken::Red400.to_color())
+                    .into()
+            } else {
+                let slate300 = ColorToken::Slate300.to_color();
+                svg(svg::Handle::from_memory(ICON_MICROPHONE_SVG))
+                    .width(Length::Fixed(14.0))
+                    .height(Length::Fixed(14.0))
+                    .style(move |_theme: &Theme, _status| svg::Style {
+                        color: Some(slate300),
+                    })
+                    .into()
+            };
+            let pin = text(ICON_PIN_ANGLE.to_string())
+                .font(ICONS_FONT)
+                .size(14.0)
+                .color(ColorToken::Slate300.to_color());
+            column![
+                strip_button(
+                    mic,
+                    CameraMessage::CallControls(CallControlsMessage::MicToggle)
+                ),
+                strip_button(pin.into(), CameraMessage::PinToCorner),
+            ]
+            .spacing(6)
+            .align_x(Alignment::Center)
+            .into()
+        } else {
+            Space::new().into()
+        };
+
+    column![faces, controls]
+        .spacing(STRIP_GAP)
+        .padding(STRIP_PADDING)
+        .align_x(Alignment::Center)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+/// A small round button under the strip's faces. No tooltip: one wouldn't fit the window.
+fn strip_button<'a>(
+    icon: iced::Element<'a, CameraMessage, Theme, iced::Renderer>,
+    message: CameraMessage,
+) -> iced::Element<'a, CameraMessage, Theme, iced::Renderer> {
+    button(
+        container(icon)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill),
+    )
+    .width(Length::Fixed(38.0))
+    .height(Length::Fixed(STRIP_BUTTON_HEIGHT))
+    .padding(0)
+    .on_press(message)
+    .style(|_theme: &Theme, status| {
+        let bg_color = match status {
+            button::Status::Hovered => ColorToken::Slate600.to_color(),
+            button::Status::Pressed => ColorToken::Slate800.to_color(),
+            _ => ColorToken::Slate700.to_color(),
+        };
+        button::Style {
+            background: Some(Background::Color(bg_color)),
+            border: Border {
+                color: Color::from_rgba(1.0, 1.0, 1.0, 0.3),
+                width: 1.0,
+                radius: 19.0.into(),
+            },
+            text_color: Color::WHITE,
+            shadow: ShadowToken::Xs.to_shadow(),
+            snap: false,
+        }
+    })
+    .into()
+}
+
+pub(crate) struct RoundFace<'n> {
+    pub(crate) participant_id: u64,
+    pub(crate) name: &'n str,
+    pub(crate) buffers: Arc<VideoBufferManager>,
+    pub(crate) size: f32,
+    pub(crate) speaking: bool,
+    pub(crate) muted: bool,
+    pub(crate) mirror: bool,
+    pub(crate) skip_buffer: bool,
+}
+
+/// Someone's camera, or their initials, in a circle: green-ringed while they speak, with a
+/// red mic while they're muted.
+pub(crate) fn round_face<'a, M: 'a>(
+    face: RoundFace<'_>,
+) -> iced::Element<'a, M, Theme, iced::Renderer> {
+    let RoundFace {
+        participant_id,
+        name,
+        buffers,
+        size,
+        speaking,
+        muted,
+        mirror,
+        skip_buffer,
+    } = face;
+    let radius = size / 2.0;
+    let picture: iced::Element<'a, M, Theme, iced::Renderer> = if buffers.is_inactive() {
+        let mut initials = row![].align_y(Alignment::Center);
+        for letter in get_initials(name) {
+            initials = initials.push(
+                text(letter)
+                    .size(size * 0.36)
+                    .color(Color::WHITE)
+                    .font(GEIST_MEDIUM),
+            );
+        }
+        container(initials)
+            .center_x(Length::Fixed(size))
+            .center_y(Length::Fixed(size))
+            .style(move |_theme: &Theme| container::Style {
+                background: Some(Background::Color(ColorToken::Violet800.to_color())),
+                border: Border {
+                    radius: radius.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .into()
+    } else {
+        shader(YuvVideoProgram {
+            participant_id,
+            buffer: buffers,
+            corner_radius: radius,
+            stretch_to_fill: false,
+            skip_upload: skip_buffer,
+            mirror,
+        })
+        .width(Length::Fixed(size))
+        .height(Length::Fixed(size))
+        .into()
+    };
+    let ring = container(Space::new())
+        .width(Length::Fixed(size))
+        .height(Length::Fixed(size))
+        .style(move |_theme: &Theme| container::Style {
+            border: if speaking {
+                Border {
+                    color: ColorToken::Green400.to_color(),
+                    width: 2.5,
+                    radius: radius.into(),
+                }
+            } else {
+                Border {
+                    color: Color::from_rgba(1.0, 1.0, 1.0, 0.2),
+                    width: 1.0,
+                    radius: radius.into(),
+                }
+            },
+            ..Default::default()
+        });
+    let mut layers: Vec<iced::Element<'a, M, Theme, iced::Renderer>> = vec![picture, ring.into()];
+    if muted {
+        let dot = container(
+            text(ICON_MICROPHONE_OFF.to_string())
+                .font(ICONS_FONT)
+                .size(9.0)
+                .color(Color::WHITE),
+        )
+        .center_x(Length::Fixed(16.0))
+        .center_y(Length::Fixed(16.0))
+        .style(|_theme: &Theme| container::Style {
+            background: Some(Background::Color(ColorToken::Red500.to_color())),
+            border: Border {
+                radius: 8.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        layers.push(
+            container(dot)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_x(Alignment::End)
+                .align_y(Alignment::End)
+                .into(),
+        );
+    }
+    container(stack(layers))
+        .width(Length::Fixed(size))
+        .height(Length::Fixed(size))
+        .style(move |_theme: &Theme| container::Style {
+            border: Border {
+                radius: radius.into(),
+                ..Default::default()
+            },
+            shadow: Shadow {
+                color: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
+                offset: iced::Vector::new(0.0, 3.0),
+                blur_radius: 12.0,
+            },
+            ..Default::default()
+        })
         .into()
 }
 
@@ -2002,6 +2800,168 @@ mod tests {
                 assert!((0.2..=1.0).contains(&height), "{height}");
             }
         }
+    }
+
+    fn tile(width: f32, height: f32) -> TileSize {
+        TileSize { width, height }
+    }
+
+    #[test]
+    fn tiles_are_between_square_and_sixteen_by_nine() {
+        assert_eq!(fit_tile(1000.0, 300.0), tile(300.0 * WIDEST_TILE, 300.0));
+        assert_eq!(fit_tile(300.0, 1000.0), tile(300.0, 300.0));
+        assert_eq!(fit_tile(400.0, 300.0), tile(400.0, 300.0));
+        assert_eq!(fit_tile(0.0, 300.0).area(), 0.0);
+    }
+
+    #[test]
+    fn a_wide_window_of_four_gets_wide_tiles_in_two_rows() {
+        let (cols, rows, tile) = grid_layout(4, 1019.0, 507.0);
+        assert_eq!((cols, rows), (2, 2));
+        assert!(tile.width / tile.height > 1.7, "{tile:?}");
+        // Wider than the squares they were, and as tall.
+        assert!(tile.width > 400.0 && tile.height > 240.0, "{tile:?}");
+    }
+
+    #[test]
+    fn the_grid_always_fits_the_window() {
+        for count in 1..=12 {
+            for (width, height) in [
+                (1019.0, 507.0),
+                (300.0, 900.0),
+                (84.0, 60.0),
+                (1800.0, 300.0),
+            ] {
+                let (cols, rows, tile) = grid_layout(count, width, height);
+                assert!(cols * rows >= count);
+                let used_width = cols as f32 * tile.width + (cols - 1) as f32 * TILE_SPACING;
+                let used_height = rows as f32 * tile.height + (rows - 1) as f32 * TILE_SPACING;
+                assert!(
+                    used_width <= width + 0.01,
+                    "{count} in {width}x{height}: {tile:?}"
+                );
+                assert!(
+                    used_height <= height + 0.01,
+                    "{count} in {width}x{height}: {tile:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_speaker_is_big_and_everyone_else_fits_below() {
+        for others in 1..=8 {
+            let (big, small) = speaker_layout(others, 1019.0, 507.0);
+            assert!(big.area() > small.area());
+            let row_width = others as f32 * small.width + (others - 1) as f32 * TILE_SPACING;
+            assert!(row_width <= 1019.0 + 0.01, "{others}: {small:?}");
+            assert!(big.height + TILE_SPACING + small.height <= 507.0 + 0.01);
+        }
+        let (alone, _) = speaker_layout(0, 1019.0, 507.0);
+        assert_eq!(alone, fit_tile(1019.0, 507.0));
+    }
+
+    #[test]
+    fn the_speaker_view_follows_who_talks_without_flicking() {
+        let start = Instant::now();
+        let at = |millis| start + Duration::from_millis(millis);
+        let mut focus = SpeakerFocus::default();
+        // Nobody talking: the first person.
+        assert_eq!(
+            focus
+                .update(&[("ana", false), ("bo", false)], at(0))
+                .as_deref(),
+            Some("ana")
+        );
+        // Bo talks, but Ana has only just been put there.
+        assert_eq!(
+            focus
+                .update(&[("ana", false), ("bo", true)], at(500))
+                .as_deref(),
+            Some("ana")
+        );
+        assert_eq!(
+            focus
+                .update(&[("ana", false), ("bo", true)], at(1600))
+                .as_deref(),
+            Some("bo")
+        );
+        // Ana cuts in straight away: Bo keeps it for a moment.
+        assert_eq!(
+            focus
+                .update(&[("ana", true), ("bo", true)], at(1700))
+                .as_deref(),
+            Some("bo")
+        );
+        // Bo stops, and has had it long enough: Ana.
+        assert_eq!(
+            focus
+                .update(&[("ana", true), ("bo", false)], at(3200))
+                .as_deref(),
+            Some("ana")
+        );
+        // Nobody talks: Ana stays.
+        assert_eq!(
+            focus
+                .update(&[("ana", false), ("bo", false)], at(9000))
+                .as_deref(),
+            Some("ana")
+        );
+        // Ana leaves.
+        assert_eq!(
+            focus.update(&[("bo", false)], at(9100)).as_deref(),
+            Some("bo")
+        );
+        assert_eq!(focus.update(&[], at(9200)), None);
+    }
+
+    #[test]
+    fn a_pinned_window_goes_to_the_nearest_corner() {
+        let area = [0.0, 25.0, 1440.0, 800.0];
+        let size = (68.0, 200.0);
+        assert_eq!(
+            corner_position(ScreenCorner::TopLeft, size, area),
+            (16.0, 41.0)
+        );
+        assert_eq!(
+            corner_position(ScreenCorner::BottomRight, size, area),
+            (1440.0 - 68.0 - 16.0, 25.0 + 800.0 - 200.0 - 16.0)
+        );
+        assert_eq!(nearest_corner((100.0, 100.0), area), ScreenCorner::TopLeft);
+        assert_eq!(
+            nearest_corner((1300.0, 120.0), area),
+            ScreenCorner::TopRight
+        );
+        assert_eq!(
+            nearest_corner((90.0, 700.0), area),
+            ScreenCorner::BottomLeft
+        );
+        assert_eq!(
+            nearest_corner((1300.0, 700.0), area),
+            ScreenCorner::BottomRight
+        );
+        // Already in its corner, it stays.
+        for corner in [
+            ScreenCorner::TopLeft,
+            ScreenCorner::TopRight,
+            ScreenCorner::BottomLeft,
+            ScreenCorner::BottomRight,
+        ] {
+            let (x, y) = corner_position(corner, size, area);
+            assert_eq!(
+                nearest_corner((x + size.0 / 2.0, y + size.1 / 2.0), area),
+                corner
+            );
+        }
+    }
+
+    #[test]
+    fn the_strip_grows_with_its_faces() {
+        let (width, one) = strip_size(1);
+        let (_, three) = strip_size(3);
+        assert_eq!(width, STRIP_WIDTH as f64);
+        assert_eq!(three - one, 2.0 * (STRIP_SPEAKER_FACE + STRIP_GAP) as f64);
+        assert_eq!(strip_size(0), strip_size(1));
     }
 
     fn layout(width: f32, height: f32) -> (ControlsPlacement, CallControlsDensity) {
@@ -2060,8 +3020,10 @@ mod tests {
     #[test]
     fn a_pinned_window_keeps_its_video_and_shows_them_on_hover() {
         assert_eq!(
-            layout(PIN_CORNER_WIDTH as f32, PIN_CORNER_HEIGHT as f32),
+            layout(PIN_BOX_WIDTH as f32, PIN_BOX_HEIGHT as f32),
             (ControlsPlacement::Hover, CallControlsDensity::Essentials)
         );
+        let (placement, _) = layout(PIN_SPEAKER_WIDTH as f32, PIN_SPEAKER_HEIGHT as f32);
+        assert_eq!(placement, ControlsPlacement::Hover);
     }
 }

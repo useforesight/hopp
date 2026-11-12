@@ -35,6 +35,87 @@ pub enum ScreenSharePickerMode {
     Window,
 }
 
+/// When the camera window floats over other windows.
+#[derive(Debug, Default, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+pub enum FacesOnTop {
+    Always,
+    #[default]
+    WhenPinned,
+    Never,
+}
+
+/// How the camera window lays out the faces.
+#[derive(Debug, Default, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+pub enum FacesLayout {
+    /// Everyone the same size, filling the window.
+    #[default]
+    Grid,
+    /// Whoever is speaking big, the others in a row below.
+    Speaker,
+}
+
+/// Where the faces go in the shared-screen window.
+#[derive(Debug, Default, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+pub enum FacesInShared {
+    /// A column down the right side.
+    #[default]
+    Side,
+    /// A row along the bottom.
+    Bottom,
+    /// Small round faces over the bottom-right corner of the screen.
+    Bubbles,
+    /// Not there: the camera window stays separate.
+    Off,
+}
+
+/// What the camera window becomes when it's pinned to a corner.
+#[derive(Debug, Default, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+pub enum PinnedStyle {
+    /// A column of round faces.
+    #[default]
+    Strip,
+    /// A small window of everyone.
+    Box,
+    /// Only whoever is speaking.
+    Speaker,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+pub enum ScreenCorner {
+    TopLeft,
+    #[default]
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+/// How the call windows behave, from Settings.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(default)]
+pub struct CallWindowPrefs {
+    pub faces_on_top: FacesOnTop,
+    pub layout: FacesLayout,
+    pub faces_in_shared: FacesInShared,
+    pub pinned_style: PinnedStyle,
+    /// When someone starts sharing, their screen opens on the display and Space you're on.
+    pub bring_shared_to_you: bool,
+    /// The corner the camera window was last pinned to.
+    pub pinned_corner: ScreenCorner,
+}
+
+impl Default for CallWindowPrefs {
+    fn default() -> Self {
+        Self {
+            faces_on_top: FacesOnTop::default(),
+            layout: FacesLayout::default(),
+            faces_in_shared: FacesInShared::default(),
+            pinned_style: PinnedStyle::default(),
+            bring_shared_to_you: true,
+            pinned_corner: ScreenCorner::default(),
+        }
+    }
+}
+
 impl ScreenShareResolution {
     pub fn extent(self) -> Extent {
         match self {
@@ -460,6 +541,10 @@ pub enum Message {
     SetNoiseCancellation(bool),
     SetScreenShareResolution(ScreenShareResolution),
     SetScreenSharePickerMode(ScreenSharePickerMode),
+    SetCallWindowPrefs(CallWindowPrefs),
+    /// Core → Tauri: changed from the call windows (the layout button, a pinned window
+    /// dragged to another corner), to remember.
+    CallWindowPrefsChanged(CallWindowPrefs),
     SetAppVeilBundleIds(Vec<String>),
     SetTelemetryEnabled(bool),
     /// Microphone RMS level in [0.0, 1.0], emitted ~1 Hz from core capturer.

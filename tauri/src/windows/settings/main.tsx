@@ -23,6 +23,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import {
   typedInvoke,
   type AppVeilApplication,
+  type CallWindowPrefs,
+  type FacesInShared,
+  type FacesLayout,
+  type FacesOnTop,
+  type PinnedStyle,
   type CaptureChange,
   type CaptureModel,
   type InstalledApplication,
@@ -30,6 +35,7 @@ import {
   type ScreenShareResolution,
 } from "@/core_payloads";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { listen } from "@tauri-apps/api/event";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { tauriUtils } from "@/windows/window-utils";
 import { OS, URLS } from "@/constants";
@@ -50,6 +56,30 @@ const screenSharePickerModeItems = [
   { id: "Screen", title: "Screen", description: "Choose an entire display" },
   { id: "Window", title: "Window", description: "Choose a single app window" },
 ] satisfies Array<{ id: ScreenSharePickerMode; title: string; description: string }>;
+
+const facesInSharedItems = [
+  { id: "Side", title: "Down the side", description: "Their screen, with the faces beside it" },
+  { id: "Bottom", title: "Along the bottom", description: "A row of faces under their screen" },
+  { id: "Bubbles", title: "Bubbles", description: "Small round faces in a corner of it" },
+  { id: "Off", title: "Own window", description: "The faces stay in a window of their own" },
+] satisfies Array<{ id: FacesInShared; title: string; description: string }>;
+
+const facesLayoutItems = [
+  { id: "Grid", title: "Grid", description: "Everyone the same size" },
+  { id: "Speaker", title: "Speaker", description: "Whoever is talking big, everyone else below" },
+] satisfies Array<{ id: FacesLayout; title: string; description: string }>;
+
+const pinnedStyleItems = [
+  { id: "Strip", title: "Strip", description: "A column of round faces" },
+  { id: "Box", title: "Box", description: "A small window of everyone" },
+  { id: "Speaker", title: "Speaker", description: "Only whoever is talking" },
+] satisfies Array<{ id: PinnedStyle; title: string; description: string }>;
+
+const facesOnTopItems = [
+  { id: "WhenPinned", title: "When pinned", description: "Over other windows only in a corner" },
+  { id: "Always", title: "Always", description: "Over other windows at any size" },
+  { id: "Never", title: "Never", description: "A window like any other" },
+] satisfies Array<{ id: FacesOnTop; title: string; description: string }>;
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
@@ -816,6 +846,21 @@ function SettingsWindow() {
     }
   }, [settings]);
 
+  // The layout button and dragging a pinned window change these from the call windows.
+  useEffect(() => {
+    const unlisten = listen("call_window_prefs_changed", () => refetchSettings());
+    return () => {
+      unlisten.then((stop) => stop());
+    };
+  }, [refetchSettings]);
+
+  function setCallWindows(change: Partial<CallWindowPrefs>) {
+    if (!settings) return;
+    typedInvoke("set_call_window_prefs", { prefs: { ...settings.call_windows, ...change } }).then(() =>
+      refetchSettings(),
+    );
+  }
+
   async function commitShortcut(which: "mic" | "camera" | "screenshare" | "end_call", accel: string) {
     const setters = {
       mic: "set_shortcut_toggle_mic",
@@ -1020,6 +1065,47 @@ function SettingsWindow() {
                     }}
                   />
                 )}
+              </SettingsGroup>
+
+              <SettingsGroup title="Call windows">
+                <RadioCardsRow
+                  title="Faces while someone shares"
+                  description="Where everyone's faces go when you're watching a screen"
+                  name="faces-in-shared"
+                  items={facesInSharedItems}
+                  value={settings.call_windows.faces_in_shared}
+                  onValueChange={(faces_in_shared) => setCallWindows({ faces_in_shared })}
+                />
+                <RadioCardsRow
+                  title="Layout"
+                  description="How the faces window starts. The button in its corner switches it."
+                  name="faces-layout"
+                  items={facesLayoutItems}
+                  value={settings.call_windows.layout}
+                  onValueChange={(layout) => setCallWindows({ layout })}
+                />
+                <RadioCardsRow
+                  title="Pinned to a corner"
+                  description="What the faces window becomes when you pin it. Drag it to any corner."
+                  name="pinned-style"
+                  items={pinnedStyleItems}
+                  value={settings.call_windows.pinned_style}
+                  onValueChange={(pinned_style) => setCallWindows({ pinned_style })}
+                />
+                <RadioCardsRow
+                  title="Keep the faces on top"
+                  description="Whether the faces window floats over your other windows"
+                  name="faces-on-top"
+                  items={facesOnTopItems}
+                  value={settings.call_windows.faces_on_top}
+                  onValueChange={(faces_on_top) => setCallWindows({ faces_on_top })}
+                />
+                <SwitchRow
+                  title="Bring their screen to you"
+                  description="When someone starts sharing, open it on the display and desktop you're using"
+                  checked={settings.call_windows.bring_shared_to_you}
+                  onCheckedChange={(bring_shared_to_you) => setCallWindows({ bring_shared_to_you })}
+                />
               </SettingsGroup>
             </>
           )}

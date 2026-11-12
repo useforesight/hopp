@@ -143,3 +143,30 @@ pub fn apply_macos_vibrancy(window: &winit::window::Window, corner_radius: f64) 
 
     log::info!("apply_macos_vibrancy: vibrancy applied successfully");
 }
+
+/// Hides the frosted glass behind the window, so what isn't drawn is clear, or shows it again.
+#[cfg(target_os = "macos")]
+pub fn set_macos_vibrancy_hidden(window: &winit::window::Window, hidden: bool) {
+    use objc2::rc::Retained;
+    use objc2::runtime::NSObjectProtocol;
+    use objc2::ClassType;
+    use objc2_app_kit::{NSView, NSVisualEffectView};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let Ok(raw_handle) = window.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::AppKit(handle) = raw_handle.as_raw() else {
+        return;
+    };
+    let ns_view: Option<Retained<NSView>> =
+        unsafe { Retained::retain(handle.ns_view.as_ptr().cast()) };
+    let Some(frame_view) = ns_view.and_then(|view| unsafe { view.superview() }) else {
+        return;
+    };
+    for view in frame_view.subviews().iter() {
+        if view.isKindOfClass(NSVisualEffectView::class()) {
+            view.setHidden(hidden);
+        }
+    }
+}
