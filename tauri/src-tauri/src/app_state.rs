@@ -1,6 +1,6 @@
 use crate::application_catalog::NOTIFICATION_CENTER_BUNDLE_ID;
 use serde::{Deserialize, Serialize};
-pub use socket_lib::{ScreenSharePickerMode, ScreenShareResolution, StoredMode};
+pub use socket_lib::{CallWindowPrefs, ScreenSharePickerMode, ScreenShareResolution, StoredMode};
 use std::collections::HashSet;
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -76,6 +76,8 @@ pub struct UserSettings {
     pub auto_away_enabled: bool,
     #[serde(default = "default_auto_away_minutes")]
     pub auto_away_minutes: u32,
+    #[serde(default)]
+    pub call_windows: CallWindowPrefs,
 }
 
 fn default_auto_away_minutes() -> u32 {
@@ -104,6 +106,7 @@ impl Default for UserSettings {
             app_veil_applications: default_app_veil_applications(),
             auto_away_enabled: true,
             auto_away_minutes: default_auto_away_minutes(),
+            call_windows: CallWindowPrefs::default(),
         }
     }
 }

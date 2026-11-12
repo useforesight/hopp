@@ -4,8 +4,8 @@
 use hopp::sounds::{self, SoundConfig};
 use log::LevelFilter;
 use socket_lib::{
-    AppAction, AudioCaptureMessage, AudioDevice, CameraDevice, CaptureByHand, DrawingEnabled,
-    Message, ScreenSharePickerMode, ScreenShareResolution, SentryMetadata,
+    AppAction, AudioCaptureMessage, AudioDevice, CallWindowPrefs, CameraDevice, CaptureByHand,
+    DrawingEnabled, Message, ScreenSharePickerMode, ScreenShareResolution, SentryMetadata,
 };
 use std::sync::mpsc as std_mpsc;
 use tauri::Manager;
@@ -1131,6 +1131,24 @@ fn set_screen_share_picker_mode(app: tauri::AppHandle, mode: ScreenSharePickerMo
 }
 
 #[tauri::command(async)]
+fn set_call_window_prefs(app: tauri::AppHandle, prefs: CallWindowPrefs) {
+    log::info!("set_call_window_prefs: {prefs:?}");
+    let data = app.state::<Mutex<AppData>>();
+    let mut data = data.lock().unwrap();
+    // The corner is wherever the window was last pinned, which Settings doesn't show.
+    let pinned_corner = data.app_state.user_settings().call_windows.pinned_corner;
+    let prefs = CallWindowPrefs {
+        pinned_corner,
+        ..prefs
+    };
+    data.app_state
+        .update_user_setting(|settings| settings.call_windows = prefs);
+    if let Err(e) = data.sender.send(Message::SetCallWindowPrefs(prefs)) {
+        log::error!("set_call_window_prefs: failed to send: {e:?}");
+    }
+}
+
+#[tauri::command(async)]
 fn start_camera(app: tauri::AppHandle, device_name: Option<String>) -> Result<(), String> {
     let data = app.state::<Mutex<AppData>>();
     let data = data.lock().unwrap();
@@ -1405,6 +1423,17 @@ fn forward_core_events(events_rx: std_mpsc::Receiver<Message>, app: tauri::AppHa
                 let data = app.state::<Mutex<AppData>>();
                 let mut data = data.lock().unwrap();
                 data.app_state.set_controller_draw_persist(persist);
+            }
+            Message::CallWindowPrefsChanged(prefs) => {
+                log::info!("forward_core_events: call window prefs changed: {prefs:?}");
+                let data = app.state::<Mutex<AppData>>();
+                let mut data = data.lock().unwrap();
+                data.app_state
+                    .update_user_setting(|settings| settings.call_windows = prefs);
+                drop(data);
+                if let Err(e) = app.emit("call_window_prefs_changed", prefs) {
+                    log::error!("forward_core_events: failed to emit call window prefs: {e:?}");
+                }
             }
             Message::LastModeChanged(mode) => {
                 log::info!("forward_core_events: last mode changed: {mode:?}");
@@ -2097,6 +2126,7 @@ fn main() {
             set_noise_cancellation,
             set_screen_share_resolution,
             set_screen_share_picker_mode,
+            set_call_window_prefs,
             list_microphones,
             select_microphone,
             list_webcams,

@@ -379,6 +379,9 @@ pub fn send_initial_core_settings(sender: &SocketSender, app_state: &app_state::
     )) {
         log::error!("Failed to send initial screen_share_picker_mode: {e:?}");
     }
+    if let Err(e) = sender.send(Message::SetCallWindowPrefs(user_settings.call_windows)) {
+        log::error!("Failed to send initial call_windows: {e:?}");
+    }
     let app_veil_bundle_ids = user_settings
         .app_veil_applications
         .into_iter()

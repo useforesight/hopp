@@ -247,6 +247,22 @@ export interface WakeHeard {
 export type ScreenShareResolution = "P1080" | "P1440" | "P4K";
 export type ScreenSharePickerMode = "Screen" | "Window";
 
+export type FacesOnTop = "Always" | "WhenPinned" | "Never";
+export type FacesLayout = "Grid" | "Speaker";
+export type FacesInShared = "Side" | "Bottom" | "Bubbles" | "Off";
+export type PinnedStyle = "Strip" | "Box" | "Speaker";
+export type ScreenCorner = "TopLeft" | "TopRight" | "BottomLeft" | "BottomRight";
+
+/** How the call windows behave. Mirrors `socket_lib::CallWindowPrefs`. */
+export interface CallWindowPrefs {
+  faces_on_top: FacesOnTop;
+  layout: FacesLayout;
+  faces_in_shared: FacesInShared;
+  pinned_style: PinnedStyle;
+  bring_shared_to_you: boolean;
+  pinned_corner: ScreenCorner;
+}
+
 export interface AppVeilApplication {
   bundle_id: string;
   enabled: boolean;
@@ -278,6 +294,7 @@ export interface UserSettings {
   app_veil_applications: AppVeilApplication[];
   auto_away_enabled: boolean;
   auto_away_minutes: number;
+  call_windows: CallWindowPrefs;
 }
 
 export type CoreRoleChange = "Sharer" | "Controller" | "None";
@@ -472,6 +489,7 @@ export interface CommandMap {
   set_noise_cancellation: { args: { enabled: boolean }; return: void };
   set_screen_share_resolution: { args: { resolution: ScreenShareResolution }; return: void };
   set_screen_share_picker_mode: { args: { mode: ScreenSharePickerMode }; return: void };
+  set_call_window_prefs: { args: { prefs: CallWindowPrefs }; return: void };
   list_microphones: { args: void; return: AudioDevice[] };
   select_microphone: { args: { deviceName: string }; return: void };
 
