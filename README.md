@@ -39,7 +39,11 @@ Release builds connect to `pair.gethopp.app`, upstream's managed service, until 
 
 ## What's new
 
-### In the latest release (v1.5.0)
+### In the latest release (v1.5.1)
+
+- **Who's sharing.** The sharer's tile in the camera window has a green ring and a "Sharing" badge; click it to see their screen. The shared screen opens on the screen and Space you're on, rather than wherever it was last, and the call panel's button names whose screen it is.
+
+### Earlier, in v1.5.0
 
 - **Reactions.** A party popper in the call controls opens emoji, confetti, a gong, a table flip, a slow clap, fireworks, achievements, a disco, "ship it" and a soundboard. They play on everyone's screen, with sound, and you can turn the sounds off. The Linux client has them too.
 

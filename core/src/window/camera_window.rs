@@ -137,6 +137,7 @@ const COMPACT_TOP_INSET: f32 = 24.0;
 
 const ICON_MICROPHONE_OFF: char = '\u{F106}';
 const ICON_PIN_ANGLE: char = '\u{F10B}';
+const ICON_SCREEN_SHARE: char = '\u{F102}';
 
 const PIN_CORNER_WIDTH: f64 = CAMERA_WINDOW_MIN_WIDTH;
 const PIN_CORNER_HEIGHT: f64 = CAMERA_WINDOW_MIN_HEIGHT;
@@ -170,6 +171,8 @@ pub enum CameraMessage {
     /// Mouse entered or left the local participant tile (for hover-only chrome).
     LocalTileHover(bool),
     PinToCorner,
+    /// Bring the shared screen to you, from the sharer's badge.
+    ViewScreen,
 }
 
 struct CameraState {
@@ -883,6 +886,17 @@ impl CameraWindow {
                     self.pin_to_corner();
                 }
             }
+            CameraMessage::ViewScreen => {
+                let open = UserEvent::OpenScreenShareWindow {
+                    participants: Arc::new(RwLock::new(HashMap::new())),
+                    sharer_identity: None,
+                    redraw_rx: None,
+                    redraw_tx: None,
+                };
+                if let Err(e) = self.event_loop_proxy.send_event(open) {
+                    log::error!("CameraWindow: failed to open the shared screen: {e:?}");
+                }
+            }
         }
     }
 
@@ -1417,6 +1431,7 @@ struct ParticipantCardProps<'a> {
     pub(super) is_speaking: bool,
     pub(super) is_muted: bool,
     pub(super) is_capturing: bool,
+    pub(super) is_sharing: bool,
     pub(super) buffers: Arc<VideoBufferManager>,
     pub(super) tile_size: f32,
     pub(super) is_small_window: bool,
@@ -1440,6 +1455,7 @@ fn participant_card<'a>(
         is_speaking,
         is_muted,
         is_capturing,
+        is_sharing,
         buffers,
         tile_size,
         is_small_window,
@@ -1554,6 +1570,18 @@ fn participant_card<'a>(
                 .into(),
         );
     }
+    // Who is sharing, however small the tile, and a way to their screen.
+    if is_sharing {
+        tile_layers.push(
+            container(sharing_badge(is_local, hide_name))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_x(Alignment::End)
+                .align_y(Alignment::Start)
+                .padding(if hide_name { 4.0 } else { overlay_padding })
+                .into(),
+        );
+    }
 
     // Clipped content: video + name label (+ local hide control), masked to rounded corners.
     let clipped_content = container(stack(tile_layers))
@@ -1573,10 +1601,18 @@ fn participant_card<'a>(
         .width(Length::Fill)
         .height(Length::Fill)
         .style(move |_theme: &Theme| container::Style {
-            border: Border {
-                color: Color::from_rgba(0.0, 0.0, 0.0, 0.45),
-                width: 1.0,
-                radius: TILE_RADIUS.into(),
+            border: if is_sharing {
+                Border {
+                    color: ColorToken::Emerald500.to_color(),
+                    width: 2.0,
+                    radius: TILE_RADIUS.into(),
+                }
+            } else {
+                Border {
+                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.45),
+                    width: 1.0,
+                    radius: TILE_RADIUS.into(),
+                }
             },
             ..Default::default()
         });
@@ -1606,6 +1642,86 @@ fn participant_card<'a>(
     } else {
         tile.into()
     }
+}
+
+/// "Sharing" on the sharer's tile. On someone else's, it's a button to their screen.
+fn sharing_badge<'a>(
+    is_local: bool,
+    icon_only: bool,
+) -> iced::Element<'a, CameraMessage, Theme, iced::Renderer> {
+    let ink = ColorToken::Emerald950.to_color();
+    let icon = text(ICON_SCREEN_SHARE.to_string())
+        .font(ICONS_FONT)
+        .size(12.0)
+        .color(ink);
+    let content: iced::Element<'a, CameraMessage, Theme, iced::Renderer> = if icon_only {
+        icon.into()
+    } else {
+        row![icon, text("Sharing").font(GEIST_MEDIUM).size(12).color(ink)]
+            .spacing(5)
+            .align_y(Alignment::Center)
+            .into()
+    };
+    let padding = if icon_only {
+        Padding::from([4.0, 6.0])
+    } else {
+        Padding::from([3.0, 8.0])
+    };
+    let pill = move |hovered: bool| container::Style {
+        background: Some(Background::Color(if hovered {
+            ColorToken::Emerald300.to_color()
+        } else {
+            ColorToken::Emerald400.to_color()
+        })),
+        border: Border {
+            radius: 100.0.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let (badge, hint): (iced::Element<'a, CameraMessage, Theme, iced::Renderer>, _) = if is_local {
+        let badge = container(content)
+            .padding(padding)
+            .style(move |_theme: &Theme| pill(false));
+        (badge.into(), "You're sharing your screen")
+    } else {
+        let badge = button(content)
+            .padding(padding)
+            .on_press(CameraMessage::ViewScreen)
+            .style(move |_theme: &Theme, status| {
+                let style = pill(matches!(
+                    status,
+                    button::Status::Hovered | button::Status::Pressed
+                ));
+                button::Style {
+                    background: style.background,
+                    border: style.border,
+                    text_color: ink,
+                    shadow: Shadow::default(),
+                    snap: false,
+                }
+            });
+        (badge.into(), "Show their screen")
+    };
+
+    let hint = container(text(hint).size(12).color(Color::WHITE))
+        .padding(Padding::from([4.0, 8.0]))
+        .style(|_theme: &Theme| container::Style {
+            background: Some(Background::Color(ColorToken::Gray600.to_color())),
+            border: Border {
+                color: Color::from_rgba(1.0, 1.0, 1.0, 0.15),
+                width: 1.0,
+                radius: 6.0.into(),
+            },
+            shadow: ShadowToken::Xs.to_shadow(),
+            ..Default::default()
+        });
+
+    tooltip(badge, hint, tooltip::Position::Left)
+        .gap(4)
+        .snap_within_viewport(true)
+        .into()
 }
 
 fn capturing_badge<'a>() -> iced::Element<'a, CameraMessage, Theme, iced::Renderer> {
@@ -1809,6 +1925,7 @@ fn create_participant_grid<'a>(
                     is_speaking: info.is_speaking(),
                     is_muted: info.muted(),
                     is_capturing: info.capturing(),
+                    is_sharing: info.is_screensharing(),
                     buffers: camera_buffers,
                     tile_size,
                     is_small_window,

@@ -92,6 +92,7 @@ export function CallCenter() {
   const { callTokens } = useStore();
   const [controllerCursorState, setControllerCursorState] = useState(true);
   const [accessibilityPermission, setAccessibilityPermission] = useState(true);
+  const sharer = useCallTiles().find((tile) => !tile.isLocal && tile.isScreensharing);
 
   // The sharing pill's Revoke
   useEffect(() => {
@@ -229,7 +230,9 @@ export function CallCenter() {
           }}
         >
           <HiOutlineEye className="size-4" />
-          Open shared window
+          {sharer ?
+            <span className="min-w-0 truncate">View {sharer.user?.first_name ?? sharer.name}&rsquo;s screen</span>
+          : "Open shared window"}
         </Button>
       )}
 
