@@ -434,6 +434,10 @@ pub struct Application<'a> {
     screen_share_resolution: ScreenShareResolution,
     screen_share_picker_mode: ScreenSharePickerMode,
     call_window_prefs: CallWindowPrefs,
+    /// The faces are in the shared window, as they were when last looked.
+    faces_in_shared_window: bool,
+    /// The faces window was put away for the faces in the shared window, to come back after.
+    camera_hidden_for_share: bool,
     remote_control_enabled: bool,
     clipboard_controller: Option<ClipboardController>,
     screen_selection: Option<ScreenSelectionState>,
@@ -532,6 +536,8 @@ impl<'a> Application<'a> {
             screen_share_resolution: ScreenShareResolution::P4K,
             screen_share_picker_mode: ScreenSharePickerMode::Screen,
             call_window_prefs: CallWindowPrefs::default(),
+            faces_in_shared_window: false,
+            camera_hidden_for_share: false,
             remote_control_enabled: true,
             clipboard_controller,
             screen_selection: None,
@@ -948,6 +954,7 @@ impl<'a> Application<'a> {
                 redraw_rx,
                 redraw_tx,
                 event_loop_proxy: self.event_loop_proxy.clone(),
+                prefs: self.call_window_prefs,
             },
         ) {
             Ok(mut win) => {
@@ -1008,6 +1015,54 @@ impl<'a> Application<'a> {
         }
     }
 
+    fn apply_call_window_prefs(&mut self, prefs: CallWindowPrefs) {
+        self.call_window_prefs = prefs;
+        if let Some(camera_window) = &mut self.camera_window {
+            camera_window.set_prefs(prefs);
+        }
+        if let Some(screensharing_window) = &mut self.screensharing_window {
+            screensharing_window.set_prefs(prefs);
+        }
+    }
+
+    /// Whether the faces are in the shared window now: it's up, and they haven't been sent to a
+    /// window of their own.
+    fn faces_in_shared_window_now(&self) -> bool {
+        self.screensharing_window
+            .as_ref()
+            .is_some_and(|window| window.is_open() && window.shows_faces())
+    }
+
+    /// The faces are in one window at a time. While they're in the shared window, the faces
+    /// window is put away; when they leave it, because the shared window went or the faces
+    /// were sent out of it, the faces window comes back if it was up or they were sent to it.
+    fn sync_faces_window(&mut self, event_loop: &ActiveEventLoop) {
+        let in_shared = self.faces_in_shared_window_now();
+        if in_shared == self.faces_in_shared_window {
+            return;
+        }
+        self.faces_in_shared_window = in_shared;
+        if in_shared {
+            if self.camera_window.as_ref().is_some_and(|w| w.is_visible()) {
+                log::info!("sync_faces_window: the faces are in the shared window");
+                self.close_camera_window();
+                self.camera_hidden_for_share = true;
+            }
+            return;
+        }
+        let sent_out = self
+            .screensharing_window
+            .as_ref()
+            .is_some_and(|window| window.is_open());
+        if std::mem::take(&mut self.camera_hidden_for_share) || sent_out {
+            log::info!("sync_faces_window: the faces have their own window (sent_out={sent_out})");
+            if let Some(room_service) = self.room_service.as_ref() {
+                let participants = room_service.participants();
+                self.open_camera_window(event_loop, participants);
+            }
+        }
+    }
+
     fn close_camera_window(&mut self) {
         log::info!("close_camera_window");
         if let Some(cam) = &mut self.camera_window {
@@ -1047,6 +1102,13 @@ impl<'a> Application<'a> {
             .active_device_name()
             .map(|s| s.to_string());
         let screensharing_active = self.screensharing_active;
+
+        if self.faces_in_shared_window_now() {
+            // They're in the shared window already; this window comes when they leave it.
+            log::info!("open_camera_window: the faces are in the shared window");
+            self.camera_hidden_for_share = true;
+            return;
+        }
 
         if let Some(cam) = &mut self.camera_window {
             if !cam.is_visible() {
@@ -2042,6 +2104,8 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                 self.close_screensharing_window();
                 self.close_drawing_window();
                 self.stats_window = None;
+                // Nothing comes back after the call.
+                self.camera_hidden_for_share = false;
 
                 if let Err(e) = self.socket.send(Message::CallEnded) {
                     log::error!("user_event: Error sending CallEnded: {e:?}");
@@ -2665,14 +2729,11 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
             }
             UserEvent::SetCallWindowPrefs(prefs) => {
                 log::info!("user_event: SetCallWindowPrefs({prefs:?})");
-                self.call_window_prefs = prefs;
-                if let Some(camera_window) = &mut self.camera_window {
-                    camera_window.set_prefs(prefs);
-                }
+                self.apply_call_window_prefs(prefs);
             }
             UserEvent::CallWindowPrefsChanged(prefs) => {
                 log::info!("user_event: CallWindowPrefsChanged({prefs:?})");
-                self.call_window_prefs = prefs;
+                self.apply_call_window_prefs(prefs);
                 if let Err(e) = self.socket.send(Message::CallWindowPrefsChanged(prefs)) {
                     log::error!("Failed to send CallWindowPrefsChanged: {e:?}");
                 }
@@ -3755,6 +3816,7 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
         if let Some(target_monitor_id) = self.pending_overlay_repair.take() {
             self.repair_overlay_monitor(event_loop, target_monitor_id);
         }
+        self.sync_faces_window(event_loop);
 
         let now = std::time::Instant::now();
         let mut next_redraw: Option<std::time::Instant> = None;

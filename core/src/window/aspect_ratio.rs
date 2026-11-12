@@ -1,4 +1,5 @@
 use crate::utils::geometry::Extent;
+use socket_lib::FacesInShared;
 
 #[cfg_attr(target_os = "macos", path = "aspect_ratio/macos.rs")]
 #[cfg_attr(target_os = "windows", path = "aspect_ratio/windows.rs")]
@@ -16,6 +17,21 @@ impl WindowConstant {
     pub const HEADER_SIDE_PADDING: f32 = 4.0;
     pub const SKELETON_H: f64 = Self::HEADER_HEIGHT as f64 + Self::PADDING as f64;
     pub const SKELETON_W: f64 = 2.0 * Self::PADDING as f64;
+}
+
+/// Down the side, the faces take this share of the picture's height as their width, gap and
+/// all; along the bottom, this share of its width as their height. In proportion, the window
+/// keeps one shape however big it's made.
+pub const FACES_SIDE_SHARE: f64 = 0.2;
+pub const FACES_BOTTOM_SHARE: f64 = 0.11;
+
+/// The shape of the window's content for a screen of this shape, with the faces where they go.
+pub fn layout_aspect(stream_aspect: f64, faces: FacesInShared) -> f64 {
+    match faces {
+        FacesInShared::Side => stream_aspect + FACES_SIDE_SHARE,
+        FacesInShared::Bottom => 1.0 / (1.0 / stream_aspect + FACES_BOTTOM_SHARE),
+        FacesInShared::Bubbles | FacesInShared::Off => stream_aspect,
+    }
 }
 
 pub fn min_window_size_for_aspect(aspect: f64) -> (f64, f64) {

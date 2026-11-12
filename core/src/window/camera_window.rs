@@ -133,6 +133,8 @@ const CONTROLS_STRIP_MIN_WINDOW_HEIGHT: f32 = 140.0;
 /// Narrower than this, the controls are down to the essentials.
 const ICON_CONTROLS_MIN_WIDTH: f32 = CallControlsDensity::Icons.total_width() + 8.0;
 const HIDE_NAME_TILE_THRESHOLD: f32 = 150.0;
+/// Narrower than this, a tile in another window has no room for a name.
+const FACE_CARD_NAME_MIN_WIDTH: f32 = 96.0;
 
 const COMPACT_TOP_INSET: f32 = 24.0;
 
@@ -2025,6 +2027,34 @@ fn participant_card<'a>(
     }
 }
 
+/// Someone's tile in another window: the same as theirs here, without this window's buttons.
+/// `nothing` is that window's message for a tile that doesn't do anything.
+pub(crate) fn face_card<'a, M: Clone + 'a>(
+    identity: &str,
+    info: &ParticipantInfo,
+    (width, height): (f32, f32),
+    skip_buffer: bool,
+    nothing: M,
+) -> iced::Element<'a, M, Theme, iced::Renderer> {
+    participant_card(ParticipantCardProps {
+        participant_id: identity_to_id(identity),
+        name: info.name(),
+        is_speaking: info.is_speaking(),
+        is_muted: info.muted(),
+        is_capturing: info.capturing(),
+        // You're looking at their screen already.
+        is_sharing: false,
+        buffers: info.camera_buffers(),
+        tile: TileSize { width, height },
+        is_small_window: true,
+        is_local: identity == "local",
+        local_tile_hovered: false,
+        hide_name: width < FACE_CARD_NAME_MIN_WIDTH,
+        skip_buffer,
+    })
+    .map(move |_| nothing.clone())
+}
+
 /// "Sharing" on the sharer's tile. On someone else's, it's a button to their screen.
 fn sharing_badge<'a>(
     is_local: bool,
@@ -2144,7 +2174,7 @@ fn capturing_badge<'a>() -> iced::Element<'a, CameraMessage, Theme, iced::Render
 }
 
 /// Hash an identity string to a u64 for GPU texture keying.
-fn identity_to_id(identity: &str) -> u64 {
+pub(crate) fn identity_to_id(identity: &str) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let mut hasher = DefaultHasher::new();
@@ -2306,7 +2336,7 @@ fn nearest_corner(centre: (f64, f64), area: [f64; 4]) -> ScreenCorner {
 
 /// Whether this person's picture hasn't changed since it was last drawn, so it needn't be
 /// uploaded again.
-fn should_skip(
+pub(crate) fn should_skip(
     identity: &str,
     buffers: &VideoBufferManager,
     outer_skip: bool,

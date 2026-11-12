@@ -127,9 +127,10 @@ fn configure_macos_zoom_behavior(window: &Window) -> objc2::rc::Retained<MacosZo
         };
 
         ns_window.setDelegate(Some(ProtocolObject::from_ref(&*zoom_delegate)));
+        // The green button takes it full screen or tiles it like any window; their screen
+        // keeps its shape inside, with bars either side if it has to.
         ns_window.setCollectionBehavior(
-            NSWindowCollectionBehavior::FullScreenNone
-                | NSWindowCollectionBehavior::FullScreenDisallowsTiling,
+            ns_window.collectionBehavior() | NSWindowCollectionBehavior::FullScreenPrimary,
         );
         log::info!("configure_macos_zoom_behavior: installed custom zoom delegate");
     }

@@ -39,9 +39,10 @@ use winit::window::{Window, WindowAttributes, WindowId};
 use thiserror::Error;
 
 use super::aspect_ratio::{
-    calculate_max_window_size, default_window_size, min_window_size, AspectRatioEnforcer,
-    WindowConstant,
+    calculate_max_window_size, default_window_size, layout_aspect, min_window_size,
+    AspectRatioEnforcer, WindowConstant, FACES_BOTTOM_SHARE, FACES_SIDE_SHARE,
 };
+use super::camera_window::{face_card, identity_to_id, round_face, should_skip, RoundFace};
 use super::drawing_helpers;
 use crate::components::call_controls::{
     CallControlsDensity, CallControlsMessage, CallControlsState,
@@ -64,6 +65,7 @@ use crate::utils::clock;
 use crate::utils::geometry::{Extent, Position};
 use crate::windows::colors::ColorToken;
 use hopp_marks::stamps::{StampInput, StampMessage};
+use socket_lib::{CallWindowPrefs, FacesInShared};
 
 pub fn screensharing_window_attributes() -> WindowAttributes {
     let (init_w, init_h) = default_window_size();
@@ -86,9 +88,12 @@ pub fn screensharing_window_attributes() -> WindowAttributes {
     attrs
 }
 
-const SCREENSHARE_CALL_CONTROLS_MIN_WIDTH: f32 = 680.0;
+const SCREENSHARE_CALL_CONTROLS_MIN_WIDTH: f32 = 768.0;
 const SCREENSHARE_SEGMENTED_CONTROLS_WIDTH: f32 = 132.0;
 const SCREENSHARE_SETTINGS_BUTTON_WIDTH: f32 = 44.0;
+/// The faces button and the cog, at the right of the header; the same again on the left keeps
+/// the drawing controls in the middle.
+const SCREENSHARE_HEADER_END_WIDTH: f32 = SCREENSHARE_SETTINGS_BUTTON_WIDTH * 2.0;
 
 /// Available screen area detected at runtime by probing with a temporary window.
 /// This replaces hardcoded OS chrome offsets (menubar, taskbar, dock) with
@@ -266,12 +271,17 @@ fn default_screen_area_from_hardcoded() -> ScreenArea {
 }
 
 const REDRAW_INTERVAL: Duration = Duration::from_millis(1_000 / 10);
+/// With faces in the window, their cameras move even when the screen doesn't: as often as the
+/// faces window draws them while someone shares.
+const FACES_REDRAW_INTERVAL: Duration = Duration::from_millis(1_000 / 15);
 const ANIMATION_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 
 pub enum RedrawCommand {
     ForceRedraw,
     /// Something on screen is animating, so the next frame can't wait for video or the slow timer.
     Animate,
+    /// Whether the faces are in the window.
+    Faces(bool),
     Stop,
 }
 
@@ -280,7 +290,8 @@ fn run_redraw_loop(
     redraw_in_progress: Arc<AtomicBool>,
     request_redraw: impl Fn(),
 ) {
-    let mut interval = REDRAW_INTERVAL;
+    let mut idle = REDRAW_INTERVAL;
+    let mut interval = idle;
     loop {
         match redraw_rx.recv_timeout(interval) {
             Ok(RedrawCommand::ForceRedraw) => {
@@ -289,10 +300,18 @@ fn run_redraw_loop(
                 }
             }
             Ok(RedrawCommand::Animate) => interval = ANIMATION_FRAME_INTERVAL,
+            Ok(RedrawCommand::Faces(shown)) => {
+                idle = if shown {
+                    FACES_REDRAW_INTERVAL
+                } else {
+                    REDRAW_INTERVAL
+                };
+                interval = interval.min(idle);
+            }
             Ok(RedrawCommand::Stop) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 request_redraw();
-                interval = REDRAW_INTERVAL;
+                interval = idle;
             }
         }
     }
@@ -313,6 +332,8 @@ fn spawn_redraw_thread(
 const SCREENSHARE_STREAM_ID: u64 = u64::MAX;
 
 const ICON_COG: &[u8] = include_bytes!("../../resources/icons/cog.svg");
+const ICON_FACES_POP_OUT: &[u8] = include_bytes!("../../resources/icons/faces-pop-out.svg");
+const ICON_FACES_POP_IN: &[u8] = include_bytes!("../../resources/icons/faces-pop-in.svg");
 const ICON_PENCIL_SVG: &[u8] = include_bytes!("../../resources/icons/pencil.svg");
 
 /// Icon font codepoints for segmented control (from icons-font).
@@ -366,6 +387,10 @@ pub enum ScreensharingMessage {
     ToggleDropdown,
     DismissDropdown,
     DropdownItemClicked(usize),
+    /// The faces go to a window of their own, or come back into this one.
+    ToggleFacesOut,
+    /// From something in the window that doesn't do anything here.
+    Nothing,
 }
 
 // ── Input events to forward to room service ─────────────────────────────────
@@ -579,6 +604,308 @@ impl<Message> canvas::Program<Message> for AppVeilOverlay<'_> {
     }
 }
 
+// ── Faces beside their screen ───────────────────────────────────────────────
+
+/// Between their screen and the faces beside it.
+const FACES_GAP: f32 = 8.0;
+const BUBBLE_SIZE: f32 = 48.0;
+const BUBBLE_GAP: f32 = 6.0;
+/// In from the corner of their screen.
+const BUBBLE_MARGIN: f32 = 10.0;
+const MAX_BUBBLES: usize = 5;
+
+/// Where things go in the window, in logical pixels: the picture of their screen, which keeps
+/// the stream's shape however the window is shaped, and the faces beside it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ShareLayout {
+    picture: Rectangle,
+    faces: Option<Rectangle>,
+}
+
+fn share_layout(window: Size, stream_aspect: f32, faces: FacesInShared) -> ShareLayout {
+    let content = Rectangle {
+        x: WindowConstant::PADDING,
+        y: WindowConstant::HEADER_HEIGHT,
+        width: (window.width - 2.0 * WindowConstant::PADDING).max(1.0),
+        height: (window.height - WindowConstant::HEADER_HEIGHT - WindowConstant::PADDING).max(1.0),
+    };
+    let (area, rail) = match faces {
+        FacesInShared::Side => {
+            let share = (content.height * FACES_SIDE_SHARE as f32).min(content.width / 2.0);
+            (
+                Rectangle {
+                    width: content.width - share,
+                    ..content
+                },
+                Some(Rectangle {
+                    x: content.x + content.width - share + FACES_GAP,
+                    width: share - FACES_GAP,
+                    ..content
+                }),
+            )
+        }
+        FacesInShared::Bottom => {
+            let share = (content.width * FACES_BOTTOM_SHARE as f32).min(content.height / 2.0);
+            (
+                Rectangle {
+                    height: content.height - share,
+                    ..content
+                },
+                Some(Rectangle {
+                    y: content.y + content.height - share + FACES_GAP,
+                    height: share - FACES_GAP,
+                    ..content
+                }),
+            )
+        }
+        FacesInShared::Bubbles | FacesInShared::Off => (content, None),
+    };
+    ShareLayout {
+        picture: letterbox(area, stream_aspect),
+        faces: rail,
+    }
+}
+
+/// The biggest picture of this shape in the area, in the middle of it.
+fn letterbox(area: Rectangle, aspect: f32) -> Rectangle {
+    if !(aspect.is_finite() && aspect > 0.0) {
+        return area;
+    }
+    let (width, height) = if area.width / area.height > aspect {
+        (area.height * aspect, area.height)
+    } else {
+        (area.width, area.width / aspect)
+    };
+    Rectangle {
+        x: area.x + (area.width - width) / 2.0,
+        y: area.y + (area.height - height) / 2.0,
+        width,
+        height,
+    }
+}
+
+/// How many places there are for faces down the side, or along the bottom, and their size.
+/// They fill the side's width (or the bottom's height), and get shorter (or narrower) to fit
+/// more people, to a point: past that, the last place says how many more there are.
+fn faces_tiles(rail: Size, along_bottom: bool, count: usize) -> (usize, Size) {
+    let (across, along) = if along_bottom {
+        (rail.height, rail.width)
+    } else {
+        (rail.width, rail.height)
+    };
+    // Each face's length along the rail, at its best and at its least.
+    let (best, least) = if along_bottom {
+        (across * 16.0 / 9.0, across)
+    } else {
+        (across * 3.0 / 4.0, across * 9.0 / 16.0)
+    };
+    let room = (((along + FACES_GAP) / (least + FACES_GAP)).floor() as usize).max(1);
+    let places = count.clamp(1, room);
+    let length = ((along - FACES_GAP * (places - 1) as f32) / places as f32).min(best);
+    let size = if along_bottom {
+        Size::new(length, across)
+    } else {
+        Size::new(across, length)
+    };
+    (places, size)
+}
+
+/// Who's in the faces beside their screen: everyone else by name, then you while your
+/// camera's on.
+fn faces_people(
+    participants: &HashMap<String, ParticipantInfo>,
+) -> Vec<(&String, &ParticipantInfo)> {
+    let mut people: Vec<(&String, &ParticipantInfo)> = participants
+        .iter()
+        .filter(|(identity, _)| identity.as_str() != "local")
+        .collect();
+    people.sort_by(|a, b| a.1.name().cmp(b.1.name()));
+    people.extend(
+        participants
+            .iter()
+            .filter(|(identity, info)| identity.as_str() == "local" && info.camera_active()),
+    );
+    people
+}
+
+/// `content`, this size and at this place in the window.
+fn placed<'a>(
+    content: impl Into<iced::Element<'a, ScreensharingMessage, Theme, iced::Renderer>>,
+    rect: Rectangle,
+) -> iced::Element<'a, ScreensharingMessage, Theme, iced::Renderer> {
+    container(
+        container(content)
+            .width(Length::Fixed(rect.width.max(0.0)))
+            .height(Length::Fixed(rect.height.max(0.0))),
+    )
+    .padding(Padding {
+        top: rect.y,
+        right: 0.0,
+        bottom: 0.0,
+        left: rect.x,
+    })
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
+}
+
+/// How many more people there are than places for them.
+fn more_faces<'a>(
+    more: usize,
+    size: Size,
+) -> iced::Element<'a, ScreensharingMessage, Theme, iced::Renderer> {
+    let radius = if size.width == size.height {
+        size.width / 2.0
+    } else {
+        6.0
+    };
+    container(
+        text(format!("+{more}"))
+            .size(14)
+            .font(GEIST_MEDIUM)
+            .color(Color::WHITE),
+    )
+    .center_x(Length::Fixed(size.width))
+    .center_y(Length::Fixed(size.height))
+    .style(move |_theme: &Theme| container::Style {
+        background: Some(Background::Color(ColorToken::Slate700.to_color())),
+        border: Border {
+            radius: radius.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .into()
+}
+
+/// The faces, down the side or along the bottom of their screen, or in bubbles over its corner.
+fn faces_view<'a>(
+    faces_in_shared: FacesInShared,
+    layout: ShareLayout,
+    participants: &Arc<RwLock<HashMap<String, ParticipantInfo>>>,
+    frame_ids: &mut HashMap<String, u64>,
+    outer_skip: bool,
+) -> iced::Element<'a, ScreensharingMessage, Theme, iced::Renderer> {
+    let Ok(participants) = participants.read() else {
+        return Space::new().into();
+    };
+    let people = faces_people(&participants);
+    if people.is_empty() {
+        return Space::new().into();
+    }
+    let mut skip = |identity: &String, info: &ParticipantInfo| {
+        should_skip(identity, &info.camera_buffers(), outer_skip, frame_ids)
+    };
+
+    if faces_in_shared == FacesInShared::Bubbles {
+        let picture = layout.picture;
+        let room = ((picture.width - 2.0 * BUBBLE_MARGIN + BUBBLE_GAP) / (BUBBLE_SIZE + BUBBLE_GAP))
+            .floor()
+            .max(1.0) as usize;
+        let places = people.len().min(room.min(MAX_BUBBLES));
+        let shown = if people.len() > places {
+            places - 1
+        } else {
+            places
+        };
+        let mut bubbles = row![].spacing(BUBBLE_GAP);
+        for &(identity, info) in &people[..shown] {
+            bubbles = bubbles.push(round_face(RoundFace {
+                participant_id: identity_to_id(identity),
+                name: info.name(),
+                buffers: info.camera_buffers(),
+                size: BUBBLE_SIZE,
+                speaking: info.is_speaking(),
+                muted: info.muted(),
+                mirror: identity.as_str() == "local",
+                skip_buffer: skip(identity, info),
+            }));
+        }
+        if shown < people.len() {
+            bubbles = bubbles.push(more_faces(
+                people.len() - shown,
+                Size::new(BUBBLE_SIZE, BUBBLE_SIZE),
+            ));
+        }
+        let width = places as f32 * (BUBBLE_SIZE + BUBBLE_GAP) - BUBBLE_GAP;
+        return placed(
+            bubbles,
+            Rectangle {
+                x: picture.x + picture.width - BUBBLE_MARGIN - width,
+                y: picture.y + BUBBLE_MARGIN,
+                width,
+                height: BUBBLE_SIZE,
+            },
+        );
+    }
+
+    let Some(rail) = layout.faces else {
+        return Space::new().into();
+    };
+    let along_bottom = faces_in_shared == FacesInShared::Bottom;
+    let (places, tile) = faces_tiles(rail.size(), along_bottom, people.len());
+    let shown = if people.len() > places {
+        places - 1
+    } else {
+        places
+    };
+    let mut tiles: Vec<iced::Element<'a, ScreensharingMessage, Theme, iced::Renderer>> =
+        Vec::with_capacity(places);
+    for &(identity, info) in &people[..shown] {
+        tiles.push(face_card(
+            identity,
+            info,
+            (tile.width, tile.height),
+            skip(identity, info),
+            ScreensharingMessage::Nothing,
+        ));
+    }
+    if shown < people.len() {
+        tiles.push(more_faces(people.len() - shown, tile));
+    }
+    let line: iced::Element<'a, ScreensharingMessage, Theme, iced::Renderer> = if along_bottom {
+        container(iced::widget::Row::with_children(tiles).spacing(FACES_GAP))
+            .center_x(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    } else {
+        container(iced::widget::Column::with_children(tiles).spacing(FACES_GAP))
+            .center_y(Length::Fill)
+            .width(Length::Fill)
+            .into()
+    };
+    placed(line, rail)
+}
+
+/// Sends the faces to a window of their own, or brings them back.
+fn faces_button<'a>(
+    faces_in_shared: FacesInShared,
+) -> iced::Element<'a, ScreensharingMessage, Theme, iced::Renderer> {
+    let (icon, tooltip_text) = match faces_in_shared {
+        FacesInShared::Off => (ICON_FACES_POP_IN, "Faces in this window"),
+        _ => (ICON_FACES_POP_OUT, "Faces in their own window"),
+    };
+    let tooltip_content = container(text(tooltip_text).size(12).color(Color::WHITE))
+        .padding(Padding::from([4.0, 8.0]))
+        .style(|_theme: &Theme| container::Style {
+            background: Some(Background::Color(ColorToken::Gray600.to_color())),
+            border: Border {
+                color: Color::from_rgba(1.0, 1.0, 1.0, 0.15),
+                width: 1.0,
+                radius: 6.0.into(),
+            },
+            ..Default::default()
+        });
+    iced::widget::tooltip(
+        dropdown_trigger_button(icon, false, ScreensharingMessage::ToggleFacesOut),
+        tooltip_content,
+        iced::widget::tooltip::Position::Bottom,
+    )
+    .gap(4)
+    .snap_within_viewport(true)
+    .into()
+}
+
 // ── ScreensharingWindow ─────────────────────────────────────────────────────
 
 pub struct ScreensharingWindow {
@@ -613,6 +940,13 @@ pub struct ScreensharingWindow {
     #[cfg_attr(target_os = "windows", allow(dead_code))]
     event_loop_proxy: EventLoopProxy<crate::UserEvent>,
     aspect_ratio_enforcer: AspectRatioEnforcer,
+    prefs: CallWindowPrefs,
+    /// Where the faces go back to when they come back from a window of their own.
+    faces_back: FacesInShared,
+    /// The camera frame each face last drew, for the faces in this window.
+    face_frame_ids: HashMap<String, u64>,
+    /// Shown, until it's hidden or closed.
+    open: bool,
     #[cfg(target_os = "macos")]
     ns_cursor_pointer: objc2::rc::Retained<objc2_app_kit::NSCursor>,
     #[cfg(target_os = "macos")]
@@ -669,6 +1003,7 @@ pub struct ScreensharingWindowConfig {
     pub redraw_rx: std::sync::mpsc::Receiver<RedrawCommand>,
     pub redraw_tx: std::sync::mpsc::Sender<RedrawCommand>,
     pub event_loop_proxy: EventLoopProxy<crate::UserEvent>,
+    pub prefs: CallWindowPrefs,
 }
 
 fn build_initial_state(
@@ -755,6 +1090,7 @@ impl ScreensharingWindow {
             redraw_rx,
             redraw_tx,
             event_loop_proxy,
+            prefs,
         } = config;
 
         let screen_area = probe_available_screen_area(event_loop);
@@ -812,7 +1148,9 @@ impl ScreensharingWindow {
         #[cfg(target_os = "macos")]
         super::vibrancy::apply_macos_vibrancy(&window, 8.0);
 
-        let aspect_ratio_enforcer = AspectRatioEnforcer::new(&window);
+        let mut aspect_ratio_enforcer = AspectRatioEnforcer::new(&window);
+        aspect_ratio_enforcer
+            .set_aspect_ratio(&window, layout_aspect(16.0 / 9.0, prefs.faces_in_shared));
 
         // Create custom cursors for the participant area.
         #[cfg(target_os = "macos")]
@@ -927,6 +1265,13 @@ impl ScreensharingWindow {
             redraw_thread: Some(redraw_thread),
             event_loop_proxy,
             aspect_ratio_enforcer,
+            prefs,
+            faces_back: match prefs.faces_in_shared {
+                FacesInShared::Off => FacesInShared::Side,
+                faces => faces,
+            },
+            face_frame_ids: HashMap::new(),
+            open: true,
             #[cfg(target_os = "macos")]
             ns_cursor_pointer,
             #[cfg(target_os = "macos")]
@@ -941,6 +1286,7 @@ impl ScreensharingWindow {
             custom_cursor_point,
         };
         s.update_cursor();
+        let _ = s.redraw_tx.send(RedrawCommand::Faces(s.shows_faces()));
         Ok(s)
     }
 
@@ -982,11 +1328,130 @@ impl ScreensharingWindow {
         if self.window.is_visible() == Some(false) {
             self.window.set_visible(true);
         }
+        self.open = true;
         self.window.focus_window();
     }
 
-    pub fn hide(&self) {
+    pub fn hide(&mut self) {
+        self.open = false;
         self.window.set_visible(false);
+    }
+
+    /// Shown, and not hidden or closed since, wherever it is.
+    pub fn is_open(&self) -> bool {
+        self.open
+    }
+
+    /// Whether the faces are in this window, rather than one of their own.
+    pub fn shows_faces(&self) -> bool {
+        self.prefs.faces_in_shared != FacesInShared::Off
+    }
+
+    pub fn set_prefs(&mut self, prefs: CallWindowPrefs) {
+        let before = self.prefs.faces_in_shared;
+        self.prefs = prefs;
+        if prefs.faces_in_shared != FacesInShared::Off {
+            self.faces_back = prefs.faces_in_shared;
+        }
+        if prefs.faces_in_shared != before {
+            log::info!(
+                "ScreensharingWindow: faces {before:?} -> {:?}",
+                prefs.faces_in_shared
+            );
+            self.face_frame_ids.clear();
+            let _ = self
+                .redraw_tx
+                .send(RedrawCommand::Faces(self.shows_faces()));
+            self.fit_to_layout(before);
+            self.window.request_redraw();
+        }
+    }
+
+    /// The faces to a window of their own, or back here, remembered for next time.
+    fn toggle_faces_out(&mut self) {
+        let mut prefs = self.prefs;
+        prefs.faces_in_shared = match prefs.faces_in_shared {
+            FacesInShared::Off => self.faces_back,
+            _ => FacesInShared::Off,
+        };
+        self.set_prefs(prefs);
+        let _ = self
+            .event_loop_proxy
+            .send_event(crate::UserEvent::CallWindowPrefsChanged(prefs));
+    }
+
+    /// The shape the window's content keeps: their screen, and the faces where they go.
+    fn layout_aspect(&self) -> f64 {
+        layout_aspect(self.state.img_aspect, self.prefs.faces_in_shared)
+    }
+
+    fn layout(&self) -> ShareLayout {
+        share_layout(
+            self.viewport.logical_size(),
+            self.state.img_aspect as f32,
+            self.prefs.faces_in_shared,
+        )
+    }
+
+    /// Makes room for the faces where they've gone, keeping their screen the size it was where
+    /// it can: the same height with the faces down the side, the same width along the bottom.
+    fn fit_to_layout(&mut self, before: FacesInShared) {
+        let aspect = self.layout_aspect();
+        self.aspect_ratio_enforcer
+            .set_aspect_ratio(&self.window, aspect);
+        if self.state.last_stream_width == 0 || crate::window_manager::is_full_screen(&self.window)
+        {
+            // Full screen, it stays full screen, and the screen fits inside.
+            return;
+        }
+        let current: winit::dpi::LogicalSize<f64> = self
+            .window
+            .inner_size()
+            .to_logical(self.window.scale_factor());
+        let content_w = current.width - WindowConstant::SKELETON_W;
+        let content_h = current.height - WindowConstant::SKELETON_H;
+        let keep_width =
+            before == FacesInShared::Bottom || self.prefs.faces_in_shared == FacesInShared::Bottom;
+        let (mut width, mut height) = if keep_width {
+            (
+                current.width,
+                content_w / aspect + WindowConstant::SKELETON_H,
+            )
+        } else {
+            (
+                content_h * aspect + WindowConstant::SKELETON_W,
+                current.height,
+            )
+        };
+        let area = self.screen_area.extent;
+        if width > area.width || height > area.height {
+            if let Some(fits) = calculate_max_window_size(area, aspect) {
+                (width, height) = fits;
+            }
+        }
+        // Grown past the edge of the screen, it comes back in.
+        if let Ok(position) = self.window.outer_position() {
+            let position: winit::dpi::LogicalPosition<f64> =
+                position.to_logical(self.window.scale_factor());
+            let right = self.screen_area.position.x + area.width;
+            let bottom = self.screen_area.position.y + area.height;
+            let x = position
+                .x
+                .min(right - width)
+                .max(self.screen_area.position.x);
+            let y = position
+                .y
+                .min(bottom - height)
+                .max(self.screen_area.position.y);
+            if x != position.x || y != position.y {
+                self.window
+                    .set_outer_position(winit::dpi::LogicalPosition::new(x, y));
+            }
+        }
+        self.programmatic_resize_target = Some((width, height));
+        let _ = self
+            .window
+            .request_inner_size(winit::dpi::LogicalSize::new(width, height));
     }
 
     pub fn add_participant(
@@ -1220,6 +1685,8 @@ impl ScreensharingWindow {
         self.mouse_in_participant_area = false;
         self.last_rendered_frame_id = 0;
 
+        self.face_frame_ids.clear();
+
         // Respawn redraw thread on the new stream's channel.
         self.stop_redraw_thread();
         self.redraw_thread = Some(spawn_redraw_thread(
@@ -1228,6 +1695,9 @@ impl ScreensharingWindow {
             Arc::clone(&self.window),
         ));
         self.redraw_tx = new_tx;
+        let _ = self
+            .redraw_tx
+            .send(RedrawCommand::Faces(self.shows_faces()));
     }
 
     /// Update local control ownership and refresh cursor. When true, control tab uses OS cursor.
@@ -1326,13 +1796,7 @@ impl ScreensharingWindow {
 
     /// Bounding rectangle of the participant image area in logical pixels.
     fn participant_image_rect(&self) -> Rectangle {
-        let logical = self.viewport.logical_size();
-        Rectangle {
-            x: WindowConstant::PADDING,
-            y: WindowConstant::HEADER_HEIGHT,
-            width: logical.width - 2.0 * WindowConstant::PADDING,
-            height: logical.height - WindowConstant::HEADER_HEIGHT - WindowConstant::PADDING,
-        }
+        self.layout().picture
     }
 
     /// Ends the local stroke where the cursor was last seen inside the participant area, for when
@@ -1855,6 +2319,11 @@ impl ScreensharingWindow {
                         &self.participants_manager,
                         &self.click_animation_renderer,
                         true,
+                        (
+                            self.layout(),
+                            self.prefs.faces_in_shared,
+                            &mut self.face_frame_ids,
+                        ),
                     ),
                     self.viewport.logical_size(),
                     cache,
@@ -2016,7 +2485,7 @@ impl ScreensharingWindow {
                                 &self.window,
                                 logical.width,
                                 logical.height,
-                                self.state.img_aspect,
+                                self.layout_aspect(),
                                 self.screen_area.extent,
                                 self.screen_area.position,
                             )
@@ -2030,8 +2499,9 @@ impl ScreensharingWindow {
                     }
 
                     // Always reconfigure surface + viewport.
+                    let aspect = self.layout_aspect();
                     self.aspect_ratio_enforcer
-                        .set_aspect_ratio(&self.window, self.state.img_aspect);
+                        .set_aspect_ratio(&self.window, aspect);
                     self.surface.configure(
                         &self.device,
                         &wgpu::SurfaceConfiguration {
@@ -2064,7 +2534,7 @@ impl ScreensharingWindow {
                 input_events.extend(self.release_stamp());
                 input_events.extend(self.stamp_input(StampInput::Finish));
                 self.drop_note();
-                self.window.set_visible(false);
+                self.hide();
             }
             _ => {}
         }
@@ -2080,6 +2550,11 @@ impl ScreensharingWindow {
         participants: &'a ParticipantsManager,
         click_animation_renderer: &'a ClickAnimationRenderer,
         skip_buffer: bool,
+        (layout, faces_in_shared, face_frame_ids): (
+            ShareLayout,
+            FacesInShared,
+            &mut HashMap<String, u64>,
+        ),
     ) -> iced::Element<'a, ScreensharingMessage, Theme, iced::Renderer> {
         // ── Name label (left of header, after traffic lights) ───────────
         let name_label = container(
@@ -2115,6 +2590,7 @@ impl ScreensharingWindow {
             state.dropdown_open,
             ScreensharingMessage::ToggleDropdown,
         );
+        let faces_button = faces_button(faces_in_shared);
 
         let header_content: iced::Element<'a, ScreensharingMessage, Theme, iced::Renderer> =
             if show_call_controls {
@@ -2122,12 +2598,13 @@ impl ScreensharingWindow {
                     Space::new().width(Length::Fixed(traffic_light_spacer)),
                     name_label,
                     Space::new().width(Length::Fill),
+                    faces_button,
                     cog_button,
                 ]
                 .align_y(Alignment::Center)
                 .width(Length::Fill);
                 let center_and_call_controls = row![
-                    Space::new().width(Length::Fixed(SCREENSHARE_SETTINGS_BUTTON_WIDTH)),
+                    Space::new().width(Length::Fixed(SCREENSHARE_HEADER_END_WIDTH)),
                     Space::new().width(Length::Fill),
                     seg_ctrl,
                     container(
@@ -2137,7 +2614,7 @@ impl ScreensharingWindow {
                     )
                     .width(Length::Fill)
                     .center_x(Length::Fill),
-                    Space::new().width(Length::Fixed(SCREENSHARE_SETTINGS_BUTTON_WIDTH)),
+                    Space::new().width(Length::Fixed(SCREENSHARE_HEADER_END_WIDTH)),
                 ]
                 .width(Length::Fill)
                 .align_y(Alignment::Center);
@@ -2147,6 +2624,7 @@ impl ScreensharingWindow {
                     Space::new().width(Length::Fixed(traffic_light_spacer)),
                     name_label,
                     Space::new().width(Length::Fill),
+                    faces_button,
                     cog_button,
                 ]
                 .align_y(Alignment::Center)
@@ -2292,38 +2770,43 @@ impl ScreensharingWindow {
             }
         ];
 
-        let content_area = container(
-            container(layered_content)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .style(|_theme: &Theme| container::Style {
-                    background: Some(Background::Color(ColorToken::Slate800.to_color())),
-                    border: Border {
-                        color: ColorToken::Slate600.to_color(),
-                        width: 1.0,
-                        radius: 12.0.into(),
-                    },
-                    shadow: Shadow {
-                        color: Color::from_rgba(0.0, 0.0, 0.0, 0.20),
-                        offset: Vector::new(0.0, 6.0),
-                        blur_radius: 6.0,
-                    },
-                    ..Default::default()
-                })
-                .clip(true),
-        )
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .padding(
-            Padding::new(0.0)
-                .left(WindowConstant::PADDING)
-                .right(WindowConstant::PADDING)
-                .bottom(WindowConstant::PADDING),
-        );
-
-        let main_content = column![header, content_area]
+        let picture = container(layered_content)
             .width(Length::Fill)
-            .height(Length::Fill);
+            .height(Length::Fill)
+            .style(|_theme: &Theme| container::Style {
+                background: Some(Background::Color(ColorToken::Slate800.to_color())),
+                border: Border {
+                    color: ColorToken::Slate600.to_color(),
+                    width: 1.0,
+                    radius: 12.0.into(),
+                },
+                shadow: Shadow {
+                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.20),
+                    offset: Vector::new(0.0, 6.0),
+                    blur_radius: 6.0,
+                },
+                ..Default::default()
+            })
+            .clip(true);
+
+        // Their screen keeps its shape wherever the window's edges are, and the faces go
+        // beside it, or over its corner.
+        let faces = faces_view(
+            faces_in_shared,
+            layout,
+            call_participants,
+            face_frame_ids,
+            skip_buffer,
+        );
+        let main_content = stack![
+            column![header, Space::new().height(Length::Fill)]
+                .width(Length::Fill)
+                .height(Length::Fill),
+            placed(picture, layout.picture),
+            faces,
+        ]
+        .width(Length::Fill)
+        .height(Length::Fill);
 
         let base: iced::Element<'a, ScreensharingMessage, Theme, iced::Renderer> =
             container(main_content)
@@ -2378,10 +2861,10 @@ impl ScreensharingWindow {
                 - header_left_padding
                 - WindowConstant::HEADER_SIDE_PADDING
                 - SCREENSHARE_SEGMENTED_CONTROLS_WIDTH
-                - SCREENSHARE_SETTINGS_BUTTON_WIDTH * 2.0;
+                - SCREENSHARE_HEADER_END_WIDTH * 2.0;
             let call_controls_slot_width = call_controls_slot_width / 2.0;
             let trailing_padding = WindowConstant::HEADER_SIDE_PADDING
-                + SCREENSHARE_SETTINGS_BUTTON_WIDTH
+                + SCREENSHARE_HEADER_END_WIDTH
                 + (call_controls_slot_width - CallControlsDensity::Compact.total_width()).max(0.0)
                     / 2.0;
             call_controls.wrap_dropdown(
@@ -2429,6 +2912,8 @@ impl ScreensharingWindow {
             ScreensharingMessage::DismissDropdown => {
                 self.state.dropdown_open = false;
             }
+            ScreensharingMessage::ToggleFacesOut => self.toggle_faces_out(),
+            ScreensharingMessage::Nothing => {}
             ScreensharingMessage::DropdownItemClicked(index) => {
                 match index {
                     0 => self.state.draw_persist = false,
@@ -2487,10 +2972,11 @@ impl ScreensharingWindow {
                     || stream_h != self.state.last_stream_height)
             {
                 // Stream dimensions changed — update aspect ratio and resize window
-                let aspect = stream_w as f64 / stream_h as f64;
-                self.state.img_aspect = aspect;
+                self.state.img_aspect = stream_w as f64 / stream_h as f64;
                 self.state.last_stream_width = stream_w;
                 self.state.last_stream_height = stream_h;
+                // The window's shape, with the faces beside their screen.
+                let aspect = self.layout_aspect();
 
                 let (width, height) = if !self.state.user_has_resized {
                     // Auto-maximize to fit monitor
@@ -2590,6 +3076,11 @@ impl ScreensharingWindow {
                 &self.participants_manager,
                 &self.click_animation_renderer,
                 skip_buffer,
+                (
+                    self.layout(),
+                    self.prefs.faces_in_shared,
+                    &mut self.face_frame_ids,
+                ),
             ),
             self.viewport.logical_size(),
             cache,
@@ -2761,5 +3252,141 @@ mod app_veil_tests {
             Point::ORIGIN,
             Size::new(160.0, 39.0)
         )));
+    }
+}
+
+#[cfg(test)]
+mod faces_layout_tests {
+    use super::*;
+
+    /// A window whose content has this shape, `width` wide.
+    fn window_for(width: f64, content_aspect: f64) -> Size {
+        let content_w = width - WindowConstant::SKELETON_W;
+        let content_h = content_w / content_aspect;
+        Size::new(
+            width as f32,
+            (content_h + WindowConstant::SKELETON_H) as f32,
+        )
+    }
+
+    fn close(a: f32, b: f32) -> bool {
+        (a - b).abs() < 0.5
+    }
+
+    #[test]
+    fn in_a_window_of_its_shape_the_screen_fills_its_side_of_the_faces() {
+        for stream_aspect in [16.0 / 9.0, 16.0 / 10.0, 4.0 / 3.0, 21.0 / 9.0, 0.5] {
+            for faces in [
+                FacesInShared::Side,
+                FacesInShared::Bottom,
+                FacesInShared::Bubbles,
+                FacesInShared::Off,
+            ] {
+                let window = window_for(1400.0, layout_aspect(stream_aspect, faces));
+                let layout = share_layout(window, stream_aspect as f32, faces);
+                let picture = layout.picture;
+                assert!(
+                    close(picture.x, WindowConstant::PADDING)
+                        && close(picture.y, WindowConstant::HEADER_HEIGHT),
+                    "{stream_aspect} {faces:?}: no bars, {picture:?}"
+                );
+                assert!(close(picture.width / picture.height, stream_aspect as f32));
+                let right = window.width - WindowConstant::PADDING;
+                let bottom = window.height - WindowConstant::PADDING;
+                match (faces, layout.faces) {
+                    (FacesInShared::Side, Some(rail)) => {
+                        assert!(close(picture.x + picture.width + FACES_GAP, rail.x));
+                        assert!(close(rail.x + rail.width, right));
+                        assert!(close(picture.y + picture.height, bottom));
+                    }
+                    (FacesInShared::Bottom, Some(rail)) => {
+                        assert!(close(picture.y + picture.height + FACES_GAP, rail.y));
+                        assert!(close(rail.y + rail.height, bottom));
+                        assert!(close(picture.x + picture.width, right));
+                    }
+                    (FacesInShared::Bubbles | FacesInShared::Off, None) => {
+                        assert!(close(picture.x + picture.width, right));
+                        assert!(close(picture.y + picture.height, bottom));
+                    }
+                    other => panic!("{other:?}"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn full_screen_the_screen_keeps_its_shape_with_bars_either_side() {
+        // A 16:10 display full screen, showing a 21:9 screen and a 4:3 one.
+        let window = Size::new(1728.0, 1117.0);
+        for stream_aspect in [21.0 / 9.0, 4.0 / 3.0] {
+            for faces in [
+                FacesInShared::Side,
+                FacesInShared::Bottom,
+                FacesInShared::Off,
+            ] {
+                let layout = share_layout(window, stream_aspect, faces);
+                let picture = layout.picture;
+                assert!(close(picture.width / picture.height, stream_aspect));
+                assert!(picture.x >= WindowConstant::PADDING - 0.01);
+                assert!(picture.y >= WindowConstant::HEADER_HEIGHT - 0.01);
+                assert!(picture.x + picture.width <= window.width - WindowConstant::PADDING + 0.01);
+                assert!(
+                    picture.y + picture.height <= window.height - WindowConstant::PADDING + 0.01
+                );
+                if let Some(rail) = layout.faces {
+                    assert!(rail.intersection(&picture).is_none_or(|i| i.area() < 1.0));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_faces_fill_their_side_and_get_smaller_for_more_people() {
+        let side = Size::new(160.0, 800.0);
+        let (places, tile) = faces_tiles(side, false, 2);
+        assert_eq!(places, 2);
+        assert_eq!(tile, Size::new(160.0, 120.0));
+
+        // Too many at their best: shorter, down to 16:9.
+        let (places, tile) = faces_tiles(side, false, 7);
+        assert_eq!(places, 7);
+        assert!(tile.height < 120.0 && tile.height >= 90.0 - 0.01);
+        assert!(7.0 * tile.height + 6.0 * FACES_GAP <= 800.0 + 0.01);
+
+        // Past that, the last place says how many more.
+        let (places, tile) = faces_tiles(side, false, 30);
+        assert!(places < 30);
+        assert!(places as f32 * tile.height + (places - 1) as f32 * FACES_GAP <= 800.0 + 0.01);
+
+        let bottom = Size::new(1200.0, 140.0);
+        let (places, tile) = faces_tiles(bottom, true, 3);
+        assert_eq!(places, 3);
+        assert_eq!(tile.height, 140.0);
+        assert!(close(tile.width, 140.0 * 16.0 / 9.0));
+        let (places, tile) = faces_tiles(bottom, true, 40);
+        assert!(places < 40 && tile.width >= 140.0 - 0.01);
+    }
+
+    #[test]
+    fn the_faces_are_everyone_else_then_you_with_your_camera_on() {
+        let mut participants = HashMap::new();
+        participants.insert(
+            "b".to_string(),
+            ParticipantInfo::new("Zed".into(), false, false),
+        );
+        participants.insert(
+            "a".to_string(),
+            ParticipantInfo::new("Ada".into(), false, false),
+        );
+        participants.insert(
+            "local".to_string(),
+            ParticipantInfo::new("Me".into(), false, false),
+        );
+        let names: Vec<&str> = faces_people(&participants)
+            .iter()
+            .map(|(_, info)| info.name())
+            .collect();
+        // Your camera's off.
+        assert_eq!(names, ["Ada", "Zed"]);
     }
 }

@@ -212,6 +212,23 @@ pub fn set_bare(window: &Window, bare: bool) {
     let _ = (window, bare);
 }
 
+/// Whether the window is full screen, in a Space of its own.
+pub fn is_full_screen(window: &Window) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        with_ns_window(window, |ns_window| {
+            ns_window
+                .styleMask()
+                .contains(objc2_app_kit::NSWindowStyleMask::FullScreen)
+        })
+        .unwrap_or(false)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        window.fullscreen().is_some()
+    }
+}
+
 /// Whether a mouse button is held down anywhere, as it is while a window is dragged.
 pub fn mouse_button_held() -> bool {
     #[cfg(target_os = "macos")]
