@@ -39,8 +39,11 @@ Release builds connect to `pair.gethopp.app`, upstream's managed service, until 
 
 ## What's new
 
-### In the latest release (v1.5.1)
+### In the latest release (v1.6.0)
 
+- **Meeting mode.** The faces window has wide tiles, and a button switches between a grid and a speaker view.
+- **The faces go beside the shared screen.** While someone shares, the faces sit down the side of their screen in the same window, or along the bottom, in bubbles, or in their own window, as set in Settings. The shared window can go full screen or be tiled.
+- **Call windows settings.** Settings chooses where the faces go, how the faces window starts, what it becomes pinned (a strip, a box or the speaker), and whether it stays on top.
 - **Who's sharing.** The sharer's tile in the camera window has a green ring and a "Sharing" badge; click it to see their screen. The shared screen opens on the screen and Space you're on, rather than wherever it was last, and the call panel's button names whose screen it is.
 - **Call windows behave.** The faces only float on top when pinned, and ⌘H, ⌘M, ⌘W and ⌘` work in the call windows.
 
