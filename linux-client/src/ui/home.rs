@@ -380,6 +380,16 @@ impl HomeView {
             session.selection_canceled,
         );
         let remote = session.remote_identity.is_some();
+        // "View Sam's screen", as the Mac's call panel says.
+        let view_screen = session
+            .remote_identity
+            .as_deref()
+            .map(|identity| {
+                let name = session.name_for(identity);
+                let first = name.split_whitespace().next().unwrap_or(&name).to_owned();
+                format!("View {first}’s screen")
+            })
+            .unwrap_or_else(|| "Show shared screen".into());
         // A named room has a link to send people, as on the Mac; a call between two
         // people doesn't.
         let room_link = (!room.id.starts_with("call:")).then(|| {
@@ -566,7 +576,7 @@ impl HomeView {
                         "call-screen",
                         IconName::Monitor,
                         Tone::Plain,
-                        "Show shared screen",
+                        view_screen,
                         cx,
                     )
                     .on_click(cx.listener(|_, _, _, cx| cx.defer(Shell::show_viewer))),
